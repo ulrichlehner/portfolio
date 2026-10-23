@@ -10,6 +10,7 @@ public class Factory
     private static final List<QuoteFeed> FEEDS;
     private static final List<DividendFeed> DIVIDEND_FEEDS;
     private static final List<SecuritySearchProvider> SEARCH;
+    private static final List<FundCompositionProvider> COMPOSITION_PROVIDERS;
 
     private Factory()
     {
@@ -89,6 +90,15 @@ public class Factory
                         .orElseThrow(IllegalArgumentException::new));
     }
 
+    /**
+     * Returns composition providers declared in
+     * META-INF/services/name.abuchen.portfolio.online.FundCompositionProvider.
+     */
+    public static List<FundCompositionProvider> getFundCompositionProviders()
+    {
+        return COMPOSITION_PROVIDERS;
+    }
+
     static
     {
         FEEDS = new ArrayList<>();
@@ -105,6 +115,10 @@ public class Factory
         Iterator<SecuritySearchProvider> search = ServiceLoader.load(SecuritySearchProvider.class).iterator();
         while (search.hasNext())
             SEARCH.add(search.next());
+
+        var compositions = new ArrayList<FundCompositionProvider>();
+        ServiceLoader.load(FundCompositionProvider.class).forEach(compositions::add);
+        COMPOSITION_PROVIDERS = List.copyOf(compositions);
 
     }
 }
