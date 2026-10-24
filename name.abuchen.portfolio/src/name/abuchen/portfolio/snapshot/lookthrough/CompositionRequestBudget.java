@@ -1,0 +1,156 @@
+package name.abuchen.portfolio.snapshot.lookthrough;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * Shared, in-memory provider admission control. Supply the same instance to all
+ * consumers of a provider's allowance, including enrichment and other features.
+ * Limits and request costs are caller-supplied known units, not inferred plan
+ * entitlements. Admission charges the complete bounded operation up front; unused
+ * units are deliberately not refunded. This cannot account for external clients.
+ * No timers, waiting, network calls or disk writes are performed.
+ */
+public final class CompositionRequestBudget
+{
+    private record Charge(Instant at, long units)
+    {
+    }
+
+    private static final class AccountState
+    {
+        private long configuration;
+        private boolean suspended;
+        private Instant retryAt = Instant.MIN;
+    }
+
+    private final String providerId;
+    private final Clock clock;
+    private final long capacity;
+    private final Duration window;
+    private final Duration failureBackoff;
+    private final ArrayDeque<Charge> charges = new ArrayDeque<>();
+    private final Map<ProviderAccount, AccountState> accounts = new HashMap<>();
+    private long used;
+    private Instant providerRetryAt = Instant.MIN;
+    private Instant observedAt = Instant.MIN;
+
+    public CompositionRequestBudget(String providerId, Clock clock, long capacity, Duration window,
+                    Duration failureBackoff)
+    {
+        this.providerId = Objects.requireNonNull(providerId);
+        this.clock = Objects.requireNonNull(clock);
+        this.window = Objects.requireNonNull(window);
+        this.failureBackoff = Objects.requireNonNull(failureBackoff);
+        if (providerId.isBlank() || capacity < 0 || window.isNegative() || window.isZero()
+                        || failureBackoff.isNegative() || failureBackoff.isZero())
+            throw new IllegalArgumentException();
+        this.capacity = capacity;
+    }
+
+    private AccountState account(ProviderAccount account)
+    {
+        if (!providerId.equals(account.providerId()))
+            throw new IllegalArgumentException();
+        return accounts.computeIfAbsent(account, ignored -> new AccountState());
+    }
+
+    private Instant now()
+    {
+        var current = clock.instant();
+        if (current.isAfter(observedAt))
+            observedAt = current;
+        while (!charges.isEmpty() && !charges.getFirst().at().plus(window).isAfter(observedAt))
+            used -= charges.removeFirst().units();
+        return observedAt;
+    }
+
+    public synchronized boolean acquirePermit(ProviderAccount account, long units)
+    {
+        if (units <= 0)
+            throw new IllegalArgumentException();
+        var state = account(account);
+        var current = now();
+        if (state.suspended || current.isBefore(providerRetryAt) || current.isBefore(state.retryAt)
+                        || units > capacity - used)
+            return false;
+        charges.addLast(new Charge(current, units));
+        used += units;
+        return true;
+    }
+
+    public synchronized boolean isSuspended(ProviderAccount account)
+    {
+        return account(account).suspended;
+    }
+
+    /** Empty when no finite deadline exists (suspended or cost exceeds capacity). */
+    public synchronized Optional<Instant> nextAvailable(ProviderAccount account, long units)
+    {
+        if (units <= 0)
+            throw new IllegalArgumentException();
+        var state = account(account);
+        var current = now();
+        if (state.suspended || units > capacity)
+            return Optional.empty();
+        var deadline = current;
+        if (providerRetryAt.isAfter(deadline))
+            deadline = providerRetryAt;
+        if (state.retryAt.isAfter(deadline))
+            deadline = state.retryAt;
+        long remaining = used;
+        for (var charge : charges)
+        {
+            if (units <= capacity - remaining)
+                break;
+            remaining -= charge.units();
+            var expires = charge.at().plus(window);
+            if (expires.isAfter(deadline))
+                deadline = expires;
+        }
+        return Optional.of(deadline);
+    }
+
+    /** Rate limits protect the shared provider allowance; auth is account-local. */
+    public synchronized void record(ProviderAccount account, CompositionResult result)
+    {
+        var state = account(account);
+        var current = now();
+        switch (result.status())
+        {
+            case AUTHENTICATION_FAILED, ENTITLEMENT_FAILED -> state.suspended = true;
+            case RATE_LIMITED -> {
+                var deadline = result.retryAfter().filter(value -> value.isAfter(current))
+                                .orElseGet(() -> current.plus(failureBackoff));
+                if (deadline.isAfter(providerRetryAt))
+                    providerRetryAt = deadline;
+            }
+            case RECEIVED, CANCELLED -> {
+                // Success cannot clear an overlapping failure or suspension.
+            }
+            default -> state.retryAt = current.plus(failureBackoff);
+        }
+    }
+
+    /**
+     * An opaque, non-secret configuration revision, changed only by configuration
+     * events. Repeating the same revision does not unlock authentication retries.
+     * Configuration never restores spent quota or removes provider backoff.
+     */
+    public synchronized boolean configurationChanged(ProviderAccount account, long revision)
+    {
+        var state = account(account);
+        if (state.configuration == revision)
+            return false;
+        state.configuration = revision;
+        state.suspended = false;
+        state.retryAt = Instant.MIN;
+        return true;
+    }
+}
