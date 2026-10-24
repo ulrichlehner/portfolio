@@ -1,11 +1,13 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.util.List;
+import java.util.Optional;
 
 import jakarta.inject.Inject;
 
-import org.eclipse.e4.core.di.annotations.Optional;
+import org.eclipse.jface.action.ToolBarManager;
 import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.jface.layout.GridLayoutFactory;
 import org.eclipse.jface.layout.TreeColumnLayout;
@@ -17,13 +19,16 @@ import org.eclipse.jface.window.ToolTip;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
 
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.editor.AbstractFinanceView;
+import name.abuchen.portfolio.ui.util.SimpleAction;
 import name.abuchen.portfolio.ui.util.viewers.Column;
 import name.abuchen.portfolio.ui.util.viewers.ShowHideColumnHelper;
+import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
@@ -46,6 +51,10 @@ public class LookThroughView extends AbstractFinanceView
     private TreeViewer viewer;
 
     private LookThroughResult result;
+    private LookThroughCompositionSource compositionSource;
+    private LookThroughStatusModel statusModel;
+    private SimpleAction refreshAction;
+    private SimpleAction cancelAction;
     private String currencyCode = ""; //$NON-NLS-1$
 
     @Override
@@ -59,11 +68,47 @@ public class LookThroughView extends AbstractFinanceView
      * or by the wiring added in a later increment.
      */
     @Inject
-    @Optional
+    @org.eclipse.e4.core.di.annotations.Optional
     public void setResult(LookThroughResult result)
     {
         this.result = result;
         applyResult();
+    }
+
+    /**
+     * Supplies the memory-only composition access. Without a source the view
+     * shows no status and offers no refresh.
+     */
+    @Inject
+    @org.eclipse.e4.core.di.annotations.Optional
+    public void setCompositionSource(LookThroughCompositionSource source)
+    {
+        this.compositionSource = source;
+
+        if (source == null)
+        {
+            this.statusModel = null;
+            updateStatus();
+            return;
+        }
+
+        this.statusModel = new LookThroughStatusModel(Clock.systemDefaultZone(), source.gateway(),
+                        Display.getDefault()::asyncExec, () -> {
+                            var current = this.compositionSource;
+                            if (current == null)
+                                return Optional.empty();
+                            return Optional.of(new LookThroughStatusModel.Snapshot(current.globalFacts(),
+                                            current.funds()));
+                        });
+        this.statusModel.setChangeListener(this::onStatusChanged);
+
+        updateStatus();
+    }
+
+    /** Called on the user interface thread after every status change. */
+    private void onStatusChanged()
+    {
+        updateStatus();
     }
 
     @Override
@@ -101,6 +146,7 @@ public class LookThroughView extends AbstractFinanceView
         viewer.setInput(List.of());
 
         applyResult();
+        updateStatus();
         return container;
     }
 
@@ -219,6 +265,7 @@ public class LookThroughView extends AbstractFinanceView
             denominatorLabel.setText(Messages.LookThroughLabelNoResult);
             completenessLabel.setText(""); //$NON-NLS-1$
             viewer.setInput(List.of());
+            updateStatus();
             return;
         }
 
@@ -228,6 +275,93 @@ public class LookThroughView extends AbstractFinanceView
         denominatorLabel.setText(model.denominatorText().orElse(Messages.LookThroughLabelNoDenominator));
         completenessLabel.setText(model.completenessText());
         viewer.setInput(model.rows());
+        updateStatus();
+    }
+
+    /**
+     * Pushes the current status into the information pane. The status is read
+     * from memory only: this method never starts a refresh, so rendering,
+     * resizing and recalculation cannot cause provider traffic.
+     */
+    private void updateStatus()
+    {
+        var model = statusModel;
+        setInformationPaneInput(model != null ? model.status().orElse(null) : null);
+        updateActionEnablement();
+    }
+
+    private void updateActionEnablement()
+    {
+        if (refreshAction != null)
+            refreshAction.setEnabled(canRefresh());
+        if (cancelAction != null)
+            cancelAction.setEnabled(isRefreshing());
+
+        var toolBarManager = getViewToolBarManager();
+        if (toolBarManager != null && toolBarManager.getControl() != null
+                        && !toolBarManager.getControl().isDisposed())
+            toolBarManager.update(true);
+    }
+
+    private boolean canRefresh()
+    {
+        var source = compositionSource;
+        var model = statusModel;
+        return source != null && model != null && !source.funds().isEmpty() && !model.isRefreshing();
+    }
+
+    private boolean isRefreshing()
+    {
+        var model = statusModel;
+        return model != null && model.isRefreshing();
+    }
+
+    @Override
+    protected void addViewButtons(ToolBarManager toolBarManager)
+    {
+        refreshAction = new SimpleAction(Messages.LookThroughRefreshAction, a -> {
+            var model = statusModel;
+            if (model == null)
+                return;
+            model.refresh();
+            updateStatus();
+        });
+        refreshAction.setEnabled(canRefresh());
+        toolBarManager.add(refreshAction);
+
+        cancelAction = new SimpleAction(Messages.LookThroughCancelAction, a -> {
+            var model = statusModel;
+            if (model == null)
+                return;
+            model.cancel();
+            updateStatus();
+        });
+        cancelAction.setEnabled(isRefreshing());
+        toolBarManager.add(cancelAction);
+    }
+
+    @Override
+    protected void addPanePages(List<InformationPanePage> pages)
+    {
+        super.addPanePages(pages);
+        pages.add(new LookThroughDataStatusPane());
+    }
+
+    @Override
+    public void notifyModelUpdated()
+    {
+        updateStatus();
+    }
+
+    /**
+     * The information pane is created after the body, so the status pushed
+     * while building the body is dropped. Push it again once the view is
+     * complete.
+     */
+    @Override
+    protected void notifyViewCreationCompleted()
+    {
+        updateStatus();
     }
 
     private static final class RowContentProvider implements ITreeContentProvider

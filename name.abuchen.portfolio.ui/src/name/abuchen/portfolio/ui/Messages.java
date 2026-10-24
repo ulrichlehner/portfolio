@@ -1007,6 +1007,7 @@ public class Messages extends NLS
     public static String LabelYellowWhiteBlack;
     public static String LabelYes;
     public static String LabelYTD;
+    public static String LookThroughCancelAction;
     public static String LookThroughCategoryCashOrOther;
     public static String LookThroughCategoryUngroupedEquity;
     public static String LookThroughCategoryUnresolved;
@@ -1025,6 +1026,7 @@ public class Messages extends NLS
     public static String LookThroughReasonMissingConversion;
     public static String LookThroughReasonMissingValuation;
     public static String LookThroughReasonUnsupportedNegativePosition;
+    public static String LookThroughRefreshAction;
     public static String LookThroughSourceDirect;
     public static String LookThroughSourceIndirect;
     public static String LookThroughStatusAgeFormatter;
@@ -1037,6 +1039,16 @@ public class Messages extends NLS
     public static String LookThroughStatusAttemptReceived;
     public static String LookThroughStatusAttemptUnavailable;
     public static String LookThroughStatusAttemptUnsupported;
+    public static String LookThroughStatusColumnAttempt;
+    public static String LookThroughStatusColumnDenominator;
+    public static String LookThroughStatusColumnFreshness;
+    public static String LookThroughStatusColumnFund;
+    public static String LookThroughStatusColumnHoldings;
+    public static String LookThroughStatusColumnProvider;
+    public static String LookThroughStatusColumnProviderRefreshed;
+    public static String LookThroughStatusColumnRetrieved;
+    public static String LookThroughStatusColumnRetry;
+    public static String LookThroughStatusColumnSourceData;
     public static String LookThroughStatusFresh;
     public static String LookThroughStatusHoldingsDate;
     public static String LookThroughStatusHoldingsUnavailable;
@@ -1044,6 +1056,9 @@ public class Messages extends NLS
     public static String LookThroughStatusLimitationSessionOnly;
     public static String LookThroughStatusModeDiskFailure;
     public static String LookThroughStatusNoAttempt;
+    public static String LookThroughStatusPaneEmpty;
+    public static String LookThroughStatusPaneTitle;
+    public static String LookThroughStatusPendingRefresh;
     public static String LookThroughStatusProviderAccount;
     public static String LookThroughStatusProviderRefreshedDate;
     public static String LookThroughStatusProviderRefreshedUnavailable;
