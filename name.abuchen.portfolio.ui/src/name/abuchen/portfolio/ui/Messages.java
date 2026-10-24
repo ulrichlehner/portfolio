@@ -1355,6 +1355,17 @@ public class Messages extends NLS
     public static String PrefTitleDivvyDiary;
     public static String PrefTitleEODHistoricalData;
     public static String PrefTitleExperimentalFeatures;
+    public static String PrefTitleEulerpool;
+    public static String PrefEulerpoolDescription;
+    public static String PrefEulerpoolSaveSecure;
+    public static String PrefEulerpoolUseSession;
+    public static String PrefEulerpoolRemove;
+    public static String PrefEulerpoolInvalidKey;
+    public static String PrefEulerpoolUnavailable;
+    public static String PrefEulerpoolDeletionFailed;
+    public static String PrefEulerpoolUnconfigured;
+    public static String PrefEulerpoolSecure;
+    public static String PrefEulerpoolSession;
     public static String PrefSiftingAPIKey;
     public static String PrefTitleFinnhub;
     public static String PrefTitleFormatting;
