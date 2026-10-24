@@ -102,3 +102,39 @@ They do not prove native platform unlocking or OS-keychain protection. Before
 release, verify encrypted setup/reopen, locked/unavailable storage, explicit
 session entry/restart, replacement and deletion in an isolated application on
 each supported platform. Use only synthetic keys and do not send live requests.
+
+## Composition persistence preference
+
+Each provider/account has a separate non-secret, application-local (instance-scope)
+composition persistence preference. It is keyed by `ProviderAccount`, stored outside the
+portfolio and outside credential storage, and exposed through
+`CompositionPersistencePreferences`. Tests use `CompositionPersistencePreferences.InMemory`;
+the desktop UI uses `EclipseCompositionPersistencePreferences`.
+
+The preference defaults to on, but effective persistence requires both the preference
+and the provider's `CompositionPersistencePolicy`. The policy may be permitted,
+prohibited or unverified. `CompositionPersistencePolicy.effectiveModeDetail(...)` reports
+both the mode (`PERSISTENT` or `SESSION_ONLY`) and the reason (`PERMITTED`,
+`USER_OPT_OUT`, `POLICY_PROHIBITED` or `POLICY_UNVERIFIED`). For Eulerpool the policy
+is currently `UNVERIFIED`, so the control is disabled and retained storage stays
+disabled regardless of the preference. The control becomes usable only after task 6.3
+verifies permission and retention and the application supplies a permitted policy.
+
+Turning persistence off immediately deletes only that account's retained files,
+invalidates pending disk writes and keeps the current in-memory analysis usable.
+Turning it on performs no retroactive write; only later successful refreshes may persist
+when policy also permits it. Other accounts and providers keep their settings and data.
+No preference change creates a cache directory while persistence is disabled.
+
+Session-only mode keeps compositions, enrichment mappings and derived exposure results in
+memory while PP runs and discards them at exit. It writes no provider payloads to caches,
+portfolio files, portable settings or diagnostic logs. After restart, initial retrieval is
+needed again and offline fund exposure remains unresolved until data becomes available.
+Refresh failures can retain a valid in-memory snapshot for the same session where permitted.
+
+The value is stored in the Eclipse instance scope under the UI bundle node
+(`name.abuchen.portfolio.ui`, key prefix `lookthrough.persistence.` followed by the
+hex-encoded provider and account identifiers), not in the portfolio or credential
+storage. The UI control is currently disabled because the Eulerpool persistence policy
+is unverified. Enabling retained storage requires both the provider policy to permit it
+and the user preference to be on.

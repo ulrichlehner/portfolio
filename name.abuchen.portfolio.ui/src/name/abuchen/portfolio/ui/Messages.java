@@ -1366,6 +1366,13 @@ public class Messages extends NLS
     public static String PrefEulerpoolUnconfigured;
     public static String PrefEulerpoolSecure;
     public static String PrefEulerpoolSession;
+    public static String PrefEulerpoolPersistence;
+    public static String PrefEulerpoolPersistenceModePersistent;
+    public static String PrefEulerpoolPersistenceModeSessionOnly;
+    public static String PrefEulerpoolPersistenceRetain;
+    public static String PrefEulerpoolPersistenceReasonPolicyProhibited;
+    public static String PrefEulerpoolPersistenceReasonPolicyUnverified;
+    public static String PrefEulerpoolPersistenceReasonUserOptOut;
     public static String PrefSiftingAPIKey;
     public static String PrefTitleFinnhub;
     public static String PrefTitleFormatting;

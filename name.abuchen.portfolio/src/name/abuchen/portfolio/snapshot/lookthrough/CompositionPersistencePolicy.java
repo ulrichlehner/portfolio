@@ -24,6 +24,15 @@ public record CompositionPersistencePolicy(ProviderAccount account, Permission p
         PERSISTENT, SESSION_ONLY
     }
 
+    public enum Reason
+    {
+        PERMITTED, USER_OPT_OUT, POLICY_PROHIBITED, POLICY_UNVERIFIED
+    }
+
+    public record EffectiveMode(StorageMode mode, Reason reason)
+    {
+    }
+
     public CompositionPersistencePolicy
     {
         Objects.requireNonNull(account);
@@ -38,7 +47,17 @@ public record CompositionPersistencePolicy(ProviderAccount account, Permission p
     /** An absent local preference defaults on only where policy permits it. */
     public StorageMode effectiveMode(Optional<Boolean> persistencePreference)
     {
-        return permission == Permission.PERMITTED && persistencePreference.orElse(true) ? StorageMode.PERSISTENT
-                        : StorageMode.SESSION_ONLY;
+        return effectiveModeDetail(persistencePreference).mode();
+    }
+
+    /** Reports both the effective mode and the reason for UI/integration code. */
+    public EffectiveMode effectiveModeDetail(Optional<Boolean> persistencePreference)
+    {
+        if (permission != Permission.PERMITTED)
+            return new EffectiveMode(StorageMode.SESSION_ONLY,
+                            permission == Permission.PROHIBITED ? Reason.POLICY_PROHIBITED : Reason.POLICY_UNVERIFIED);
+        if (!persistencePreference.orElse(true))
+            return new EffectiveMode(StorageMode.SESSION_ONLY, Reason.USER_OPT_OUT);
+        return new EffectiveMode(StorageMode.PERSISTENT, Reason.PERMITTED);
     }
 }
