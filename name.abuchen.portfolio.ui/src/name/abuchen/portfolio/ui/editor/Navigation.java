@@ -57,6 +57,7 @@ import name.abuchen.portfolio.ui.views.StatementOfAssetsView;
 import name.abuchen.portfolio.ui.views.currency.CurrencyView;
 import name.abuchen.portfolio.ui.views.dashboard.DashboardView;
 import name.abuchen.portfolio.ui.views.holdings.HoldingsPieChartView;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughView;
 import name.abuchen.portfolio.ui.views.payments.PaymentsView;
 import name.abuchen.portfolio.ui.views.settings.SettingsView;
 import name.abuchen.portfolio.ui.views.taxonomy.TaxonomyView;
@@ -493,6 +494,8 @@ public final class Navigation
 
         statementOfAssets.add(new Item(Messages.ClientEditorLabelChart, StatementOfAssetsHistoryView.class, true));
         statementOfAssets.add(new Item(Messages.ClientEditorLabelHoldings, HoldingsPieChartView.class, true));
+
+        section.add(new Item(Messages.LabelPortfolioLens, Images.SECURITY, LookThroughView.class));
 
         Item performance = new Item(Messages.ClientEditorLabelPerformance, DashboardView.class, true);
         section.add(performance);
