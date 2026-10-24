@@ -94,6 +94,7 @@ public class LookThroughStatusModelTest
         private final Map<FundRef, CompletableFuture<CompositionRefreshCoordinator.Refresh>> futures = new HashMap<>();
         private final List<FundRef> refreshes = new ArrayList<>();
         private final List<FundRef> reads = new ArrayList<>();
+        private final List<Boolean> modes = new ArrayList<>();
 
         @Override
         public CompositionRefreshCoordinator.Snapshot read(ProviderAccount account, CompositionInstrument fund)
@@ -107,6 +108,7 @@ public class LookThroughStatusModelTest
         public CompletableFuture<CompositionRefreshCoordinator.Refresh> refresh(ProviderAccount account,
                         CompositionInstrument fund, boolean manual)
         {
+            modes.add(manual);
             var ref = new FundRef(account, fund);
             refreshes.add(ref);
             var future = new CompletableFuture<CompositionRefreshCoordinator.Refresh>();
@@ -133,6 +135,21 @@ public class LookThroughStatusModelTest
     private static FundStatus first(Model model)
     {
         return model.funds().get(0);
+    }
+
+    @Test
+    public void testAutomaticPassUsesCadenceAndDoesNotStackWhileRefreshing()
+    {
+        var gateway = new RecordingGateway();
+        var source = new SourceStub();
+        var model = new LookThroughStatusModel(CLOCK, gateway, Runnable::run, source);
+        assertEquals(1, model.refreshAutomatically());
+        assertEquals(0, model.refreshAutomatically());
+        model.status();
+        model.status();
+        assertEquals(List.of(false), gateway.modes);
+        model.cancel();
+        assertFalse(model.isRefreshing());
     }
 
     @Test

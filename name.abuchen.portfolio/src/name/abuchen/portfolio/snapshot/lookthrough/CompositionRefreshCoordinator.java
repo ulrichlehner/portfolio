@@ -320,6 +320,11 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
             if (!item.getKey().account().equals(account))
                 continue;
             var entry = item.getValue();
+            if (entry.snapshot.latestAttempt().map(CompositionResult::status)
+                            .filter(status -> status == CompositionResult.Status.AUTHENTICATION_FAILED
+                                            || status == CompositionResult.Status.ENTITLEMENT_FAILED).isPresent())
+                entry.snapshot = new Snapshot(Optional.empty(), entry.snapshot.latestAttempt(),
+                                entry.snapshot.usableComposition(), entry.snapshot.resolutions());
             if (entry.pending != null)
                 finish(entry, entry.pending,
                                 new Refresh(Disposition.CONFIGURATION_CHANGED, entry.snapshot, Optional.empty()));

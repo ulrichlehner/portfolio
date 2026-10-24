@@ -47,12 +47,9 @@ import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
  * never triggers requests: building {@link LookThroughDataStatus} needs only
  * the memory-only {@code read} of the gateway, never this refresh method.
  * <p>
- * This manual path always refreshes with {@code manual = true}, which bypasses
- * only the coordinator cadence, never quota, backoff or suspension. The
- * automatic 24 hour cadence is deliberately not implemented in this increment:
- * a later automatic dispatcher would call this same method with a monitor and
- * a listener while the gateway passes {@code manual = false} to the
- * coordinator. Nothing in this class schedules, retries or polls.
+ * Manual refresh bypasses only cadence, never quota, backoff or suspension.
+ * Automatic eligibility passes use the same path with manual=false. The owning
+ * view schedules those passes independently of rendering.
  */
 public final class LookThroughRefreshController
 {
@@ -188,6 +185,11 @@ public final class LookThroughRefreshController
      */
     public int refresh(List<FundRef> funds, Monitor monitor, Listener listener)
     {
+        return refresh(funds, true, monitor, listener);
+    }
+
+    public int refresh(List<FundRef> funds, boolean manual, Monitor monitor, Listener listener)
+    {
         Objects.requireNonNull(funds);
         Objects.requireNonNull(monitor);
         Objects.requireNonNull(listener);
@@ -226,7 +228,7 @@ public final class LookThroughRefreshController
                 CompletableFuture<CompositionRefreshCoordinator.Refresh> future;
                 try
                 {
-                    future = gateway.refresh(fund.account(), fund.fund(), true);
+                    future = gateway.refresh(fund.account(), fund.fund(), manual);
                 }
                 catch (RuntimeException e)
                 {

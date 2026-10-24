@@ -52,9 +52,17 @@ conversion. They are never silently dropped.
 
 ## Refresh and provider requests
 
-Opening the view, redrawing it, resizing it, recalculating it or changing the
-selection sends **no request**. Only **Refresh composition data** requests data,
-and **Cancel refresh** ends the wait immediately.
+Select securities in a securities view, then open Portfolio Lens. Opening the
+analysis schedules initial retrieval when a credential is configured. While the
+view remains open, an eligibility pass runs every minute; actual automatic
+requests occur at most once per rolling 24 hours per fund. Redraws, resizing and
+recalculation perform memory-only reads and never request data.
+
+**Refresh composition data** requests a manual refresh, bypassing only the daily
+cadence. **Cancel refresh** ends the wait immediately; already queued provider
+work can still finish and retain permitted session data. Correcting a key allows
+requests to resume without restarting; the next automatic eligibility pass picks
+up the change, or you can request a manual refresh.
 
 Refresh candidates are the explicitly selected securities that carry an ISIN.
 Nothing else leaves the application: no quantities, balances, transactions,
@@ -64,7 +72,9 @@ ISIN would disclose the portfolio composition.
 
 The request budget is a conservative placeholder, not a published provider
 allowance: 100 requests per rolling 24 hours, a 15 minute backoff after a
-failure, and at most two pending requests. Enrichment lookups stay at zero,
+failure, shared across client windows. Selected funds are queued and admitted one
+at a time, rather than dropping the remainder when transport capacity is full.
+Concurrent requests for the same identifier coalesce. Enrichment lookups stay at zero,
 because no verified instrument evidence service exists and nothing is resolved
 from a guess. When the coordination knows the next possible attempt, the status
 shows a retry hint, for example after a rate limit or during the automatic
@@ -139,8 +149,11 @@ usable for the same session even if a later refresh fails.
 
 - Only funds that the provider covers can be decomposed. Unsupported and
   unavailable funds stay unresolved and keep the coverage partial.
-- Without a verified evidence service, no instrument is resolved from name
-  similarity or other guesses.
+- The current Eulerpool adapter has no verified classification/company evidence
+  service or validated allocation semantics. Current selected values are shown,
+  but remain unresolved in this development version. Successful requests alone
+  do not produce verified company exposure. Synthetic tests exercise the full
+  direct-plus-fund calculation path without weakening this gate.
 - Coverage is reported as the provider declares it. A reconciled sum or a
   rounded display never turns a partial result into complete coverage, and
   missing dates stay visible instead of being filled in.

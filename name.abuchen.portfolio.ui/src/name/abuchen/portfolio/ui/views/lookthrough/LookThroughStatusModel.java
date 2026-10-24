@@ -28,8 +28,8 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  * Rendering is always memory-only. {@link #status()} reads the retained
  * compositions through the gateway {@code read} operation and never submits a
  * request, so a redraw, a resize or a repeated call cannot cause provider
- * traffic. Only {@link #refresh()} starts or joins a coordinated request, and it
- * does so once per fund.
+ * traffic. Manual refresh and automatic eligibility passes start or join a
+ * coordinated request once per fund.
  * <p>
  * The status keeps the last refresh outcome per fund, so a failed attempt stays
  * visible next to the retained dates it did not replace. A newer refresh or a
@@ -109,6 +109,16 @@ public final class LookThroughStatusModel
      */
     public int refresh()
     {
+        return refresh(true);
+    }
+
+    public int refreshAutomatically()
+    {
+        return isRefreshing() ? 0 : refresh(false);
+    }
+
+    private int refresh(boolean manual)
+    {
         var current = source.current();
         if (current.isEmpty())
             return 0;
@@ -125,7 +135,7 @@ public final class LookThroughStatusModel
         dispatchingToken = token;
         try
         {
-            expected = controller.refresh(funds, () -> callToken != token, result -> arrived(token, result));
+            expected = controller.refresh(funds, manual, () -> callToken != token, result -> arrived(token, result));
         }
         finally
         {

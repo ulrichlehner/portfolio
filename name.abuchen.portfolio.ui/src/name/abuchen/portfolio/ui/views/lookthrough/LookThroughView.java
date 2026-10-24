@@ -2,6 +2,7 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,6 +23,9 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
 
+import name.abuchen.portfolio.money.CurrencyConverterImpl;
+import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
+import name.abuchen.portfolio.snapshot.ClientSnapshot;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.editor.AbstractFinanceView;
@@ -37,18 +41,25 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 
 /**
  * Read-only presentation of the look-through result. The view performs no
- * retrieval, holds no credentials and persists no analysis data. Supplying the
- * result, cancellable background jobs and the detailed data status are a later
- * increment.
+ * retrieval during rendering, holds no credentials and persists no analysis
+ * data. Initial/timed eligibility passes are independent of redraws.
  */
 public class LookThroughView extends AbstractFinanceView
 {
+    private static final int ELIGIBILITY_INTERVAL = 60_000;
+
     private final LookThroughViewPresenter presenter = new LookThroughViewPresenter();
 
     private Label scopeLabel;
     private Label denominatorLabel;
     private Label completenessLabel;
     private TreeViewer viewer;
+
+    private final Runnable automaticRefresh = this::automaticRefresh;
+    private volatile boolean disposed;
+
+    @Inject
+    private ExchangeRateProviderFactory rates;
 
     private LookThroughResult result;
     private LookThroughCompositionSource compositionSource;
@@ -68,8 +79,7 @@ public class LookThroughView extends AbstractFinanceView
     }
 
     /**
-     * Supplies the exact calculation result, either through the eclipse context
-     * or by the wiring added in a later increment.
+     * Supplies an explicit calculation result, for example for a preview.
      */
     @Inject
     @org.eclipse.e4.core.di.annotations.Optional
@@ -92,6 +102,8 @@ public class LookThroughView extends AbstractFinanceView
 
     private void applyCompositionSource(LookThroughCompositionSource source)
     {
+        if (statusModel != null)
+            statusModel.cancel();
         this.compositionSource = source;
 
         if (source == null)
@@ -102,7 +114,13 @@ public class LookThroughView extends AbstractFinanceView
         }
 
         this.statusModel = new LookThroughStatusModel(Clock.systemDefaultZone(), source.gateway(),
-                        Display.getDefault()::asyncExec, () -> {
+                        runnable -> {
+                            if (!disposed)
+                                Display.getDefault().asyncExec(() -> {
+                                    if (!disposed)
+                                        runnable.run();
+                                });
+                        }, () -> {
                             var current = this.compositionSource;
                             if (current == null)
                                 return Optional.empty();
@@ -117,7 +135,37 @@ public class LookThroughView extends AbstractFinanceView
     /** Called on the user interface thread after every status change. */
     private void onStatusChanged()
     {
-        updateStatus();
+        recalculate();
+    }
+
+    private void recalculate()
+    {
+        if (disposed || compositionSource == null || rates == null || getClient() == null)
+            return;
+        var converter = new CurrencyConverterImpl(rates, getClient().getBaseCurrency());
+        var snapshot = ClientSnapshot.create(getClient(), converter, LocalDate.now());
+        var retained = compositionSource.funds().stream()
+                        .map(fund -> compositionSource.gateway().read(fund.account(), fund.fund())).toList();
+        setResult(new PortfolioLensAnalysis().calculate(snapshot, rates, compositionSource.securities(), retained));
+    }
+
+    private void automaticRefresh()
+    {
+        if (disposed)
+            return;
+        if (statusModel != null)
+            statusModel.refreshAutomatically();
+        Display.getDefault().timerExec(ELIGIBILITY_INTERVAL, automaticRefresh);
+    }
+
+    @Override
+    public void dispose()
+    {
+        disposed = true;
+        Display.getDefault().timerExec(-1, automaticRefresh);
+        if (statusModel != null)
+            statusModel.cancel();
+        super.dispose();
     }
 
     @Override
@@ -299,6 +347,8 @@ public class LookThroughView extends AbstractFinanceView
      */
     private void updateStatus()
     {
+        if (disposed)
+            return;
         var model = statusModel;
         setInformationPaneInput(model != null ? model.status().orElse(null) : null);
         updateActionEnablement();
@@ -364,7 +414,7 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     public void notifyModelUpdated()
     {
-        updateStatus();
+        recalculate();
     }
 
     /**
@@ -375,7 +425,8 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected void notifyViewCreationCompleted()
     {
-        updateStatus();
+        recalculate();
+        automaticRefresh();
     }
 
     private static final class RowContentProvider implements ITreeContentProvider

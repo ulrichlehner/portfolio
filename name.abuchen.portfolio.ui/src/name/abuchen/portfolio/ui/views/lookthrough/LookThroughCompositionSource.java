@@ -2,6 +2,8 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.util.List;
 
+import name.abuchen.portfolio.model.Security;
+
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.RefreshGateway;
 
@@ -23,6 +25,12 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  */
 public interface LookThroughCompositionSource
 {
+    /** Owned selection, including securities without provider identifiers. */
+    default List<Security> securities()
+    {
+        return List.of();
+    }
+
     RefreshGateway gateway();
 
     LookThroughDataStatus.GlobalFacts globalFacts();
