@@ -57,6 +57,10 @@ public class LookThroughView extends AbstractFinanceView
     private SimpleAction cancelAction;
     private String currencyCode = ""; //$NON-NLS-1$
 
+    @Inject
+    @org.eclipse.e4.core.di.annotations.Optional
+    private PortfolioLensCompositionService compositionService;
+
     @Override
     protected String getDefaultTitle()
     {
@@ -82,6 +86,11 @@ public class LookThroughView extends AbstractFinanceView
     @Inject
     @org.eclipse.e4.core.di.annotations.Optional
     public void setCompositionSource(LookThroughCompositionSource source)
+    {
+        applyCompositionSource(source);
+    }
+
+    private void applyCompositionSource(LookThroughCompositionSource source)
     {
         this.compositionSource = source;
 
@@ -144,6 +153,11 @@ public class LookThroughView extends AbstractFinanceView
         viewer.getTree().setLinesVisible(true);
         viewer.setContentProvider(new RowContentProvider());
         viewer.setInput(List.of());
+
+        // A source injected by the platform wins; otherwise the view uses the
+        // application wiring so the status and refresh work without extra setup.
+        if (compositionSource == null && compositionService != null)
+            applyCompositionSource(compositionService.sourceFor(getClient()));
 
         applyResult();
         updateStatus();

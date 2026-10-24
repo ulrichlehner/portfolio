@@ -209,7 +209,7 @@ public class LookThroughDataStatusTest
     }
 
     @Test
-    public void testRateLimitedRetryHintAppearsOnlyForRateLimitedAttemptsWithADate()
+    public void testRetryHintAppearsWheneverTheNextAttemptIsKnown()
     {
         var retryAt = NOW.plus(Duration.ofMinutes(30));
         var rateLimited = first(singleFundModel(Optional.empty(), //
@@ -222,9 +222,14 @@ public class LookThroughDataStatusTest
                         Optional.of(CompositionResult.Status.RATE_LIMITED), Optional.empty()));
         assertTrue(rateLimitedWithoutDate.retryText().isEmpty());
 
+        // A deferred quota or cadence has no attempt yet but still knows the date.
+        var deferredWithoutAttempt = first(singleFundModel(Optional.empty(), Optional.empty(), Optional.of(retryAt)));
+        assertTrue(deferredWithoutAttempt.retryText().isPresent());
+        assertEquals("No retrieval attempt has been made yet.", deferredWithoutAttempt.attemptText());
+
         var failedWithDate = first(singleFundModel(Optional.empty(), //
                         Optional.of(CompositionResult.Status.FAILED), Optional.of(retryAt)));
-        assertTrue(failedWithDate.retryText().isEmpty());
+        assertTrue(failedWithDate.retryText().isPresent());
     }
 
     @Test

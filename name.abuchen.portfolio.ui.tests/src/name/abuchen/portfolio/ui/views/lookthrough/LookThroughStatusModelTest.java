@@ -262,6 +262,25 @@ public class LookThroughStatusModelTest
     }
 
     @Test
+    public void testDeferredRefreshKeepsTheRetryHintVisible()
+    {
+        var gateway = new RecordingGateway();
+        var model = model(gateway, new SourceStub());
+        var retryAt = NOW.plus(Duration.ofHours(20));
+
+        assertEquals(1, model.refresh());
+        gateway.complete(FUND_A, new CompositionRefreshCoordinator.Refresh(
+                        CompositionRefreshCoordinator.Disposition.DEFERRED,
+                        snapshot(Optional.empty(), Optional.empty()), Optional.of(retryAt)));
+
+        var status = first(model.status().orElseThrow());
+        assertTrue(status.latestAttempt().isEmpty());
+        assertEquals(Optional.of(retryAt), status.retryAfter());
+        assertTrue(status.retryText().isPresent());
+        assertFalse(model.isRefreshing());
+    }
+
+    @Test
     public void testChangeListenerIsNotifiedPerOutcomeAndWhenIdle()
     {
         var gateway = new RecordingGateway();

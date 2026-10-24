@@ -343,14 +343,12 @@ public final class LookThroughDataStatus
     }
 
     /**
-     * The retry hint is shown only for a rate-limited attempt that carries a
-     * known retry instant; any other attempt shows no hint even with a date.
+     * The retry hint is shown whenever the coordination knows the next possible
+     * attempt, for example after a rate limit, a deferred quota or the automatic
+     * cadence. It does not depend on the last attempt having produced a status.
      */
     private static Optional<String> retryText(Clock clock, FundFacts facts)
     {
-        var rateLimited = facts.latestAttempt().filter(status -> status == CompositionResult.Status.RATE_LIMITED);
-        if (rateLimited.isEmpty())
-            return Optional.empty();
         return facts.retryAfter() //
                         .map(at -> MessageFormat.format(Messages.LookThroughStatusRetryHint, //
                                         Values.DateTime.format(LocalDateTime.ofInstant(at, clock.getZone()))));
