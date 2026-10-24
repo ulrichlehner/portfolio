@@ -27,6 +27,7 @@ import name.abuchen.portfolio.ui.preferences.CalendarPreferencePage;
 import name.abuchen.portfolio.ui.preferences.CoingeckoPreferencePage;
 import name.abuchen.portfolio.ui.preferences.DivvyDiaryPreferencePage;
 import name.abuchen.portfolio.ui.preferences.EODHistoricalDataPreferencePage;
+import name.abuchen.portfolio.ui.preferences.EulerpoolPreferencePage;
 import name.abuchen.portfolio.ui.preferences.ExperimentsPreferencePage;
 import name.abuchen.portfolio.ui.preferences.FinnhubPreferencePage;
 import name.abuchen.portfolio.ui.preferences.FormattingPreferencePage;
@@ -93,6 +94,7 @@ public class OpenPreferenceDialogHandler
         pm.addTo("api", new PreferenceNode("coingecko", new CoingeckoPreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
         pm.addTo("api", new PreferenceNode("divvydiary", new DivvyDiaryPreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
         pm.addTo("api", new PreferenceNode("eodhistoricaldata", new EODHistoricalDataPreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
+        pm.addTo("api", new PreferenceNode("eulerpool", new EulerpoolPreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
         pm.addTo("api", new PreferenceNode("finnhub", new FinnhubPreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
         pm.addTo("api", new PreferenceNode("leeway", new LeewayPreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
         pm.addTo("api", new PreferenceNode("mydividends24", new MyDividends24PreferencePage())); //$NON-NLS-1$ //$NON-NLS-2$
