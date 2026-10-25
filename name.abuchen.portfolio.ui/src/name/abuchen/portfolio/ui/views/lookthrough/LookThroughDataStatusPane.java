@@ -7,6 +7,7 @@ import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.jface.layout.GridLayoutFactory;
 import org.eclipse.jface.viewers.ArrayContentProvider;
 import org.eclipse.jface.viewers.ColumnLabelProvider;
+import org.eclipse.jface.viewers.ColumnViewerToolTipSupport;
 import org.eclipse.jface.viewers.TableViewer;
 import org.eclipse.jface.viewers.TableViewerColumn;
 import org.eclipse.swt.SWT;
@@ -66,6 +67,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         tableContainer.setLayout(new FillLayout());
 
         viewer = new TableViewer(tableContainer, SWT.FULL_SELECTION | SWT.H_SCROLL | SWT.V_SCROLL);
+        ColumnViewerToolTipSupport.enableFor(viewer);
         viewer.getTable().setHeaderVisible(true);
         viewer.getTable().setLinesVisible(true);
         viewer.setContentProvider(ArrayContentProvider.getInstance());
@@ -87,6 +89,8 @@ public class LookThroughDataStatusPane implements InformationPanePage
     private void addColumns()
     {
         addColumn(Messages.LookThroughStatusColumnFund, this::fundText);
+        addColumn(Messages.LookThroughStatusColumnAttempt, status -> status.attemptText());
+        addColumn(Messages.LookThroughStatusColumnRetry, status -> status.retryText().orElse("")); //$NON-NLS-1$
         addColumn(Messages.LookThroughStatusColumnProvider, status -> status.providerAccountText());
         addColumn(Messages.LookThroughStatusColumnRetrieved, status -> status.retrievalText().orElse("")); //$NON-NLS-1$
         addColumn(Messages.LookThroughStatusColumnProviderRefreshed,
@@ -95,8 +99,6 @@ public class LookThroughDataStatusPane implements InformationPanePage
         addColumn(Messages.LookThroughStatusColumnFreshness, status -> status.freshnessText().orElse("")); //$NON-NLS-1$
         addColumn(Messages.LookThroughStatusColumnSourceData, status -> status.sourceDataText().orElse("")); //$NON-NLS-1$
         addColumn(Messages.LookThroughStatusColumnDenominator, status -> status.denominatorText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnAttempt, status -> status.attemptText());
-        addColumn(Messages.LookThroughStatusColumnRetry, status -> status.retryText().orElse("")); //$NON-NLS-1$
     }
 
     private void addColumn(String title, Function<FundStatus, String> text)
@@ -107,6 +109,12 @@ public class LookThroughDataStatusPane implements InformationPanePage
 
         new TableViewerColumn(viewer, column).setLabelProvider(new ColumnLabelProvider()
         {
+            @Override
+            public String getToolTipText(Object element)
+            {
+                return text.apply((FundStatus) element);
+            }
+
             @Override
             public String getText(Object element)
             {

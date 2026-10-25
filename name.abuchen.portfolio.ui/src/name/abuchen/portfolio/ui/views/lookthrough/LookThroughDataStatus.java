@@ -91,13 +91,21 @@ public final class LookThroughDataStatus
      */
     public record FundFacts(CompositionInstrument fund, ProviderAccount account, Optional<FundComposition> retained,
                     Optional<CompositionResult.Status> latestAttempt, Optional<Instant> retryAfter,
-                    boolean refreshPending)
+                    boolean refreshPending, Optional<FundComposition> sourcePreview)
     {
+        public FundFacts(CompositionInstrument fund, ProviderAccount account, Optional<FundComposition> retained,
+                        Optional<CompositionResult.Status> latestAttempt, Optional<Instant> retryAfter,
+                        boolean refreshPending)
+        {
+            this(fund, account, retained, latestAttempt, retryAfter, refreshPending, Optional.empty());
+        }
+
         public FundFacts
         {
             Objects.requireNonNull(fund);
             Objects.requireNonNull(account);
             Objects.requireNonNull(retained);
+            Objects.requireNonNull(sourcePreview);
             Objects.requireNonNull(latestAttempt);
             Objects.requireNonNull(retryAfter);
         }
@@ -203,7 +211,8 @@ public final class LookThroughDataStatus
         return new FundFacts(fund, account, //
                         snapshot.usableComposition(), //
                         snapshot.latestAttempt().map(CompositionResult::status), //
-                        retryAfter, refreshPending);
+                        retryAfter, refreshPending,
+                        snapshot.latestAttempt().flatMap(CompositionResult::composition));
     }
 
     private static StorageMode storageMode(CompositionStore.State storeState)
@@ -261,15 +270,19 @@ public final class LookThroughDataStatus
         var providerAccountText = MessageFormat.format(Messages.LookThroughStatusProviderAccount, //
                         facts.account().providerId(), facts.account().accountId());
 
-        var retrieval = facts.retained().map(FundComposition::provenance) //
+        // Prefer retained calculation data. If none is usable yet, show the
+        // received source's own provenance and declarations without admitting
+        // it to the exposure calculation.
+        var displayed = facts.retained().or(facts::sourcePreview);
+        var retrieval = displayed.map(FundComposition::provenance) //
                         .map(CompositionProvenance::retrievedAt);
-        var providerRefreshedAt = facts.retained().map(FundComposition::provenance) //
+        var providerRefreshedAt = displayed.map(FundComposition::provenance) //
                         .flatMap(CompositionProvenance::providerRefreshedAt);
         var providerRefreshedText = optionalInstantText(clock, providerRefreshedAt,
                         Messages.LookThroughStatusProviderRefreshedUnavailable,
                         Messages.LookThroughStatusProviderRefreshedDate);
 
-        var holdingsEffectiveDate = facts.retained().map(FundComposition::provenance) //
+        var holdingsEffectiveDate = displayed.map(FundComposition::provenance) //
                         .flatMap(CompositionProvenance::holdingsEffectiveDate);
         var holdingsText = Optional.of(holdingsEffectiveDate //
                         .map(date -> MessageFormat.format(Messages.LookThroughStatusHoldingsDate, //
@@ -280,10 +293,10 @@ public final class LookThroughDataStatus
         var age = age(clock, retrieval);
         var freshnessText = freshness.map(value -> ageText(value, age.orElse(Duration.ZERO)));
 
-        var sourceDataText = facts.retained() //
+        var sourceDataText = displayed //
                         .map(FundComposition::completeness) //
                         .map(LookThroughDataStatus::sourceDataText);
-        var denominatorText = facts.retained() //
+        var denominatorText = displayed //
                         .map(FundComposition::denominator) //
                         .map(LookThroughDataStatus::denominatorText);
 

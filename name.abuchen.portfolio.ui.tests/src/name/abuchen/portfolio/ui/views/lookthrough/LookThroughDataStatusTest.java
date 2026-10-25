@@ -86,6 +86,25 @@ public class LookThroughDataStatusTest
     }
 
     @Test
+    public void testUnvalidatedSourceShowsRetrievalWithoutBecomingRetainedData()
+    {
+        var preview = composition(RETRIEVAL, Optional.of(PROVIDER_REFRESHED), Optional.empty(), PARTIAL,
+                        FundComposition.Denominator.UNKNOWN);
+        var snapshot = new CompositionRefreshCoordinator.Snapshot(Optional.of(RETRIEVAL),
+                        Optional.of(new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(preview),
+                                        Optional.empty())), Optional.empty(), List.of());
+        var facts = LookThroughDataStatus.fundFacts(snapshot, ACCOUNT, FUND, false);
+        assertTrue(facts.retained().isEmpty());
+        var status = first(model(CompositionStore.State.SESSION_ONLY,
+                        CompositionPersistencePolicy.StorageMode.SESSION_ONLY,
+                        CompositionPersistencePolicy.Reason.POLICY_UNVERIFIED, List.of(facts)));
+        assertEquals(Optional.of(RETRIEVAL), status.retrieval());
+        assertEquals(Optional.of(PROVIDER_REFRESHED), status.providerRefreshedAt());
+        assertEquals(Optional.of(CompositionResult.Status.RECEIVED), status.latestAttempt());
+        assertTrue(status.denominatorText().isPresent());
+    }
+
+    @Test
     public void testHoldingsDateUnavailableKeepsProviderRefreshAndRetrievalDistinct()
     {
         var status = first(singleFundModel(

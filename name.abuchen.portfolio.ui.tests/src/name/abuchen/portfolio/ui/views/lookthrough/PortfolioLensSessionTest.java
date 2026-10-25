@@ -126,6 +126,8 @@ public class PortfolioLensSessionTest
             if (!credentials.getBearerToken(account).equals(Optional.of("synthetic-valid")))
                 return new CompositionResult(CompositionResult.Status.AUTHENTICATION_FAILED, Optional.empty(),
                                 Optional.empty());
+            if (fund.identifiers().equals(instrument("missing").identifiers()))
+                return new CompositionResult(CompositionResult.Status.UNAVAILABLE, Optional.empty(), Optional.empty());
             var composition = new FundComposition(new CompositionProvenance(account, fund, clock.instant(),
                             Optional.empty(), Optional.empty()),
                             unknownDenominator ? FundComposition.Denominator.UNKNOWN
@@ -153,6 +155,29 @@ public class PortfolioLensSessionTest
         var result = session.refresh(ACCOUNT, instrument(id), manual);
         executor.drain();
         return result.join();
+    }
+
+    @Test
+    public void testUnavailableAndUnvalidatedRowsDoNotStallSelection()
+    {
+        configure();
+        unknownDenominator = true;
+        var first = session.refresh(ACCOUNT, instrument("missing"), true);
+        var second = session.refresh(ACCOUNT, instrument("fund-two"), true);
+        var third = session.refresh(ACCOUNT, instrument("fund-three"), true);
+        executor.drain();
+        assertEquals(3, calls.size());
+        assertEquals(CompositionResult.Status.UNAVAILABLE,
+                        first.join().snapshot().latestAttempt().orElseThrow().status());
+        for (var result : List.of(second, third))
+        {
+            assertEquals(Disposition.COMPLETED, result.join().disposition());
+            assertEquals(CompositionResult.Status.RECEIVED,
+                            result.join().snapshot().latestAttempt().orElseThrow().status());
+            assertTrue(result.join().snapshot().usableComposition().isEmpty());
+        }
+        assertEquals(Disposition.DEFERRED, refresh("fund-two", true).disposition());
+        assertEquals(3, calls.size());
     }
 
     @Test
