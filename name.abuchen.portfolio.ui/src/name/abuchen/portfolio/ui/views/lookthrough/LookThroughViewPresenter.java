@@ -163,8 +163,6 @@ public final class LookThroughViewPresenter
         // portfolio shows the explicit empty state instead of zero rows.
         if (!empty)
         {
-            if (result.value(Category.UNVERIFIED_HOLDING).signum() > 0)
-                rows.add(categoryRow(result, Category.UNVERIFIED_HOLDING, denominatorAmount));
             rows.add(categoryRow(result, Category.UNGROUPED_EQUITY, denominatorAmount));
             rows.add(categoryRow(result, Category.CASH_OR_OTHER, denominatorAmount));
             rows.add(categoryRow(result, Category.UNRESOLVED, denominatorAmount));
@@ -184,10 +182,23 @@ public final class LookThroughViewPresenter
                         completeness,
                         completeness == Completeness.COMPLETE ? Messages.LookThroughLabelComplete
                                         : Messages.LookThroughLabelPartial,
-                        result.value(Category.UNVERIFIED_HOLDING).signum() > 0
+                        hasUnverifiedAllocationSemantics(result)
                                         ? Optional.of(Messages.LookThroughLabelUnverifiedNotice)
                                         : Optional.empty(),
                         empty, rows);
+    }
+
+    /**
+     * The issuer breakdown is shown from provider-classified constituents, but
+     * the underlying weights are only validated when every composition on a
+     * path declares total-fund-NAV semantics.
+     */
+    private boolean hasUnverifiedAllocationSemantics(LookThroughResult result)
+    {
+        return result.contributions().stream() //
+                        .flatMap(contribution -> contribution.path().stream()) //
+                        .map(LookThroughContribution.Edge::composition) //
+                        .anyMatch(validation -> !validation.semanticsVerified());
     }
 
     /** Formats an exact minor-unit value for display only, never for decisions. */
@@ -203,8 +214,13 @@ public final class LookThroughViewPresenter
                         .map(contribution -> contributionRow(contribution, denominator)) //
                         .toList();
         var share = share(company.total(), denominator);
-        return new CompanyRow(company.identity().value(), company.direct(), company.indirect(), company.total(), share,
-                        shareText(share), contributions);
+        // The company group is keyed by issuer identifier; the issuer label is
+        // the instrument name supplied by the provider or the owned security.
+        var label = company.contributions().stream() //
+                        .map(contribution -> contribution.instrument().label()) //
+                        .filter(value -> !value.isBlank()).findFirst().orElse(company.identity().value());
+        return new CompanyRow(label, company.direct(), company.indirect(), company.total(), share, shareText(share),
+                        contributions);
     }
 
     private ContributionRow contributionRow(LookThroughContribution contribution, Optional<BigDecimal> denominator)

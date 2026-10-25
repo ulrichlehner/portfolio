@@ -435,37 +435,36 @@ public class LookThroughEngineTest
     }
 
     @Test
-    public void testUnverifiedWeightsBecomeTheirOwnCategoryWithoutCompanyClaim()
+    public void testUnverifiedWeightsExpandIntoClassifiedIssuers()
     {
         var fund = instrument("unverified-fund", AssetType.FUND, null);
-        var position = new CompositionInstrument("Synthetic position", Map.of("ISIN", "SYNTHETIC-CHILD"));
+        var issuer = instrument("issuer", AssetType.EQUITY, "SYNTH-CO");
         holding(fund, 10000);
-        unverifiedComposition(fund, row(position, "0.6"), row(position, "0.4"));
+        unverifiedComposition(fund, row(issuer, "0.6"), row(issuer, "0.4"));
 
         var result = calculate();
 
         reconciles(result);
-        assertTrue(result.companies().isEmpty());
-        amount("10000", result.value(Category.UNVERIFIED_HOLDING));
+        assertEquals(1, result.companies().size());
+        amount("10000", result.value(Category.COMPANY));
         amount("0", result.value(Category.UNRESOLVED));
+        assertTrue(result.value(Category.UNVERIFIED_HOLDING).signum() == 0);
         assertTrue(result.contributions().stream()
-                        .allMatch(row -> row.category() == Category.UNVERIFIED_HOLDING
-                                        && row.reason() == Reason.PROVIDER_WEIGHT_UNVERIFIED
-                                        && !row.isDirect()));
+                        .allMatch(row -> row.category() == Category.COMPANY && !row.isDirect()));
     }
 
     @Test
     public void testUnverifiedShortfallStaysUnresolvedAndIsNeverNormalized()
     {
         var fund = instrument("unverified-short", AssetType.FUND, null);
-        var position = new CompositionInstrument("Synthetic position", Map.of("ISIN", "SYNTHETIC-CHILD"));
+        var issuer = instrument("issuer", AssetType.EQUITY, "SYNTH-CO");
         holding(fund, 10000);
-        unverifiedComposition(fund, row(position, "0.75"));
+        unverifiedComposition(fund, row(issuer, "0.75"));
 
         var result = calculate();
 
         reconciles(result);
-        amount("7500", result.value(Category.UNVERIFIED_HOLDING));
+        amount("7500", result.value(Category.COMPANY));
         amount("2500", result.value(Category.UNRESOLVED));
         assertEquals(Reason.NAV_SHORTFALL, result.contributions().getLast().reason());
     }
@@ -474,14 +473,14 @@ public class LookThroughEngineTest
     public void testArithmeticallyInvalidUnverifiedSourceStaysEntirelyUnresolved()
     {
         var fund = instrument("unverified-overfull", AssetType.FUND, null);
-        var position = new CompositionInstrument("Synthetic position", Map.of("ISIN", "SYNTHETIC-CHILD"));
+        var issuer = instrument("issuer", AssetType.EQUITY, "SYNTH-CO");
         holding(fund, 10000);
-        unverifiedComposition(fund, row(position, "0.9"), row(position, "0.2"));
+        unverifiedComposition(fund, row(issuer, "0.9"), row(issuer, "0.2"));
 
         var result = calculate();
 
         reconciles(result);
-        amount("0", result.value(Category.UNVERIFIED_HOLDING));
+        amount("0", result.value(Category.COMPANY));
         amount("10000", result.value(Category.UNRESOLVED));
         assertEquals(Reason.UNUSABLE_COMPOSITION, result.contributions().getFirst().reason());
     }

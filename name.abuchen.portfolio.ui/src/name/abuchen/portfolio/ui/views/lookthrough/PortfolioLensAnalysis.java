@@ -29,10 +29,10 @@ import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuationAdapter;
 final class PortfolioLensAnalysis
 {
     LookThroughResult calculate(ClientSnapshot snapshot, ExchangeRateProviderFactory rates, List<Security> securities,
-                    List<Snapshot> retained)
+                    List<Snapshot> retained, List<InstrumentEvidence> heldClassifications)
     {
         var valuation = new SecuritiesValuationAdapter(rates).value(snapshot, securities);
-        var evidence = new ArrayList<InstrumentEvidence>();
+        var evidence = new ArrayList<InstrumentEvidence>(heldClassifications);
         retained.forEach(value -> value.resolutions().stream()
                         .forEach(resolution -> evidence.addAll(resolution.evidence())));
         retained.forEach(value -> {

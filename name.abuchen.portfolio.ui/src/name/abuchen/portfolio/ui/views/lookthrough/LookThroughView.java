@@ -147,7 +147,8 @@ public class LookThroughView extends AbstractFinanceView
         var snapshot = ClientSnapshot.create(getClient(), converter, LocalDate.now());
         var retained = compositionSource.funds().stream()
                         .map(fund -> compositionSource.gateway().read(fund.account(), fund.fund())).toList();
-        setResult(new PortfolioLensAnalysis().calculate(snapshot, rates, compositionSource.securities(), retained));
+        setResult(new PortfolioLensAnalysis().calculate(snapshot, rates, compositionSource.securities(), retained,
+                        compositionSource.classifications()));
     }
 
     private void automaticRefresh()

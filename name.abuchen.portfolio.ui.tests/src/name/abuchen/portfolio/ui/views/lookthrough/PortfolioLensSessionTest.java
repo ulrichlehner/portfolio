@@ -137,7 +137,8 @@ public class PortfolioLensSessionTest
             return new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(composition), Optional.empty());
         }
     };
-    private final PortfolioLensSession session = new PortfolioLensSession(provider, credentials, clock, executor);
+    private final PortfolioLensSession session = new PortfolioLensSession(provider,
+                    (account, instrument) -> Optional.empty(), credentials, clock, executor);
 
     private static CompositionInstrument instrument(String id)
     {

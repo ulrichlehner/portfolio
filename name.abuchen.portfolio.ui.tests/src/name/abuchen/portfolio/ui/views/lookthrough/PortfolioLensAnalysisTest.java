@@ -84,7 +84,7 @@ public class PortfolioLensAnalysisTest
     {
         var selected = holding("SYNTHETIC-ONE", 6);
         holding("SYNTHETIC-UNSELECTED", 20);
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(selected), List.of());
+        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(selected), List.of(), List.of());
         assertEquals(Money.of("EUR", 6000), result.denominator().orElseThrow());
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("6000")));
         assertEquals(1, result.contributions().size());
@@ -104,7 +104,8 @@ public class PortfolioLensAnalysisTest
                         List.of(new FundComposition.Constituent(child, Optional.of("0.5"))));
         var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.of(composition),
                         Optional.empty(), List.of(resolution(child, AssetType.EQUITY)));
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(share, fund), List.of(retained));
+        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(share, fund), List.of(retained),
+                        List.of());
         assertEquals(Money.of("EUR", 10000), result.denominator().orElseThrow());
         var company = result.companies().getFirst();
         assertEquals(0, company.direct().compareTo(new BigDecimal("6000")));
@@ -114,7 +115,7 @@ public class PortfolioLensAnalysisTest
     }
 
     @Test
-    public void testUnverifiedProviderWeightsAreShownWithoutCompanyClaim()
+    public void testUnverifiedCompositionExpandsIntoClassifiedConstituents()
     {
         var fund = holding("SYNTHETIC-FUND", 4);
         var parent = PortfolioLensCompositionService.instrumentOf(fund);
@@ -122,23 +123,25 @@ public class PortfolioLensAnalysisTest
         var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
                         Optional.empty()), FundComposition.Denominator.UNKNOWN,
                         FundComposition.ExposureBasis.UNKNOWN, FundComposition.Completeness.UNKNOWN,
-                        List.of(new FundComposition.Constituent(child, Optional.of("0.5"))));
+                        List.of(new FundComposition.Constituent(child, Optional.of("1"))));
         var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.empty(),
-                        Optional.of(composition), List.of());
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained));
-        assertEquals(0, result.value(Category.UNVERIFIED_HOLDING).compareTo(new BigDecimal("2000")));
-        assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("2000")));
-        assertTrue(result.companies().isEmpty());
+                        Optional.of(composition), List.of(resolution(child, AssetType.EQUITY)));
+        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
+                        List.of());
+        assertEquals(0, result.value(Category.UNVERIFIED_HOLDING).compareTo(new BigDecimal("0")));
+        assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("0")));
+        assertEquals(1, result.companies().size());
+        assertEquals(0, result.companies().getFirst().indirect().compareTo(new BigDecimal("4000")));
     }
 
     @Test
     public void testChangedPricesRecalculateWithoutStoredDerivedResults()
     {
         var security = holding("SYNTHETIC-SHARE", 6);
-        var first = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of());
+        var first = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
         security.addPrice(new SecurityPrice(LocalDate.parse("2026-01-30"),
                         Values.Quote.factorize(20)));
-        var second = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of());
+        var second = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
         assertEquals(Money.of("EUR", 6000), first.denominator().orElseThrow());
         assertEquals(Money.of("EUR", 12000), second.denominator().orElseThrow());
     }

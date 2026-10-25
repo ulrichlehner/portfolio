@@ -223,7 +223,7 @@ public class LookThroughViewPresenterTest
         var result = result();
         var model = model(result);
 
-        var companyRow = company(model, "SYNTH-CO");
+        var companyRow = company(model, "Synthetic company");
         amount("3000", companyRow.direct());
         amount("9000", companyRow.indirect());
         amount("12000", companyRow.total());
@@ -278,7 +278,7 @@ public class LookThroughViewPresenterTest
         assertEquals(0, BigDecimal.ZERO.compareTo(category(model, Category.CASH_OR_OTHER).value()));
         assertEquals(0, BigDecimal.ZERO.compareTo(category(model, Category.UNRESOLVED).value()));
 
-        var companyRow = company(model, "SYNTH-ONE");
+        var companyRow = company(model, "Synthetic company");
         amount("1000", companyRow.total());
         amount("1", companyRow.share().orElseThrow());
     }
@@ -313,7 +313,7 @@ public class LookThroughViewPresenterTest
 
         assertEquals(SecuritiesValuation.Reason.MISSING_VALUATION,
                         excluded(model, "Synthetic unpriced holding").exclusion());
-        amount("10000", company(model, "SYNTH-PRICED").total());
+        amount("10000", company(model, "Synthetic priced-company").total());
     }
 
     @Test
@@ -334,7 +334,7 @@ public class LookThroughViewPresenterTest
         assertEquals(SecuritiesValuation.Reason.UNSUPPORTED_NEGATIVE_POSITION,
                         excluded(model, "Synthetic negative holding").exclusion());
 
-        var companyRow = company(model, "SYNTH-POS");
+        var companyRow = company(model, "Synthetic positive");
         amount("10000", companyRow.total());
         amount("1", companyRow.share().orElseThrow());
         assertEquals(0, BigDecimal.ZERO.compareTo(category(model, Category.UNRESOLVED).value()));
@@ -351,7 +351,7 @@ public class LookThroughViewPresenterTest
         var result = result();
         var model = model(result);
 
-        var companyRow = company(model, "SYNTH-ROUND");
+        var companyRow = company(model, "Synthetic rounding-company");
         amount("9999.99", companyRow.total());
         amount("0.01", category(model, Category.UNRESOLVED).value());
         assertEquals(LookThroughViewPresenter.Completeness.PARTIAL, model.completeness());
@@ -375,7 +375,7 @@ public class LookThroughViewPresenterTest
         amount("0", category(model, Category.UNRESOLVED).value());
         amount("0", category(model, Category.UNGROUPED_EQUITY).value());
         amount("0", category(model, Category.CASH_OR_OTHER).value());
-        amount("10000", company(model, "SYNTH-ALL-IN").total());
+        amount("10000", company(model, "Synthetic all-in-company").total());
         assertTrue(model.denominator().isPresent());
         amount(Long.toString(result.valuation().valuedSubset().getAmount()), result.total());
         assertEquals(LookThroughViewPresenter.Completeness.PARTIAL, model.completeness());
@@ -391,7 +391,7 @@ public class LookThroughViewPresenterTest
         var model = model(result());
 
         amount("0", category(model, Category.UNRESOLVED).value());
-        amount("10000", company(model, "SYNTH-VERIFIED").total());
+        amount("10000", company(model, "Synthetic verified-company").total());
         assertEquals(LookThroughViewPresenter.Completeness.COMPLETE, model.completeness());
     }
 
@@ -405,7 +405,7 @@ public class LookThroughViewPresenterTest
         var labels = model(result()).rows().stream().filter(CompanyRow.class::isInstance).map(CompanyRow.class::cast)
                         .map(CompanyRow::label).toList();
 
-        assertEquals(List.of("SYNTH-C", "SYNTH-A", "SYNTH-B"), labels);
+        assertEquals(List.of("Synthetic company-c", "Synthetic company-a", "Synthetic company-b"), labels);
     }
 
     @Test
@@ -436,26 +436,22 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
-    public void testUnverifiedProviderPositionsGetTheirOwnCategoryAndNotice()
+    public void testUnverifiedCompositionShowsIssuerWithNoticeAndPartialCoverage()
     {
         hold("unverified-fund", "Synthetic unverified fund", AssetType.FUND, null, 1, 100);
         var fund = instrument("unverified-fund", AssetType.FUND, null);
-        var position = new CompositionInstrument("Synthetic provider position",
-                        Map.of("synthetic:instrument", "provider-position"));
+        var issuer = instrument("issuer", AssetType.EQUITY, "SYNTH-CO");
         var provenance = new CompositionProvenance(SOURCE, fund, RETRIEVED, Optional.empty(), Optional.empty());
         unverified.put(resolutions.get(fund).instrument().orElseThrow(), new FundComposition(provenance,
-                        Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN, List.of(row(position, "1"))));
+                        Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN, List.of(row(issuer, "1"))));
 
         var model = model(result());
 
         assertEquals(LookThroughViewPresenter.Completeness.PARTIAL, model.completeness());
         assertTrue(model.unverifiedNotice().isPresent());
-        var category = category(model, Category.UNVERIFIED_HOLDING);
-        amount("10000", category.value());
-        assertEquals(1, category.details().size());
-        assertEquals("Synthetic provider position", category.details().getFirst().label());
-        assertEquals(LookThroughViewPresenter.RowKind.DETAIL, category.details().getFirst().kind());
-        assertTrue(model.rows().stream().noneMatch(CompanyRow.class::isInstance));
+        var company = company(model, "Synthetic issuer");
+        amount("10000", company.total());
+        assertEquals(LookThroughViewPresenter.RowKind.COMPANY, company.kind());
     }
 
     @Test

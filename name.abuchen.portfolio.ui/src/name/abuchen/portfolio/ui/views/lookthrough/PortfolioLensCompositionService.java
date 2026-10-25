@@ -21,6 +21,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePreferences;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.HeldSecurities;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.ui.preferences.EclipseCompositionPersistencePreferences;
 import name.abuchen.portfolio.ui.preferences.EulerpoolPreferencePage;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.GlobalFacts;
@@ -49,7 +50,7 @@ public final class PortfolioLensCompositionService
         });
         private static final EulerpoolFundCompositionProvider PROVIDER = new EulerpoolFundCompositionProvider(
                         account -> CompositionCredentials.local().getBearerToken(account));
-        private static final PortfolioLensSession SESSION = new PortfolioLensSession(PROVIDER,
+        private static final PortfolioLensSession SESSION = new PortfolioLensSession(PROVIDER, PROVIDER,
                         CompositionCredentials.local(), Clock.systemUTC(), EXECUTOR);
     }
 
@@ -114,6 +115,12 @@ public final class PortfolioLensCompositionService
         public List<FundRef> funds()
         {
             return fundsOf(securities());
+        }
+
+        @Override
+        public List<InstrumentEvidence> classifications()
+        {
+            return Backend.SESSION.classifications();
         }
     }
 }

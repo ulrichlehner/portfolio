@@ -124,17 +124,28 @@ public final class LookThroughEngine
             {
                 verified = compositions.containsKey(identity);
                 var composition = verified ? compositions.get(identity) : unverifiedCompositions.get(identity);
-                var cached = validations.get(identity);
-                if (cached == null)
+                if (!verified && (composition.exposureBasis() == FundComposition.ExposureBasis.SYNTHETIC_COLLATERAL
+                                || composition.exposureBasis() == FundComposition.ExposureBasis.DERIVATIVE_EXPOSURE))
                 {
-                    cached = verified ? validator.validate(composition) : validator.validateArithmetic(composition);
-                    validations.put(identity, cached);
-                }
-                validation = Optional.of(cached);
-                if (!provenanceMatches(composition, verified, instrument, identity))
-                    failure = Reason.COMPOSITION_IDENTITY_MISMATCH;
-                else if (!validation.orElseThrow().isUsable())
+                    // Synthetic or derivative exposure is never expanded as if it
+                    // were physical holdings, even when weights are arithmetic.
                     failure = Reason.UNUSABLE_COMPOSITION;
+                }
+                else
+                {
+                    var cached = validations.get(identity);
+                    if (cached == null)
+                    {
+                        cached = verified ? validator.validate(composition)
+                                        : validator.validateArithmetic(composition);
+                        validations.put(identity, cached);
+                    }
+                    validation = Optional.of(cached);
+                    if (!provenanceMatches(composition, verified, instrument, identity))
+                        failure = Reason.COMPOSITION_IDENTITY_MISMATCH;
+                    else if (!validation.orElseThrow().isUsable())
+                        failure = Reason.UNUSABLE_COMPOSITION;
+                }
             }
             else
                 failure = Reason.MISSING_COMPOSITION;
@@ -152,21 +163,11 @@ public final class LookThroughEngine
             for (var row : validated.rows())
             {
                 var child = row.source().instrument();
+                var childResolution = Optional.ofNullable(resolutions.get(child));
                 var nextPath = new ArrayList<>(path);
-                if (verified)
-                {
-                    var childResolution = Optional.ofNullable(resolutions.get(child));
-                    nextPath.add(new Edge(validated, row.sourceIndex(), row.weight(), childResolution));
-                    visit(origin, originResolution, child, childResolution, value.multiply(row.weight()), nextPath,
-                                    nextAncestors);
-                }
-                else
-                {
-                    nextPath.add(new Edge(validated, row.sourceIndex(), row.weight(), Optional.empty()));
-                    add(origin, originResolution, child, Optional.empty(), value.multiply(row.weight()), nextPath,
-                                    Category.UNVERIFIED_HOLDING, Reason.PROVIDER_WEIGHT_UNVERIFIED,
-                                    Optional.of(validated));
-                }
+                nextPath.add(new Edge(validated, row.sourceIndex(), row.weight(), childResolution));
+                visit(origin, originResolution, child, childResolution, value.multiply(row.weight()), nextPath,
+                                nextAncestors);
             }
             var shortfall = validated.shortfall().orElseThrow();
             if (shortfall.signum() > 0)

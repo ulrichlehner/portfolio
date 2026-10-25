@@ -39,6 +39,12 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Completeness;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Constituent;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Denominator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentClassifier;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Assertion;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.AssetType;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Provenance;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.util.OnlineHelper;
 import name.abuchen.portfolio.util.WebAccess;
@@ -55,7 +61,7 @@ import name.abuchen.portfolio.util.WebAccess;
  * storage/session entry integration must supply CredentialAccess separately.
  */
 @SuppressWarnings("nls")
-public final class EulerpoolFundCompositionProvider implements FundCompositionProvider
+public final class EulerpoolFundCompositionProvider implements FundCompositionProvider, InstrumentClassifier
 {
     public static final String ID = "EULERPOOL";
     public static final String SYMBOL = "eulerpool:symbol";
@@ -159,6 +165,148 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
         {
             // No response bodies, exception messages, headers or keys escape.
             return failure(Status.FAILED);
+        }
+    }
+
+    @Override
+    public Optional<InstrumentEvidence> classify(ProviderAccount account, CompositionInstrument instrument)
+                    throws IOException
+    {
+        checkAccount(account);
+        Objects.requireNonNull(instrument);
+        var query = identifier(instrument);
+        if (query.isEmpty())
+            return Optional.empty();
+        try
+        {
+            var token = credentials.getBearerToken(account);
+            if (token.isEmpty() || !token.get().matches("[A-Za-z0-9._~+/-]+=*"))
+                return Optional.empty();
+
+            // The equity search classifies stocks, ETFs and funds. It returns
+            // nothing for bonds, which are confirmed through the bond list.
+            var search = transport.get(URI.create("https://api.eulerpool.com/api/1/equity/search?q=" + query.get()),
+                            "Bearer " + token.get());
+            if (search.status() == 200)
+            {
+                var evidence = parseSearch(account, instrument, query.get(), search.body());
+                if (evidence.isPresent())
+                    return evidence;
+            }
+            var bonds = transport.get(URI.create("https://api.eulerpool.com/api/1/bonds/list?q=" + query.get()),
+                            "Bearer " + token.get());
+            if (bonds.status() == 200 && isBond(query.get(), bonds.body()))
+                return bondEvidence(account, instrument, query.get());
+            return Optional.empty();
+        }
+        catch (IOException | RuntimeException e)
+        {
+            // Classification is display enrichment: a failure leaves the
+            // instrument unclassified instead of failing the refresh.
+            return Optional.empty();
+        }
+    }
+
+    private Optional<String> identifier(CompositionInstrument instrument)
+    {
+        var isin = instrument.identifiers().get("ISIN");
+        var value = isin != null && !isin.isBlank() ? isin : instrument.identifiers().get(SYMBOL);
+        if (value == null || value.isBlank() || !value.matches("[A-Za-z0-9][A-Za-z0-9._-]*"))
+            return Optional.empty();
+        return Optional.of(value.trim());
+    }
+
+    private Optional<InstrumentEvidence> parseSearch(ProviderAccount account, CompositionInstrument instrument,
+                    String query, String body)
+    {
+        if (body == null || body.isBlank())
+            return Optional.empty();
+        try (var reader = new JsonReader(new StringReader(body)))
+        {
+            reader.setStrictness(Strictness.STRICT);
+            var json = JsonParser.parseReader(reader);
+            if (!json.isJsonObject() || reader.peek() != JsonToken.END_DOCUMENT)
+                return Optional.empty();
+            var results = json.getAsJsonObject().get("results");
+            if (results == null || !results.isJsonArray())
+                return Optional.empty();
+            String fallbackType = null;
+            for (var element : results.getAsJsonArray())
+            {
+                if (!element.isJsonObject())
+                    continue;
+                var row = element.getAsJsonObject();
+                var isin = text(row, "isin").orElse(null);
+                var type = text(row, "type").orElse(null);
+                if (type == null)
+                    continue;
+                if (isin != null && isin.equalsIgnoreCase(query))
+                    return buildEvidence(account, instrument, query, type, "equity/search"); //$NON-NLS-1$
+                if (fallbackType == null)
+                    fallbackType = type;
+            }
+            if (fallbackType != null && results.getAsJsonArray().size() == 1)
+                return buildEvidence(account, instrument, query, fallbackType, "equity/search"); //$NON-NLS-1$
+            return Optional.empty();
+        }
+        catch (IOException | RuntimeException e)
+        {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<InstrumentEvidence> buildEvidence(ProviderAccount account, CompositionInstrument instrument,
+                    String query, String type, String reference)
+    {
+        var assetType = switch (type.toLowerCase())
+        {
+            case "stock", "share", "equity" -> AssetType.EQUITY;
+            case "etf", "fund", "mutual fund", "mutual_fund" -> AssetType.FUND;
+            case "bond", "fixed income", "crypto", "cryptocurrency" -> AssetType.OTHER_NON_EQUITY;
+            default -> null;
+        };
+        if (assetType == null)
+            return Optional.empty();
+        var provenance = new Provenance(account, reference, clock.instant());
+        var identity = new Identifier("ISIN", query);
+        return Optional.of(new InstrumentEvidence(instrument.identifiers(), new Assertion<>(identity, provenance),
+                        Optional.of(new Assertion<>(assetType, provenance)),
+                        assetType == AssetType.EQUITY ? Optional.of(new Assertion<>(identity, provenance))
+                                        : Optional.empty()));
+    }
+
+    private Optional<InstrumentEvidence> bondEvidence(ProviderAccount account, CompositionInstrument instrument,
+                    String query)
+    {
+        var provenance = new Provenance(account, "bonds/list", clock.instant());
+        var identity = new Identifier("ISIN", query);
+        return Optional.of(new InstrumentEvidence(instrument.identifiers(), new Assertion<>(identity, provenance),
+                        Optional.of(new Assertion<>(AssetType.OTHER_NON_EQUITY, provenance)), Optional.empty()));
+    }
+
+    private boolean isBond(String query, String body)
+    {
+        if (body == null || body.isBlank())
+            return false;
+        try (var reader = new JsonReader(new StringReader(body)))
+        {
+            reader.setStrictness(Strictness.STRICT);
+            var json = JsonParser.parseReader(reader);
+            if (!json.isJsonObject() || reader.peek() != JsonToken.END_DOCUMENT)
+                return false;
+            var data = json.getAsJsonObject().get("data");
+            if (data == null || !data.isJsonArray())
+                return false;
+            for (var element : data.getAsJsonArray())
+            {
+                if (element.isJsonObject() && query.equalsIgnoreCase(text(element.getAsJsonObject(), "isin").orElse("")))
+                    return true;
+            }
+            return false;
+        }
+        catch (IOException | RuntimeException e)
+        {
+            return false;
         }
     }
 

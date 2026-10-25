@@ -29,6 +29,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Completeness;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Denominator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.AssetType;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 
 /** All payloads and identifiers here are invented, not copied provider data. */
@@ -330,5 +331,73 @@ public class EulerpoolFundCompositionProviderTest
         var wrong = new ProviderAccount("OTHER-PROVIDER", "local-one");
         assertThrows(IllegalArgumentException.class, () -> provider.getPersistencePolicy(wrong));
         assertThrows(IllegalArgumentException.class, () -> provider.getComposition(wrong, FUND));
+    }
+
+    private Optional<name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence> classify(CompositionInstrument instrument,
+                    EulerpoolFundCompositionProvider.Transport transport) throws IOException
+    {
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN), transport, CLOCK);
+        return provider.classify(ACCOUNT, instrument);
+    }
+
+    @Test
+    public void testClassifyStockAsGroupedEquity() throws IOException
+    {
+        var instrument = new CompositionInstrument("APPLE", Map.of("ISIN", "SYNTHETIC100"));
+        var evidence = classify(instrument, (uri, authorization) -> new Response(200,
+                        "{\"count\":1,\"results\":[{\"name\":\"Apple\",\"isin\":\"SYNTHETIC100\","
+                                        + "\"ticker\":\"APL\",\"type\":\"stock\",\"currency\":null}]}",
+                        Optional.empty())).orElseThrow();
+        assertEquals(AssetType.EQUITY, evidence.classification().orElseThrow().value());
+        assertTrue(evidence.company().isPresent());
+        assertEquals("SYNTHETIC100", evidence.company().orElseThrow().value().value());
+    }
+
+    @Test
+    public void testClassifyEtfAsFundWithoutCompany() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented fund", Map.of("ISIN", "SYNTHETIC001"));
+        var evidence = classify(instrument, (uri, authorization) -> new Response(200,
+                        "{\"count\":1,\"results\":[{\"name\":\"Fund\",\"isin\":\"SYNTHETIC001\","
+                                        + "\"ticker\":\"F.T\",\"type\":\"etf\",\"currency\":null}]}",
+                        Optional.empty())).orElseThrow();
+        assertEquals(AssetType.FUND, evidence.classification().orElseThrow().value());
+        assertTrue(evidence.company().isEmpty());
+    }
+
+    @Test
+    public void testClassifyBondThroughBondListFallback() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented bond", Map.of("ISIN", "SYNTHETICBND1"));
+        var evidence = classify(instrument, (uri, authorization) -> {
+            if (uri.getPath().equals("/api/1/equity/search"))
+                return new Response(200, "{\"count\":0,\"results\":[]}", Optional.empty());
+            return new Response(200, "{\"data\":[{\"isin\":\"SYNTHETICBND1\",\"figi\":null,"
+                            + "\"description\":\"Bond\",\"exchange\":null}],\"total\":1,\"offset\":0,\"limit\":50}",
+                            Optional.empty());
+        }).orElseThrow();
+        assertEquals(AssetType.OTHER_NON_EQUITY, evidence.classification().orElseThrow().value());
+        assertTrue(evidence.company().isEmpty());
+    }
+
+    @Test
+    public void testClassifyUnknownReturnsEmpty() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented unknown", Map.of("ISIN", "SYNTHETICUNK1"));
+        var evidence = classify(instrument, (uri, authorization) -> new Response(200,
+                        "{\"count\":0,\"results\":[]}", Optional.empty()));
+        assertTrue(evidence.isEmpty());
+    }
+
+    @Test
+    public void testClassifyIgnoresTransportErrorsAndMissingIdentifiers() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented", Map.of("ISIN", "SYNTHETICERR1"));
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> {
+                            throw new IOException("transport");
+                        }, CLOCK);
+        assertTrue(provider.classify(ACCOUNT, instrument).isEmpty());
+        assertTrue(provider.classify(ACCOUNT, new CompositionInstrument("No id", Map.of())).isEmpty());
     }
 }

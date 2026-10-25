@@ -253,8 +253,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
         var validator = new CompositionValidator();
         var received = result.composition();
         var usable = received.filter(value -> validator.validate(value).isUsable());
-        // Arithmetic acceptance only, explicitly unverified. Never persisted and
-        // never enriched; it is displayed for transparency in this session.
+        // Arithmetic acceptance only, explicitly unverified. Never persisted as
+        // validated data; it is classified and displayed in this session.
         var unverified = usable.isEmpty()
                         ? received.filter(value -> validator.validateArithmetic(value).isUsable())
                         : Optional.<FundComposition>empty();
@@ -275,7 +275,11 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                                 : Instant.MIN;
             }
         }
-        var resolutions = usable.map(value -> enrich(key.account(), value, entry, future));
+        // Classify the constituents of a received composition (verified or
+        // unverified) so the analysis can resolve them to issuers.
+        var source = usable.isPresent() ? usable : unverified;
+        var resolutions = source.isPresent() ? enrich(key.account(), source.orElseThrow(), entry, future)
+                        : new ArrayList<InstrumentResolution>();
         synchronized (this)
         {
             if (!active(entry, future))
@@ -290,7 +294,7 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
             else if (unverified.isPresent())
                 nextUnverified = unverified;
             entry.snapshot = new Snapshot(entry.snapshot.attemptedAt(), Optional.of(result), nextUsable,
-                            nextUnverified, resolutions.orElse(entry.snapshot.resolutions()));
+                            nextUnverified, resolutions);
             finish(entry, future, new Refresh(Disposition.COMPLETED, entry.snapshot, Optional.empty()));
         }
     }

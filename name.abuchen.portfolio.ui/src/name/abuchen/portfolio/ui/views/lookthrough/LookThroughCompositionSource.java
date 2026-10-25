@@ -3,6 +3,7 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 import java.util.List;
 
 import name.abuchen.portfolio.model.Security;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.RefreshGateway;
@@ -35,4 +36,14 @@ public interface LookThroughCompositionSource
     LookThroughDataStatus.GlobalFacts globalFacts();
 
     List<FundRef> funds();
+
+    /**
+     * Session-cached classifications of held instruments, from the provider.
+     * Empty while no classification has run; the analysis resolves held
+     * instruments from this evidence.
+     */
+    default List<InstrumentEvidence> classifications()
+    {
+        return List.of();
+    }
 }

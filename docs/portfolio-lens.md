@@ -31,8 +31,7 @@ result is only labelled complete when all of the following hold:
 - a denominator is present,
 - the valuation of the held securities is complete and every position is
   supported,
-- the unresolved value is exactly zero, no equity is left ungrouped and no
-  unverified provider position is present,
+- the unresolved value is exactly zero and no equity is left ungrouped,
 - every composition used along a path declares itself complete.
 
 A reconciled sum of 100 percent or a rounded display is not evidence for
@@ -40,19 +39,21 @@ completeness. The non-company categories stay visible even when they are zero,
 because an absent row would look like complete coverage:
 
 - **Ungrouped equity** is an instrument that is known to be an equity but not
-  mapped to a company. The value is part of the exposure, only the company
+  mapped to an issuer. The value is part of the exposure, only the issuer
   grouping is missing.
 - **Unresolved** is a value that could not be attributed: the instrument could
   not be classified, no composition is available, the provider does not support
   the fund, or a composition reports a shortfall.
-- **Unverified provider positions** are the positions of a fund whose provider
-  weights are arithmetically usable but whose allocation semantics are not
-  validated. They are listed individually with their weight-derived value and a
-  note, so the portfolio can be inspected. They are never described as verified
-  company exposure and they keep coverage partial.
 
 **Cash or other assets** collects positions that are classified as neither an
-equity nor a fund, for example cash-like or other asset types.
+equity nor a fund, for example bonds, cash-like or other asset types.
+
+Fund constituents are classified by the provider into issuers, funds and other
+assets and grouped by their security identifier. Each issuer appears as a
+**Company / instrument** row with direct, indirect and total exposure. The
+breakdown is therefore an issuer-level x-ray; the notice below the header states
+that the underlying fund weights are not validated, so coverage stays partial
+even when every position is resolved.
 
 Held positions that the valuation excludes are listed separately with their
 reason: unsupported negative position, missing valuation or missing currency
@@ -75,7 +76,8 @@ up the change, or you can request a manual refresh.
 Refresh candidates are the held securities that carry an ISIN, across all
 portfolios. Nothing else leaves the application: no quantities, balances,
 transactions, holdings lists or portfolio uploads. Only the identifiers of held
-instruments are sent; securities without a position are never requested.
+instruments and their fund constituents are sent; securities without a position
+are never requested.
 
 The portfolio model does not distinguish a fund from an individual stock either,
 so the first refresh asks the provider once per held ISIN. An instrument that the
@@ -85,15 +87,16 @@ instruments. Restarting Portfolio Performance clears that memory. An instrument
 failure never suspends the account, only transport, authentication, entitlement
 and rate-limit failures do.
 
-The request budget is a conservative placeholder, not a published provider
-allowance: 100 requests per rolling 24 hours, a 15 minute backoff after a
-failure, shared across client windows. Held instruments are queued and admitted
-one at a time, rather than dropping the remainder when transport capacity is
-full. Concurrent requests for the same identifier coalesce. Enrichment lookups
-stay at zero, because no verified instrument evidence service exists and nothing
-is resolved from a guess. When the coordination knows the next possible attempt,
-the status shows a retry hint, for example after a rate limit or during the
-automatic cadence.
+To build the issuer x-ray, each fund constituent and each held instrument is
+classified through the provider's security search and, where needed, its bond
+list. Classifications are cached for the session and shared across overlapping
+funds, so an identifier is looked up once. The request budget is a conservative
+placeholder, not a published provider allowance: 20,000 units per rolling 24
+hours, a 15 minute backoff after a failure, shared across client windows. Held
+instruments are queued and admitted one at a time, rather than dropping the
+remainder when transport capacity is full. When the coordination knows the next
+possible attempt, the status shows a retry hint, for example after a rate limit
+or during the automatic cadence.
 
 A refresh that is superseded by a newer one ends as cancelled, so a caller never
 waits for an outcome that will not arrive.
@@ -169,18 +172,17 @@ usable for the same session even if a later refresh fails.
 
 - Only funds that the provider covers can be decomposed. Unsupported and
   unavailable funds stay unresolved and keep the coverage partial.
-- The current Eulerpool adapter has no verified classification or company
-  identity service and no validated allocation semantics. Provider weights are
-  therefore shown as unverified positions with their own category, never as
-  validated company exposure. Coverage stays partial and the provider evidence
-  gate remains open.
-- Directly held equities are shown at instrument level when no classification
-  evidence exists. They are not merged into a guessed company.
-- The provider also offers fund profile and instrument search endpoints. They can
-  confirm fund-level metadata and an instrument type, but they do not supply
-  per-constituent classification or company identity, and one lookup per
-  constituent would exceed any reasonable request budget. They are deliberately
-  not used for company grouping.
+- Constituent classification comes from the provider's security search and bond
+  list. Positions without any identifier, such as cash rows, and positions the
+  provider does not classify remain unresolved. They are a small residual and
+  never a guessed mapping.
+- Issuers are grouped by their security identifier, not by a company graph.
+  Two share classes of the same company (for example two listing lines) appear
+  as two issuer rows. The column is therefore labelled company / instrument.
+- The allocation semantics of the fund weights are not validated: the provider
+  reports no denominator, exposure basis, completeness or holdings-effective
+  date. The breakdown is an issuer-level x-ray from provider data, not a
+  validated NAV decomposition, and coverage stays partial.
 - Coverage is reported as the provider declares it. A reconciled sum or a
   rounded display never turns a partial result into complete coverage, and
   missing dates stay visible instead of being filled in.
