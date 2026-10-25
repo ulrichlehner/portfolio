@@ -476,4 +476,34 @@ public class EulerpoolFundCompositionProviderTest
         assertEquals(name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution.State.GROUPED_EQUITY,
                         resolved.state());
     }
+
+    @Test
+    public void testLegitimateDuplicateRowsAreKept()
+    {
+        var fund = new CompositionInstrument("Synthetic fund", Map.of("ISIN", "SYNTHETIC-DUP"));
+        var result = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(200, "[" //
+                        + "{\"isin\":\"SYNTHETIC-DUP1\",\"name\":\"Same instrument\","
+                        + "\"percent\":30.0,\"share\":1000,\"value\":300,\"updated_at\":\"2026-01-01T00:00:00Z\"},"
+                        + "{\"isin\":\"SYNTHETIC-DUP1\",\"name\":\"Same instrument\","
+                        + "\"percent\":70.0,\"share\":2000,\"value\":700,\"updated_at\":\"2026-01-01T00:00:00Z\"}]",
+                        Optional.empty()), CLOCK).getComposition(ACCOUNT, fund);
+        assertEquals(CompositionResult.Status.RECEIVED, result.status());
+        assertEquals(2, result.composition().orElseThrow().constituents().size());
+    }
+
+    @Test
+    public void testRepeatedSecurityWithSameNominalAndDifferentWeightIsMalformed()
+    {
+        var fund = new CompositionInstrument("Synthetic fund", Map.of("ISIN", "SYNTHETIC-DUP"));
+        var result = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(200, "[" //
+                        + "{\"isin\":\"SYNTHETIC-DUP1\",\"name\":\"Same instrument\","
+                        + "\"percent\":60.0,\"share\":1000,\"value\":600,\"updated_at\":\"2026-01-01T00:00:00Z\"},"
+                        + "{\"isin\":\"SYNTHETIC-DUP1\",\"name\":\"Same instrument\","
+                        + "\"percent\":40.0,\"share\":1000,\"value\":400,\"updated_at\":\"2026-01-01T00:00:00Z\"}]",
+                        Optional.empty()), CLOCK).getComposition(ACCOUNT, fund);
+        assertEquals(CompositionResult.Status.MALFORMED_RESPONSE, result.status());
+        assertTrue(result.composition().isEmpty());
+    }
 }

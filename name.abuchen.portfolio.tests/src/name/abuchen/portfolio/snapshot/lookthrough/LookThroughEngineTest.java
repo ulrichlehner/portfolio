@@ -501,4 +501,33 @@ public class LookThroughEngineTest
         amount("10000", result.value(Category.COMPANY));
         amount("0", result.value(Category.UNRESOLVED));
     }
+
+    @Test
+    public void testBroadFundWithIdentifierlessRowsReconcilesAtRealisticSize()
+    {
+        var fund = instrument("broad-fund", AssetType.FUND, null);
+        holding(fund, 1_000_000);
+        var rows = new ArrayList<Constituent>();
+        // 1250 identified equities plus 16 cash-like rows without identifiers,
+        // the shape of a broad global fund. Weights are exact decimals.
+        for (int index = 0; index < 1250; index++)
+            rows.add(row(instrument("equity-" + index, AssetType.EQUITY, "CO-" + index), "0.00079936"));
+        for (int index = 0; index < 16; index++)
+            rows.add(new Constituent(new CompositionInstrument("Synthetic cash " + index, Map.of()), Optional.of("0.00005")));
+        composition(fund, rows.toArray(Constituent[]::new));
+
+        var result = calculate();
+
+        reconciles(result);
+        assertEquals(1266, result.contributions().size());
+        assertEquals(1250, result.companies().size());
+        amount("999200", result.value(Category.COMPANY));
+        // Missing identifiers stay unresolved: they are not invented as cash.
+        amount("800", result.value(Category.UNRESOLVED));
+        amount("0", result.value(Category.CASH_OR_OTHER));
+        assertEquals(16, result.contributions().stream()
+                        .filter(contribution -> contribution.reason() == Reason.MISSING_RESOLUTION
+                                        && contribution.resolution().isEmpty())
+                        .count());
+    }
 }

@@ -401,6 +401,13 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
 
             var constituents = new ArrayList<Constituent>();
             var refreshTimes = new ArrayList<Optional<Instant>>();
+            // A provider answer that repeats one security with the same nominal
+            // amount but a different weight is internally inconsistent. Observed
+            // in a bond fund whose response merged two vintages or share classes:
+            // identical ISIN and share, different percent and value. Such rows
+            // must not be summed as if they were two legitimate positions.
+            var nominalByInstrument = new HashMap<String, BigDecimal>();
+            var weightByInstrument = new HashMap<String, BigDecimal>();
             for (var element : rows)
             {
                 var row = element.getAsJsonObject();
@@ -420,9 +427,14 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
                 text(row, "assetType");
                 text(row, "etf_symbol");
                 text(row, "logo");
-                number(row, "share");
+                var nominal = number(row, "share");
                 number(row, "value");
-                var weight = number(row, "percent").map(value -> value.movePointLeft(2).toPlainString());
+                var percent = number(row, "percent");
+                if (ids.containsKey("ISIN") && nominal.isPresent() && percent.isPresent()
+                                && inconsistentDuplicate(ids.get("ISIN"), nominal.get(), percent.get(),
+                                                nominalByInstrument, weightByInstrument))
+                    return failure(Status.MALFORMED_RESPONSE);
+                var weight = percent.map(value -> value.movePointLeft(2).toPlainString());
                 constituents.add(new Constituent(new CompositionInstrument(text(row, "name").orElse(""), ids),
                                 weight));
                 refreshTimes.add(text(row, "updated_at").map(Instant::parse));
@@ -440,6 +452,16 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
         {
             return failure(Status.MALFORMED_RESPONSE);
         }
+    }
+
+    private static boolean inconsistentDuplicate(String isin, BigDecimal nominal,
+                    BigDecimal percent, Map<String, BigDecimal> nominalByInstrument,
+                    Map<String, BigDecimal> weightByInstrument)
+    {
+        var previousNominal = nominalByInstrument.putIfAbsent(isin, nominal);
+        var previousWeight = weightByInstrument.putIfAbsent(isin, percent);
+        return previousNominal != null && previousWeight != null && previousNominal.compareTo(nominal) == 0
+                        && previousWeight.compareTo(percent) != 0;
     }
 
     private static Optional<String> text(JsonObject row, String field)
