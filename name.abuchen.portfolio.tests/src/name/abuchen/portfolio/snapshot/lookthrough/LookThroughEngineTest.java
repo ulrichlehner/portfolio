@@ -484,4 +484,21 @@ public class LookThroughEngineTest
         amount("10000", result.value(Category.UNRESOLVED));
         assertEquals(Reason.UNUSABLE_COMPOSITION, result.contributions().getFirst().reason());
     }
+
+    @Test
+    public void testRoundingExcessCompositionReconcilesExactly()
+    {
+        var fund = instrument("rounding-fund", AssetType.FUND, null);
+        var first = instrument("first", AssetType.EQUITY, "CO-FIRST");
+        var second = instrument("second", AssetType.EQUITY, "CO-SECOND");
+        holding(fund, 10000);
+        // Published weights of a real fund can sum to just above 100 percent.
+        unverifiedComposition(fund, row(first, "0.6"), row(second, "0.4000000001"));
+
+        var result = calculate();
+
+        reconciles(result);
+        amount("10000", result.value(Category.COMPANY));
+        amount("0", result.value(Category.UNRESOLVED));
+    }
 }

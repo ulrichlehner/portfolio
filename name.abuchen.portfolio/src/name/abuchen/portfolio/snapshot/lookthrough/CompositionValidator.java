@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.snapshot.lookthrough;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -107,7 +108,31 @@ public final class CompositionValidator
                             semanticsVerified);
         var shortfall = BigDecimal.ONE.subtract(total);
         if (shortfall.signum() < 0)
+        {
+            // Accepted publishing-rounding excess. Remove it proportionally so the
+            // expansion reconciles exactly with the fund value. The correction is
+            // at most one millionth and source rows stay unchanged; genuine
+            // overfull data was rejected above and is never rescaled.
+            var scale = BigDecimal.ONE.divide(total, MathContext.DECIMAL128);
+            var scaled = new ArrayList<ValidatedRow>(rows.size());
+            var sum = BigDecimal.ZERO;
+            for (var row : rows)
+            {
+                var weight = row.weight().multiply(scale);
+                sum = sum.add(weight);
+                scaled.add(new ValidatedRow(row.sourceIndex(), row.source(), weight));
+            }
+            var largest = 0;
+            for (int index = 1; index < scaled.size(); index++)
+                if (scaled.get(index).weight().compareTo(scaled.get(largest).weight()) > 0)
+                    largest = index;
+            var residual = BigDecimal.ONE.subtract(sum);
+            var adjusted = scaled.get(largest);
+            scaled.set(largest,
+                            new ValidatedRow(adjusted.sourceIndex(), adjusted.source(), adjusted.weight().add(residual)));
+            rows = scaled;
             shortfall = BigDecimal.ZERO;
+        }
         return new CompositionValidationResult(source, rows, Optional.of(shortfall), diagnostics,
                         semanticsVerified);
     }

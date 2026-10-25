@@ -236,9 +236,15 @@ public class CompositionValidatorTest
         assertTrue(result.isUsable());
         assertTrue(result.diagnostics().isEmpty());
         assertEquals(3, result.rows().size());
-        assertEquals(new BigDecimal("0.5"), result.rows().get(0).weight());
-        assertEquals(new BigDecimal("0.0000000001"), result.rows().get(2).weight());
         assertEquals(BigDecimal.ZERO, result.shortfall().orElseThrow());
+        // The decomposition reconciles exactly to one after the rounding correction.
+        var sum = result.rows().stream().map(CompositionValidationResult.ValidatedRow::weight)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, BigDecimal.ONE.compareTo(sum));
+        // Source rows keep the published weights; the correction is tiny.
+        assertEquals(Optional.of("0.5"), source.constituents().get(0).weight());
+        assertTrue(result.rows().get(0).weight().subtract(new BigDecimal("0.5")).abs()
+                        .compareTo(new BigDecimal("0.000001")) < 0);
     }
 
     @Test
