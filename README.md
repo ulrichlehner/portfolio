@@ -1,5 +1,12 @@
 # About
 
+> **Experimental development fork:** Portfolio Lens changes on this branch are
+> not an official Portfolio Performance release. Provider permissions and data
+> completeness are not fully verified. Before compiling or running these changes,
+> independently ensure compliance with your provider's terms and account
+> entitlements. No provider data or credentials are distributed; persistent
+> provider-data caching is disabled. See [Portfolio Lens documentation](docs/portfolio-lens.md).
+
 [Portfolio Performance](https://www.portfolio-performance.info): Track and evaluate the performance of your investment portfolio across stocks, cryptocurrencies, and other assets.
 
 ## Status
