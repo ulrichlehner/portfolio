@@ -254,6 +254,23 @@ public class CompositionRefreshCoordinatorTest
     }
 
     @Test
+    public void testMissingInstrumentDoesNotDelayOtherFunds()
+    {
+        try (var coordinator = coordinator())
+        {
+            response = (requested, source) -> failed(CompositionResult.Status.UNAVAILABLE);
+            coordinator.refresh(account, fund, true);
+            executor.runAll();
+            assertEquals(Disposition.DEFERRED, coordinator.refresh(account, fund, true).join().disposition());
+            response = this::received;
+            var next = coordinator.refresh(account, instrument("other-fund"), true);
+            executor.runAll();
+            assertEquals(Disposition.COMPLETED, next.join().disposition());
+            assertEquals(2, calls.get());
+        }
+    }
+
+    @Test
     public void testFailureAndInvalidSnapshotsKeepPriorUsableDataAndDates()
     {
         try (var coordinator = coordinator())
@@ -281,6 +298,10 @@ public class CompositionRefreshCoordinatorTest
             assertEquals(Denominator.UNKNOWN, coordinator.read(account, fund).latestAttempt().orElseThrow()
                             .composition().orElseThrow().denominator());
             assertEquals(Disposition.DEFERRED, coordinator.refresh(account, fund, true).join().disposition());
+            response = this::received;
+            var next = coordinator.refresh(account, instrument("other-fund"), true);
+            executor.runAll();
+            assertEquals(Disposition.COMPLETED, next.join().disposition());
         }
     }
 

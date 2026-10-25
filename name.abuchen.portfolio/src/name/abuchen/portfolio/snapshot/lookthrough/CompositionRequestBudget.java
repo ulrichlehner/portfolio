@@ -54,6 +54,12 @@ public final class CompositionRequestBudget
         this.capacity = capacity;
     }
 
+    /** Delay used by the coordinator for an instrument-specific failure. */
+    public Duration getFailureBackoff()
+    {
+        return failureBackoff;
+    }
+
     private AccountState account(ProviderAccount account)
     {
         if (!providerId.equals(account.providerId()))
@@ -131,7 +137,7 @@ public final class CompositionRequestBudget
                 if (deadline.isAfter(providerRetryAt))
                     providerRetryAt = deadline;
             }
-            case RECEIVED, CANCELLED -> {
+            case RECEIVED, CANCELLED, UNAVAILABLE, UNSUPPORTED -> {
                 // Success cannot clear an overlapping failure or suspension.
             }
             default -> state.retryAt = current.plus(failureBackoff);

@@ -91,6 +91,7 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
     private static final class Entry
     {
         private Snapshot snapshot = emptySnapshot();
+        private Instant retryAt = Instant.MIN;
         private CompletableFuture<Refresh> pending;
     }
 
@@ -179,6 +180,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
         var next = budget.nextAvailable(account, compositionCost);
         if (next.isEmpty() || next.orElseThrow().isAfter(clock.instant()))
             return Optional.of(new Refresh(Disposition.DEFERRED, entry.snapshot, next));
+        if (entry.retryAt.isAfter(clock.instant()))
+            return Optional.of(new Refresh(Disposition.DEFERRED, entry.snapshot, Optional.of(entry.retryAt)));
         var cadence = entry.snapshot.attemptedAt().map(value -> value.plus(Duration.ofHours(24)));
         if (!manual && cadence.filter(value -> value.isAfter(clock.instant())).isPresent())
             return Optional.of(new Refresh(Disposition.CADENCE, entry.snapshot, cadence));
@@ -231,8 +234,16 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
         var usable = result.composition().filter(value -> new CompositionValidator().validate(value).isUsable());
         synchronized (this)
         {
-            if (active(entry, future) && result.composition().isPresent() && usable.isEmpty())
-                budget.record(key.account(), failure(CompositionResult.Status.MALFORMED_RESPONSE));
+            if (active(entry, future))
+            {
+                // Missing coverage or unknown allocation semantics concern this
+                // instrument, not the account's other funds. Transport/auth/rate
+                // failures still follow the shared budget policy above.
+                boolean localFailure = result.status() == CompositionResult.Status.UNAVAILABLE
+                                || result.status() == CompositionResult.Status.UNSUPPORTED
+                                || result.composition().isPresent() && usable.isEmpty();
+                entry.retryAt = localFailure ? clock.instant().plus(budget.getFailureBackoff()) : Instant.MIN;
+            }
         }
         var resolutions = usable.map(value -> enrich(key.account(), value, entry, future));
         synchronized (this)
