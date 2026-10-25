@@ -261,7 +261,10 @@ public class CompositionRefreshCoordinatorTest
             response = (requested, source) -> failed(CompositionResult.Status.UNAVAILABLE);
             coordinator.refresh(account, fund, true);
             executor.runAll();
-            assertEquals(Disposition.DEFERRED, coordinator.refresh(account, fund, true).join().disposition());
+            var repeated = coordinator.refresh(account, fund, true).join();
+            assertEquals(Disposition.NO_COMPOSITION, repeated.disposition());
+            assertTrue(repeated.retryAt().isEmpty());
+            assertEquals(1, calls.get());
             response = this::received;
             var next = coordinator.refresh(account, instrument("other-fund"), true);
             executor.runAll();
@@ -279,11 +282,11 @@ public class CompositionRefreshCoordinatorTest
             executor.runAll();
             var prior = coordinator.read(account, fund).usableComposition().orElseThrow();
             clock.advance(Duration.ofHours(1));
-            response = (requested, source) -> failed(CompositionResult.Status.UNAVAILABLE);
+            response = (requested, source) -> failed(CompositionResult.Status.FAILED);
             coordinator.refresh(account, fund, true);
             executor.runAll();
             assertSame(prior, coordinator.read(account, fund).usableComposition().orElseThrow());
-            assertEquals(CompositionResult.Status.UNAVAILABLE,
+            assertEquals(CompositionResult.Status.FAILED,
                             coordinator.read(account, fund).latestAttempt().orElseThrow().status());
             clock.advance(Duration.ofMinutes(10));
             response = (requested, source) -> {

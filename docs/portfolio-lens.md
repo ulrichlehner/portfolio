@@ -70,6 +70,14 @@ holdings lists or portfolio uploads. Unselected holdings are never requested,
 because the portfolio model has no fund classification and sending every holding
 ISIN would disclose the portfolio composition.
 
+The portfolio model does not distinguish a fund from an individual stock either,
+so the first refresh asks the provider once per selected ISIN. An instrument
+that the provider answers without a usable composition is marked in the data
+status and is not requested again while Portfolio Performance runs; it never
+delays the other instruments. Restarting Portfolio Performance clears that
+memory. An instrument failure never suspends the account, only transport,
+authentication, entitlement and rate-limit failures do.
+
 The request budget is a conservative placeholder, not a published provider
 allowance: 100 requests per rolling 24 hours, a 15 minute backoff after a
 failure, shared across client windows. Selected funds are queued and admitted one

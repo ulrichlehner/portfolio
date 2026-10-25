@@ -178,6 +178,10 @@ public class PortfolioLensSessionTest
         }
         assertEquals(Disposition.DEFERRED, refresh("fund-two", true).disposition());
         assertEquals(3, calls.size());
+
+        // The provider answered definitively for "missing": no second request.
+        assertEquals(Disposition.NO_COMPOSITION, refresh("missing", true).disposition());
+        assertEquals(3, calls.size());
     }
 
     @Test

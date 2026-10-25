@@ -29,6 +29,9 @@ import name.abuchen.portfolio.online.FundCompositionProvider;
  * refresh bypasses only cadence, never quota, backoff or suspension. Identical
  * account/identifier maps coalesce regardless of display label. Configure one
  * coordinator per provider and share its budget with every provider consumer.
+ * An instrument that the provider answers without a usable composition is not
+ * requested again in the same session: the portfolio model has no fund
+ * classification, so one probe per identifier replaces guessing.
  *
  * Costs must cover all requests in each injected bounded operation (including
  * identifier lookup). Enrichment admits at most maxEnrichmentLookups operations
@@ -44,7 +47,13 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
 {
     public enum Disposition
     {
-        COMPLETED, CADENCE, DEFERRED, SUSPENDED, BUSY, CLOSED, CONFIGURATION_CHANGED
+        COMPLETED, CADENCE, DEFERRED, SUSPENDED, BUSY, CLOSED, CONFIGURATION_CHANGED,
+
+        /**
+         * The provider already answered that this instrument has no usable
+         * composition. It is not asked again in this session.
+         */
+        NO_COMPOSITION
     }
 
     public record Snapshot(Optional<Instant> attemptedAt, Optional<CompositionResult> latestAttempt,
@@ -92,6 +101,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
     {
         private Snapshot snapshot = emptySnapshot();
         private Instant retryAt = Instant.MIN;
+        /** The provider gave a definitive answer without a usable composition. */
+        private boolean noComposition;
         private CompletableFuture<Refresh> pending;
     }
 
@@ -175,6 +186,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
 
     private Optional<Refresh> deferred(ProviderAccount account, Entry entry, boolean manual)
     {
+        if (entry.noComposition)
+            return Optional.of(new Refresh(Disposition.NO_COMPOSITION, entry.snapshot, Optional.empty()));
         if (budget.isSuspended(account))
             return Optional.of(new Refresh(Disposition.SUSPENDED, entry.snapshot, Optional.empty()));
         var next = budget.nextAvailable(account, compositionCost);
@@ -236,13 +249,16 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
         {
             if (active(entry, future))
             {
-                // Missing coverage or unknown allocation semantics concern this
-                // instrument, not the account's other funds. Transport/auth/rate
-                // failures still follow the shared budget policy above.
-                boolean localFailure = result.status() == CompositionResult.Status.UNAVAILABLE
-                                || result.status() == CompositionResult.Status.UNSUPPORTED
-                                || result.composition().isPresent() && usable.isEmpty();
-                entry.retryAt = localFailure ? clock.instant().plus(budget.getFailureBackoff()) : Instant.MIN;
+                // A provider answer without any usable composition is definitive
+                // for this session: ask the instrument once and skip it
+                // afterwards, so a stock never costs a request per refresh. It
+                // concerns this instrument only, never the account's other funds.
+                boolean noComposition = result.status() == CompositionResult.Status.UNAVAILABLE
+                                || result.status() == CompositionResult.Status.UNSUPPORTED;
+                entry.noComposition = noComposition;
+                boolean unusableComposition = !noComposition && result.composition().isPresent() && usable.isEmpty();
+                entry.retryAt = unusableComposition ? clock.instant().plus(budget.getFailureBackoff())
+                                : Instant.MIN;
             }
         }
         var resolutions = usable.map(value -> enrich(key.account(), value, entry, future));
