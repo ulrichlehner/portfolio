@@ -69,7 +69,6 @@ public class LookThroughView extends AbstractFinanceView
     private String currencyCode = ""; //$NON-NLS-1$
 
     @Inject
-    @org.eclipse.e4.core.di.annotations.Optional
     private PortfolioLensCompositionService compositionService;
 
     @Override
@@ -204,7 +203,7 @@ public class LookThroughView extends AbstractFinanceView
 
         // A source injected by the platform wins; otherwise the view uses the
         // application wiring so the status and refresh work without extra setup.
-        if (compositionSource == null && compositionService != null)
+        if (compositionSource == null)
             applyCompositionSource(compositionService.sourceFor(getClient()));
 
         applyResult();
