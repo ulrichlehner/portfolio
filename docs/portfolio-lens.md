@@ -1,5 +1,16 @@
 # Portfolio Lens
 
+## Experimental development notice
+
+These changes are experimental development code, not an official Portfolio
+Performance release. Eulerpool permissions and data completeness have not been
+fully verified. Anyone compiling or running this code must independently ensure
+that their use complies with applicable provider terms and account entitlements.
+No provider payloads or credentials are distributed. Persistent provider-data
+caching remains disabled. This notice does not grant provider rights or establish
+a legal transfer of responsibility. Official upstream integration and binary
+releases remain subject to separate permission, data-quality and maintainer review.
+
 Portfolio Lens is the look-through view of Portfolio Performance. It opens under
 **Reports** in the sidebar of a client and shows which companies and instruments
 are held indirectly through funds, next to what is held directly. The internal
@@ -41,9 +52,15 @@ because an absent row would look like complete coverage:
 - **Ungrouped equity** is an instrument that is known to be an equity but not
   mapped to an issuer. The value is part of the exposure, only the issuer
   grouping is missing.
-- **Unresolved** is a value that could not be attributed: the instrument could
+- **Not yet decomposed** is a value that could not be attributed: the instrument could
   not be classified, no composition is available, the provider does not support
   the fund, or a composition reports a shortfall.
+
+Expand this category to inspect each position. The **Note** column distinguishes
+missing classification from missing fund holdings, unusable weights or exposure
+basis, a weight shortfall and a stopped nested traversal. An ETF in this category
+does not mean its identity was lost: its composition may be unavailable or
+unusable. Its full value is retained, not counted again as company exposure.
 
 **Cash or other assets** collects positions that are classified as neither an
 equity nor a fund, for example bonds, cash-like or other asset types.
@@ -88,11 +105,18 @@ failure never suspends the account, only transport, authentication, entitlement
 and rate-limit failures do.
 
 To build the issuer x-ray, each fund constituent and each held instrument is
-classified through the provider's security search and, where needed, its bond
-list. Classifications are cached for the session and shared across overlapping
-funds, so an identifier is looked up once. The request budget is a conservative
+classified through the provider's security search, matching equity profile and,
+where needed, its bond list. Classification requires an exact identifier match;
+a different ISIN is not substituted merely because a ticker or name resembles
+the source. Classifications are cached per account for the session and shared
+across overlapping funds. Up to eight classification operations run concurrently;
+the completed result preserves the source order. Failed requests are not cached
+as definitive missing data. The request budget is a conservative
 placeholder, not a published provider allowance: 20,000 units per rolling 24
-hours, a 15 minute backoff after a failure, shared across client windows. Held
+hours, a 15 minute backoff after a failure, shared across client windows. Up to
+three units are reserved per Eulerpool classification for its bounded fallbacks,
+including classification of directly held instruments. Unused reserved units are
+not refunded. Held
 instruments are queued and admitted one at a time, rather than dropping the
 remainder when transport capacity is full. When the coordination knows the next
 possible attempt, the status shows a retry hint, for example after a rate limit
@@ -103,7 +127,7 @@ waits for an outcome that will not arrive.
 
 ## Data status
 
-The **Data status** pane reports per fund:
+The **Data status** pane reports per held instrument (including direct shares):
 
 - the provider and local account,
 - when the provider last refreshed its source, or that it did not report this,
@@ -174,8 +198,8 @@ usable for the same session even if a later refresh fails.
   unavailable funds stay unresolved and keep the coverage partial.
 - Constituent classification comes from the provider's security search and bond
   list. Positions without any identifier, such as cash rows, and positions the
-  provider does not classify remain unresolved. They are a small residual and
-  never a guessed mapping.
+   provider does not classify remain unresolved. Their size is not assumed to be
+   small, and they are never replaced by a guessed mapping.
 - Issuers are grouped by their security identifier, not by a company graph.
   Two share classes of the same company (for example two listing lines) appear
   as two issuer rows. The column is therefore labelled company / instrument.

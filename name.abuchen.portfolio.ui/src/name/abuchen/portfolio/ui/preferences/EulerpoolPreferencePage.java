@@ -12,6 +12,7 @@ import org.eclipse.swt.widgets.Button;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.Link;
 import org.eclipse.swt.widgets.Text;
 
 import name.abuchen.portfolio.online.CompositionCredentials;
@@ -21,6 +22,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePreferences;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.Messages;
+import name.abuchen.portfolio.ui.util.DesktopAPI;
 
 /** No field editor: keys must never enter the dialog's ordinary preference store. */
 public class EulerpoolPreferencePage extends PreferencePage
@@ -79,6 +81,12 @@ public class EulerpoolPreferencePage extends PreferencePage
         description.setText(Messages.PrefEulerpoolDescription);
         GridDataFactory.fillDefaults().grab(true, false).hint(450, SWT.DEFAULT).applyTo(description);
 
+        var apiKeyLink = new Link(area, SWT.NONE);
+        apiKeyLink.setText("<a>" + Messages.PrefEulerpoolAPIKeyLink + "</a>"); //$NON-NLS-1$
+        apiKeyLink.addSelectionListener(SelectionListener.widgetSelectedAdapter(
+                        event -> DesktopAPI.browse("https://eulerpool.com/developers/register"))); //$NON-NLS-1$
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(apiKeyLink);
+
         var label = new Label(area, SWT.NONE);
         label.setText(Messages.PrefTitleAPIKey);
         key = new Text(area, SWT.BORDER | SWT.PASSWORD | SWT.SINGLE);
@@ -90,6 +98,10 @@ public class EulerpoolPreferencePage extends PreferencePage
         button(area, Messages.PrefEulerpoolSaveSecure, () -> update(credentials.replaceSecure(ACCOUNT, key.getText())));
         button(area, Messages.PrefEulerpoolUseSession, () -> update(credentials.replaceSession(ACCOUNT, key.getText())));
         button(area, Messages.PrefEulerpoolRemove, () -> update(credentials.remove(ACCOUNT)));
+
+        status = new Label(area, SWT.WRAP);
+        GridDataFactory.fillDefaults().grab(true, false).hint(450, SWT.DEFAULT).applyTo(status);
+        updateStatus();
 
         var persistenceLabel = new Label(area, SWT.NONE);
         persistenceLabel.setText(Messages.PrefEulerpoolPersistence);
@@ -105,9 +117,6 @@ public class EulerpoolPreferencePage extends PreferencePage
         persistenceStatus = new Label(area, SWT.WRAP);
         GridDataFactory.fillDefaults().grab(true, false).hint(450, SWT.DEFAULT).applyTo(persistenceStatus);
 
-        status = new Label(area, SWT.WRAP);
-        GridDataFactory.fillDefaults().grab(true, false).hint(450, SWT.DEFAULT).applyTo(status);
-        updateStatus();
         updatePersistenceStatus();
         return area;
     }
@@ -153,13 +162,21 @@ public class EulerpoolPreferencePage extends PreferencePage
 
     private void updateStatus()
     {
-        status.setText(switch (credentials.state(ACCOUNT).mode())
+        var mode = credentials.state(ACCOUNT).mode();
+        var state = switch (mode)
         {
             case UNCONFIGURED -> Messages.PrefEulerpoolUnconfigured;
             case SECURE -> Messages.PrefEulerpoolSecure;
             case SESSION_ONLY -> Messages.PrefEulerpoolSession;
             case UNAVAILABLE -> Messages.PrefEulerpoolUnavailable;
-        });
+        };
+        // The hint only matters when a key exists; an empty field must not look
+        // like a lost key.
+        if (mode == CompositionCredentials.Mode.SECURE || mode == CompositionCredentials.Mode.SESSION_ONLY)
+            state = state + " " + Messages.PrefEulerpoolKeyNotDisplayed; //$NON-NLS-1$
+        key.setMessage(mode == CompositionCredentials.Mode.SECURE || mode == CompositionCredentials.Mode.SESSION_ONLY
+                        ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" : ""); //$NON-NLS-1$ //$NON-NLS-2$
+        status.setText(state);
         status.getParent().layout(true, true);
     }
 }

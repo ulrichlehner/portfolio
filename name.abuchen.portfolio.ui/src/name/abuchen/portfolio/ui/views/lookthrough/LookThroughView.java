@@ -263,6 +263,21 @@ public class LookThroughView extends AbstractFinanceView
         });
         support.addColumn(column);
 
+        column = new Column("note", Messages.ColumnNote, SWT.NONE, 300); //$NON-NLS-1$
+        column.setLabelProvider(new ColumnLabelProvider()
+        {
+            @Override
+            public String getText(Object element)
+            {
+                if (element instanceof DetailRow detail)
+                    return detail.note();
+                if (element instanceof ExcludedRow excluded)
+                    return excluded.reasonText();
+                return null;
+            }
+        });
+        support.addColumn(column);
+
         column = new Column("direct", Messages.LookThroughColumnDirect, SWT.RIGHT, 110); //$NON-NLS-1$
         column.setLabelProvider(new ColumnLabelProvider()
         {

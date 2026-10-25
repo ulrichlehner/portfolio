@@ -25,6 +25,7 @@ import name.abuchen.portfolio.snapshot.ClientSnapshot;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionProvenance;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.Snapshot;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Assertion;
@@ -34,6 +35,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Provenance
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolver;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
+import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Reason;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 
 @SuppressWarnings("nls")
@@ -144,5 +146,41 @@ public class PortfolioLensAnalysisTest
         var second = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
         assertEquals(Money.of("EUR", 6000), first.denominator().orElseThrow());
         assertEquals(Money.of("EUR", 12000), second.denominator().orElseThrow());
+    }
+
+    @Test
+    public void testInvalidCompositionIsNotReportedAsMissingClassification()
+    {
+        var fund = holding("SYNTHETIC-FUND", 4);
+        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
+                        Optional.empty()), FundComposition.Denominator.UNKNOWN,
+                        FundComposition.ExposureBasis.UNKNOWN, FundComposition.Completeness.UNKNOWN,
+                        List.of(new FundComposition.Constituent(parent, Optional.of("-0.1"))));
+        var retained = new Snapshot(Optional.of(NOW), Optional.of(new CompositionResult(
+                        CompositionResult.Status.RECEIVED, Optional.of(composition), Optional.empty())),
+                        Optional.empty(), Optional.empty(), List.of());
+        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
+                        List.of());
+        assertEquals(Reason.UNUSABLE_COMPOSITION, result.contributions().getFirst().reason());
+        assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("4000")));
+    }
+
+    @Test
+    public void testIdentifierlessPositionIsNotInventedAsCash()
+    {
+        var fund = holding("SYNTHETIC-FUND", 4);
+        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var child = new CompositionInstrument("Synthetic unknown asset", java.util.Map.of());
+        var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
+                        Optional.empty()), FundComposition.Denominator.UNKNOWN,
+                        FundComposition.ExposureBasis.UNKNOWN, FundComposition.Completeness.UNKNOWN,
+                        List.of(new FundComposition.Constituent(child, Optional.of("1"))));
+        var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.empty(), Optional.of(composition),
+                        List.of());
+        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
+                        List.of());
+        assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("4000")));
+        assertEquals(0, result.value(Category.CASH_OR_OTHER).signum());
     }
 }

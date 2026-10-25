@@ -286,6 +286,16 @@ public final class LookThroughViewPresenter
 
     private String unresolvedText(LookThroughContribution contribution)
     {
+        var cause = switch (contribution.reason())
+        {
+            case MISSING_COMPOSITION -> Messages.LookThroughReasonMissingComposition;
+            case UNUSABLE_COMPOSITION -> Messages.LookThroughReasonUnusableComposition;
+            case NAV_SHORTFALL -> Messages.LookThroughReasonCompositionShortfall;
+            case CYCLE, DEPTH_LIMIT, COMPOSITION_IDENTITY_MISMATCH -> Messages.LookThroughReasonTraversalStopped;
+            default -> null;
+        };
+        if (cause != null)
+            return cause;
         if (contribution.resolution().isEmpty())
             return Messages.LookThroughReasonMissingResolution;
         return switch (contribution.resolution().orElseThrow().reason())
@@ -327,6 +337,7 @@ public final class LookThroughViewPresenter
                         && result.value(Category.UNRESOLVED).signum() == 0 //
                         && result.value(Category.UNVERIFIED_HOLDING).signum() == 0 //
                         && result.value(Category.UNGROUPED_EQUITY).signum() == 0 //
+                        && !hasUnverifiedAllocationSemantics(result) //
                         && hasAffirmativelyCompleteCompositions(result);
         return complete ? Completeness.COMPLETE : Completeness.PARTIAL;
     }

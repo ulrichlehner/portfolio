@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.Test;
 
@@ -263,5 +264,72 @@ public class PortfolioLensSessionTest
         assertTrue(read.latestAttempt().orElseThrow().composition().isPresent());
         assertEquals(Optional.of(clock.instant()), read.attemptedAt());
         assertFalse(read.usableComposition().isPresent());
+    }
+
+    @Test
+    public void testClassificationCacheIsAccountLocal()
+    {
+        configure();
+        var other = new ProviderAccount(ACCOUNT.providerId(), "other");
+        credentials.replaceSession(other, "synthetic-valid");
+        var classifications = new AtomicInteger();
+        var isolated = new PortfolioLensSession(provider, (account, instrument) -> {
+            classifications.incrementAndGet();
+            return Optional.empty();
+        }, credentials, clock, executor);
+        isolated.configure(POLICY, Optional.empty());
+        isolated.configure(new CompositionPersistencePolicy(other, CompositionPersistencePolicy.Permission.UNVERIFIED,
+                        Optional.empty()), Optional.empty());
+        for (var account : List.of(ACCOUNT, ACCOUNT, other))
+        {
+            var result = isolated.refresh(account, instrument("missing"), true);
+            executor.drain();
+            result.join();
+        }
+        assertEquals(2, classifications.get());
+    }
+
+    @Test
+    public void testFailedHeldClassificationCanRetryWithoutRefetchingComposition()
+    {
+        configure();
+        var classifications = new AtomicInteger();
+        var retrying = new PortfolioLensSession(provider, (account, instrument) -> {
+            if (classifications.incrementAndGet() == 1)
+                throw new java.io.IOException();
+            return Optional.empty();
+        }, credentials, clock, executor);
+        retrying.configure(POLICY, Optional.empty());
+        var first = retrying.refresh(ACCOUNT, instrument("missing"), true);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, first.join().disposition());
+        clock.now = clock.now.plus(Duration.ofMinutes(16));
+        var second = retrying.refresh(ACCOUNT, instrument("missing"), true);
+        executor.drain();
+        assertEquals(Disposition.NO_COMPOSITION, second.join().disposition());
+        assertEquals(2, classifications.get());
+        assertEquals(1, calls.size());
+    }
+
+    @Test
+    public void testSameIsinWithDifferentTickersReusesClassification()
+    {
+        configure();
+        var classifications = new AtomicInteger();
+        var shared = new PortfolioLensSession(provider, (account, instrument) -> {
+            classifications.incrementAndGet();
+            return Optional.empty();
+        }, credentials, clock, executor);
+        shared.configure(POLICY, Optional.empty());
+        for (var ticker : List.of("FIRST", "SECOND"))
+        {
+            var source = new CompositionInstrument("Synthetic listing", Map.of("ISIN", "SYNTHETIC100",
+                            "synthetic:ticker", ticker));
+            var result = shared.refresh(ACCOUNT, source, true);
+            executor.drain();
+            result.join();
+        }
+        // One common constituent and one held ISIN, not one per listing label.
+        assertEquals(2, classifications.get());
     }
 }

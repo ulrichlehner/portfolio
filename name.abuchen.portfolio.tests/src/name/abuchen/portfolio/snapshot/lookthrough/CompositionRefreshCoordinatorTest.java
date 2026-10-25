@@ -5,13 +5,18 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
@@ -108,6 +113,63 @@ public class CompositionRefreshCoordinatorTest
                         (requested, source) -> {
                             throw new AssertionError("No enrichment configured");
                         });
+    }
+
+    @Test
+    public void testDuplicateConstituentsShareResolutionAndKeepSourceLabels()
+    {
+        var duplicate = new CompositionInstrument("Synthetic second occurrence", instrument("one").identifiers());
+        response = (requested, source) -> new CompositionResult(CompositionResult.Status.RECEIVED,
+                        Optional.of(new FundComposition(new CompositionProvenance(requested, source, clock.instant(),
+                                        Optional.empty(), Optional.empty()), Denominator.TOTAL_FUND_NAV,
+                                        ExposureBasis.PHYSICAL_HOLDINGS, Completeness.COMPLETE,
+                                        List.of(new Constituent(instrument("one"), Optional.of("0.5")),
+                                                        new Constituent(duplicate, Optional.of("0.5"))))),
+                        Optional.empty());
+        var lookups = new AtomicInteger();
+        try (var coordinator = new CompositionRefreshCoordinator(provider, budget, clock, executor, 1, 1, 10, 1,
+                        (requested, source) -> {
+                            lookups.incrementAndGet();
+                            return List.of();
+                        }))
+        {
+            var refresh = coordinator.refresh(account, fund, true);
+            executor.runAll();
+            var resolutions = refresh.join().snapshot().resolutions();
+            assertEquals(1, lookups.get());
+            assertEquals(2, resolutions.size());
+            assertEquals(duplicate, resolutions.get(1).source());
+            assertEquals(InstrumentResolution.LookupStatus.ATTEMPTED, resolutions.get(1).lookupStatus());
+        }
+    }
+
+    @Test
+    public void testAuthenticationFailureStopsReservedClassificationWork() throws Exception
+    {
+        var lookups = new AtomicInteger();
+        var queued = new LinkedBlockingQueue<Runnable>();
+        var submitted = new CountDownLatch(3);
+        try (var coordinator = new CompositionRefreshCoordinator(provider, budget, clock, executor, command -> {
+            queued.add(command);
+            submitted.countDown();
+        }, 1, 1, 10, 1,
+                        (requested, source) -> {
+                            lookups.incrementAndGet();
+                            throw new EnrichmentFailure(failed(CompositionResult.Status.AUTHENTICATION_FAILED));
+                        }))
+        {
+            var refresh = coordinator.refresh(account, fund, true);
+            var retrieval = new Thread(executor.tasks.removeFirst());
+            retrieval.start();
+            assertTrue(submitted.await(2, TimeUnit.SECONDS));
+            for (int index = 0; index < 3; index++)
+                queued.remove().run();
+            retrieval.join(2000);
+            assertFalse(retrieval.isAlive());
+            assertEquals(1, lookups.get());
+            assertTrue(budget.isSuspended(account));
+            assertEquals(3, refresh.join().snapshot().resolutions().size());
+        }
     }
 
     @Test
@@ -348,6 +410,86 @@ public class CompositionRefreshCoordinatorTest
                             coordinator.read(account, fund).resolutions().getFirst().lookupStatus());
             assertEquals(InstrumentResolution.State.CASH_OR_OTHER,
                             coordinator.read(account, fund).resolutions().get(1).state());
+        }
+    }
+
+    @Test
+    public void testEnrichmentRunsConcurrentlyWithinLookupCapAndKeepsRowOrder() throws Exception
+    {
+        var entered = new CountDownLatch(2);
+        var overlapping = new AtomicInteger();
+        var lookups = new AtomicInteger();
+        var classificationExecutor = Executors.newFixedThreadPool(3);
+        var limited = new CompositionRequestBudget("synthetic", clock, 20, Duration.ofHours(24),
+                        Duration.ofMinutes(1));
+        try (var coordinator = new CompositionRefreshCoordinator(provider, limited, clock, executor,
+                        classificationExecutor, 2, 1, 2, 2, (requested, source) -> {
+                            lookups.incrementAndGet();
+                            entered.countDown();
+                            try
+                            {
+                                if (!entered.await(2, TimeUnit.SECONDS))
+                                    throw new IOException("classification did not overlap");
+                                overlapping.incrementAndGet();
+                            }
+                            catch (InterruptedException e)
+                            {
+                                Thread.currentThread().interrupt();
+                                throw new IOException(e);
+                            }
+                            return List.of();
+                        }))
+        {
+            var pending = coordinator.refresh(account, fund, true);
+            var retrieval = new Thread(executor.tasks.removeFirst());
+            retrieval.start();
+            retrieval.join(3000);
+            assertFalse(retrieval.isAlive());
+            var snapshot = pending.join().snapshot();
+            assertEquals(2, lookups.get());
+            assertEquals(2, overlapping.get());
+            assertEquals(List.of("one", "two", "three"), snapshot.resolutions().stream()
+                            .map(resolution -> resolution.source().identifiers().get("synthetic:id")).toList());
+        }
+        finally
+        {
+            classificationExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void testCloseSkipsQueuedClassificationAndDiscardsRefresh() throws Exception
+    {
+        var queued = new LinkedBlockingQueue<Runnable>();
+        var submitted = new CountDownLatch(3);
+        var lookups = new AtomicInteger();
+        var limited = new CompositionRequestBudget("synthetic", clock, 20, Duration.ofHours(24),
+                        Duration.ofMinutes(1));
+        var coordinator = new CompositionRefreshCoordinator(provider, limited, clock, executor, command -> {
+            queued.add(command);
+            submitted.countDown();
+        }, 2, 1, 3, 2, (requested, source) -> {
+            lookups.incrementAndGet();
+            return List.of();
+        });
+        try
+        {
+            var pending = coordinator.refresh(account, fund, true);
+            var retrieval = new Thread(executor.tasks.removeFirst());
+            retrieval.start();
+            assertTrue(submitted.await(2, TimeUnit.SECONDS));
+            coordinator.close();
+            retrieval.join(2000);
+            assertFalse(retrieval.isAlive());
+            for (int i = 0; i < 3; i++)
+                queued.remove().run();
+            assertEquals(0, lookups.get());
+            assertEquals(Disposition.CLOSED, pending.join().disposition());
+            assertTrue(coordinator.read(account, fund).latestAttempt().isEmpty());
+        }
+        finally
+        {
+            coordinator.close();
         }
     }
 

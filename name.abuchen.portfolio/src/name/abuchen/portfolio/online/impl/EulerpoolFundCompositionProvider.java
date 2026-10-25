@@ -12,6 +12,8 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -32,6 +34,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.Permission;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionProvenance;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.EnrichmentFailure;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult.Status;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
@@ -65,6 +68,7 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
 {
     public static final String ID = "EULERPOOL";
     public static final String SYMBOL = "eulerpool:symbol";
+    public static final int CLASSIFICATION_REQUEST_COST = 3;
 
     @FunctionalInterface
     public interface CredentialAccess
@@ -174,50 +178,83 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
     {
         checkAccount(account);
         Objects.requireNonNull(instrument);
-        var query = identifier(instrument);
-        if (query.isEmpty())
+        var queries = identifiers(instrument);
+        if (queries.isEmpty())
             return Optional.empty();
-        try
-        {
-            var token = credentials.getBearerToken(account);
-            if (token.isEmpty() || !token.get().matches("[A-Za-z0-9._~+/-]+=*"))
-                return Optional.empty();
+        var token = credentials.getBearerToken(account);
+        if (token.isEmpty() || !token.get().matches("[A-Za-z0-9._~+/-]+=*"))
+            throw new EnrichmentFailure(failure(Status.AUTHENTICATION_FAILED));
 
-            // The equity search classifies stocks, ETFs and funds. It returns
-            // nothing for bonds, which are confirmed through the bond list.
-            var search = transport.get(URI.create("https://api.eulerpool.com/api/1/equity/search?q=" + query.get()),
-                            "Bearer " + token.get());
+        // Exact ISIN or ticker evidence only. A result's ISIN is never used to
+        // replace the source identity: some providers index a different listing.
+        for (var query : queries)
+        {
+            var search = classificationResponse("https://api.eulerpool.com/api/1/equity/search?q=" + query, token.get());
             if (search.status() == 200)
             {
-                var evidence = parseSearch(account, instrument, query.get(), search.body());
+                var evidence = parseSearch(account, instrument, search.body());
                 if (evidence.isPresent())
                     return evidence;
             }
-            var bonds = transport.get(URI.create("https://api.eulerpool.com/api/1/bonds/list?q=" + query.get()),
-                            "Bearer " + token.get());
-            if (bonds.status() == 200 && isBond(query.get(), bonds.body()))
-                return bondEvidence(account, instrument, query.get());
-            return Optional.empty();
+            else if (search.status() != 204 && search.status() != 404)
+                throw new IOException();
         }
-        catch (IOException | RuntimeException e)
+        for (var query : queries)
         {
-            // Classification is display enrichment: a failure leaves the
-            // instrument unclassified instead of failing the refresh.
-            return Optional.empty();
+            var profile = classificationResponse("https://api.eulerpool.com/api/1/equity/profile/" + query, token.get());
+            if (profile.status() == 200)
+            {
+                var evidence = parseProfile(account, instrument, profile.body());
+                if (evidence.isPresent())
+                    return evidence;
+            }
+            else if (profile.status() != 204 && profile.status() != 404)
+                throw new IOException();
         }
+        for (var query : queries)
+        {
+            var bonds = classificationResponse("https://api.eulerpool.com/api/1/bonds/list?q=" + query, token.get());
+            if (bonds.status() == 200 && isBond(query, bonds.body()))
+                return bondEvidence(account, instrument);
+            if (bonds.status() != 200 && bonds.status() != 204 && bonds.status() != 404)
+                throw new IOException();
+        }
+        return Optional.empty();
     }
 
-    private Optional<String> identifier(CompositionInstrument instrument)
+    private List<String> identifiers(CompositionInstrument instrument)
     {
+        var result = new ArrayList<String>();
         var isin = instrument.identifiers().get("ISIN");
-        var value = isin != null && !isin.isBlank() ? isin : instrument.identifiers().get(SYMBOL);
-        if (value == null || value.isBlank() || !value.matches("[A-Za-z0-9][A-Za-z0-9._-]*"))
-            return Optional.empty();
-        return Optional.of(value.trim());
+        if (isin != null && !isin.isBlank())
+            result.add(isin.trim());
+        var symbol = instrument.identifiers().get(SYMBOL);
+        if (result.isEmpty() && symbol != null && !symbol.isBlank())
+            result.add(symbol.trim());
+        result.removeIf(value -> !value.matches("[A-Za-z0-9][A-Za-z0-9._-]*"));
+        return List.copyOf(result);
+    }
+
+    private Response classificationResponse(String url, String token) throws IOException
+    {
+        if (Thread.currentThread().isInterrupted())
+            throw new InterruptedIOException();
+        var response = transport.get(URI.create(url), "Bearer " + token);
+        var status = switch (response.status())
+        {
+            case 401 -> Status.AUTHENTICATION_FAILED;
+            case 402, 403 -> Status.ENTITLEMENT_FAILED;
+            case 429 -> Status.RATE_LIMITED;
+            default -> null;
+        };
+        if (status != null)
+            throw new EnrichmentFailure(new CompositionResult(status, Optional.empty(),
+                            status == Status.RATE_LIMITED ? retryAfter(response.retryAfter()) : Optional.empty()));
+        return response;
     }
 
     private Optional<InstrumentEvidence> parseSearch(ProviderAccount account, CompositionInstrument instrument,
-                    String query, String body)
+                    String body)
     {
         if (body == null || body.isBlank())
             return Optional.empty();
@@ -230,24 +267,57 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
             var results = json.getAsJsonObject().get("results");
             if (results == null || !results.isJsonArray())
                 return Optional.empty();
-            String fallbackType = null;
+            var isin = instrument.identifiers().get("ISIN");
+            var symbol = instrument.identifiers().get(SYMBOL);
+            Optional<InstrumentEvidence> match = Optional.empty();
             for (var element : results.getAsJsonArray())
             {
                 if (!element.isJsonObject())
                     continue;
                 var row = element.getAsJsonObject();
-                var isin = text(row, "isin").orElse(null);
+                var resultIsin = text(row, "isin").orElse(null);
+                var resultTicker = text(row, "ticker").orElse(null);
                 var type = text(row, "type").orElse(null);
                 if (type == null)
                     continue;
-                if (isin != null && isin.equalsIgnoreCase(query))
-                    return buildEvidence(account, instrument, query, type, "equity/search"); //$NON-NLS-1$
-                if (fallbackType == null)
-                    fallbackType = type;
+                boolean exact = isin != null && !isin.isBlank() ? isin.equalsIgnoreCase(resultIsin)
+                                : symbol != null && symbol.equalsIgnoreCase(resultTicker);
+                if (exact)
+                {
+                    var candidate = buildEvidence(account, instrument, type, "equity/search"); //$NON-NLS-1$
+                    if (match.isPresent() && !match.get().classification().map(Assertion::value)
+                                    .equals(candidate.flatMap(InstrumentEvidence::classification).map(Assertion::value)))
+                        return Optional.empty();
+                    match = candidate;
+                }
             }
-            if (fallbackType != null && results.getAsJsonArray().size() == 1)
-                return buildEvidence(account, instrument, query, fallbackType, "equity/search"); //$NON-NLS-1$
+            return match;
+        }
+        catch (IOException | RuntimeException e)
+        {
             return Optional.empty();
+        }
+    }
+
+    private Optional<InstrumentEvidence> parseProfile(ProviderAccount account, CompositionInstrument instrument,
+                    String body)
+    {
+        if (body == null || body.isBlank())
+            return Optional.empty();
+        try (var reader = new JsonReader(new StringReader(body)))
+        {
+            reader.setStrictness(Strictness.STRICT);
+            var json = JsonParser.parseReader(reader);
+            if (!json.isJsonObject() || reader.peek() != JsonToken.END_DOCUMENT)
+                return Optional.empty();
+            var sector = text(json.getAsJsonObject(), "sector").orElse("");
+            var industry = text(json.getAsJsonObject(), "industry").orElse("");
+            var isin = instrument.identifiers().get("ISIN");
+            if (isin == null || !isin.equalsIgnoreCase(text(json.getAsJsonObject(), "isin").orElse("")))
+                return Optional.empty();
+            if (sector.isBlank() && industry.isBlank())
+                return Optional.empty();
+            return buildEvidence(account, instrument, "stock", "equity/profile"); //$NON-NLS-1$
         }
         catch (IOException | RuntimeException e)
         {
@@ -256,7 +326,7 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
     }
 
     private Optional<InstrumentEvidence> buildEvidence(ProviderAccount account, CompositionInstrument instrument,
-                    String query, String type, String reference)
+                    String type, String reference)
     {
         var assetType = switch (type.toLowerCase())
         {
@@ -268,19 +338,24 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
         if (assetType == null)
             return Optional.empty();
         var provenance = new Provenance(account, reference, clock.instant());
-        var identity = new Identifier("ISIN", query);
-        return Optional.of(new InstrumentEvidence(instrument.identifiers(), new Assertion<>(identity, provenance),
+        var isin = instrument.identifiers().get("ISIN");
+        var identity = isin != null && !isin.isBlank() ? new Identifier("ISIN", isin.trim())
+                        : new Identifier(SYMBOL, instrument.identifiers().get(SYMBOL));
+        return Optional.of(new InstrumentEvidence(Map.of(identity.namespace(), identity.value()),
+                        new Assertion<>(identity, provenance),
                         Optional.of(new Assertion<>(assetType, provenance)),
                         assetType == AssetType.EQUITY ? Optional.of(new Assertion<>(identity, provenance))
                                         : Optional.empty()));
     }
 
-    private Optional<InstrumentEvidence> bondEvidence(ProviderAccount account, CompositionInstrument instrument,
-                    String query)
+    private Optional<InstrumentEvidence> bondEvidence(ProviderAccount account, CompositionInstrument instrument)
     {
         var provenance = new Provenance(account, "bonds/list", clock.instant());
-        var identity = new Identifier("ISIN", query);
-        return Optional.of(new InstrumentEvidence(instrument.identifiers(), new Assertion<>(identity, provenance),
+        var isin = instrument.identifiers().get("ISIN");
+        var identity = isin != null && !isin.isBlank() ? new Identifier("ISIN", isin.trim())
+                        : new Identifier(SYMBOL, instrument.identifiers().get(SYMBOL));
+        return Optional.of(new InstrumentEvidence(Map.of(identity.namespace(), identity.value()),
+                        new Assertion<>(identity, provenance),
                         Optional.of(new Assertion<>(AssetType.OTHER_NON_EQUITY, provenance)), Optional.empty()));
     }
 

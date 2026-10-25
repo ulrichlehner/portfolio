@@ -390,14 +390,90 @@ public class EulerpoolFundCompositionProviderTest
     }
 
     @Test
-    public void testClassifyIgnoresTransportErrorsAndMissingIdentifiers() throws IOException
+    public void testClassificationDoesNotHideTransportErrors() throws IOException
     {
         var instrument = new CompositionInstrument("Invented", Map.of("ISIN", "SYNTHETICERR1"));
         var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
                         (uri, authorization) -> {
                             throw new IOException("transport");
                         }, CLOCK);
-        assertTrue(provider.classify(ACCOUNT, instrument).isEmpty());
+        assertThrows(IOException.class, () -> provider.classify(ACCOUNT, instrument));
         assertTrue(provider.classify(ACCOUNT, new CompositionInstrument("No id", Map.of())).isEmpty());
+    }
+
+    @Test
+    public void testProfileFallbackRequiresMatchingIdentity() throws IOException
+    {
+        var instrument = new CompositionInstrument("Synthetic issuer", Map.of("ISIN", "SYNTHETIC100"));
+        for (var returned : List.of("SYNTHETIC100", "DIFFERENT"))
+        {
+            var evidence = classify(instrument, (uri, authorization) -> {
+                if (uri.getPath().contains("/profile/"))
+                    return new Response(200, "{\"isin\":\"" + returned
+                                    + "\",\"sector\":\"Industrials\",\"industry\":\"Services\"}", Optional.empty());
+                return new Response(200, "{\"results\":[],\"data\":[]}", Optional.empty());
+            });
+            assertEquals(returned.equals("SYNTHETIC100"), evidence.isPresent());
+        }
+    }
+
+    @Test
+    public void testDifferentIsinIsNotAcceptedFromSingleOrTickerMatch() throws IOException
+    {
+        var instrument = new CompositionInstrument("Synthetic wanted", Map.of("ISIN", "SYNTHETIC100",
+                        EulerpoolFundCompositionProvider.SYMBOL, "SYN"));
+        var evidence = classify(instrument, (uri, authorization) -> {
+            if (uri.getPath().endsWith("/search"))
+                return new Response(200, "{\"results\":[{\"isin\":\"DIFFERENT\",\"ticker\":\"SYN\","
+                                + "\"type\":\"stock\"}]}", Optional.empty());
+            return new Response(404, "", Optional.empty());
+        });
+        assertTrue(evidence.isEmpty());
+    }
+
+    @Test
+    public void testClassificationFailureStopsFallbackRequests() throws IOException
+    {
+        var instrument = new CompositionInstrument("Synthetic", Map.of("ISIN", "SYNTHETIC100"));
+        for (int status : new int[] { 401, 403, 429 })
+        {
+            var requests = new java.util.concurrent.atomic.AtomicInteger();
+            assertThrows(name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.EnrichmentFailure.class,
+                            () -> classify(instrument, (uri, authorization) -> {
+                                requests.incrementAndGet();
+                                return new Response(status, "", Optional.of("60"));
+                            }));
+            assertEquals(1, requests.get());
+        }
+    }
+
+    @Test
+    public void testClassificationRequestCostBoundsFallbacks() throws IOException
+    {
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        var instrument = new CompositionInstrument("Synthetic", Map.of("ISIN", "SYNTHETIC100",
+                        EulerpoolFundCompositionProvider.SYMBOL, "SYN"));
+        assertTrue(classify(instrument, (uri, authorization) -> {
+            requests.incrementAndGet();
+            return new Response(404, "", Optional.empty());
+        }).isEmpty());
+        assertEquals(EulerpoolFundCompositionProvider.CLASSIFICATION_REQUEST_COST, requests.get());
+    }
+
+    @Test
+    public void testSecondaryTickerDoesNotCreateConflictingAliasesAcrossFunds() throws IOException
+    {
+        var first = new CompositionInstrument("Synthetic first listing", Map.of("ISIN", "SYNTHETIC100",
+                        EulerpoolFundCompositionProvider.SYMBOL, "SYN.FIRST"));
+        var second = new CompositionInstrument("Synthetic second listing", Map.of("ISIN", "SYNTHETIC100",
+                        EulerpoolFundCompositionProvider.SYMBOL, "SYN.SECOND"));
+        var evidence = classify(first, (uri, authorization) -> new Response(200,
+                        "{\"results\":[{\"isin\":\"SYNTHETIC100\",\"ticker\":\"SYN\",\"type\":\"stock\"}]}",
+                        Optional.empty())).orElseThrow();
+        assertEquals(Map.of("ISIN", "SYNTHETIC100"), evidence.identifiers());
+        var resolved = new name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolver().resolve(second,
+                        List.of(evidence), ignored -> List.of(), () -> false);
+        assertEquals(name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution.State.GROUPED_EQUITY,
+                        resolved.state());
     }
 }

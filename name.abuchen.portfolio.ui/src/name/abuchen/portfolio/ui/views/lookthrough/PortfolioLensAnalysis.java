@@ -4,12 +4,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
 import name.abuchen.portfolio.snapshot.ClientSnapshot;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.Snapshot;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
@@ -35,12 +37,8 @@ final class PortfolioLensAnalysis
         var evidence = new ArrayList<InstrumentEvidence>(heldClassifications);
         retained.forEach(value -> value.resolutions().stream()
                         .forEach(resolution -> evidence.addAll(resolution.evidence())));
-        retained.forEach(value -> {
-            value.usableComposition().ifPresent(composition -> evidence.add(
-                            InstrumentEvidence.fundFromComposition(composition)));
-            value.unverifiedComposition().ifPresent(composition -> evidence.add(
-                            InstrumentEvidence.fundFromComposition(composition)));
-        });
+        retained.forEach(value -> source(value).ifPresent(composition -> evidence.add(
+                        InstrumentEvidence.fundFromComposition(composition))));
 
         var resolver = new InstrumentResolver();
         var resolutions = new HashMap<CompositionInstrument, InstrumentResolution>();
@@ -58,11 +56,10 @@ final class PortfolioLensAnalysis
         for (var data : retained)
         {
             var verified = data.usableComposition();
-            var unverified = data.unverifiedComposition();
-            var source = verified.or(() -> unverified);
-            if (source.isEmpty())
+            var supplied = source(data);
+            if (supplied.isEmpty())
                 continue;
-            var composition = source.orElseThrow();
+            var composition = supplied.orElseThrow();
             var fund = composition.provenance().fund();
             var resolved = resolver.resolve(fund, evidence, ignored -> List.of(), () -> false);
             resolutions.put(fund, resolved);
@@ -80,5 +77,14 @@ final class PortfolioLensAnalysis
         }
         return new LookThroughEngine().calculate(valuation, Map.copyOf(owned), Map.copyOf(resolutions),
                         Map.copyOf(compositions), Map.copyOf(unverifiedCompositions));
+    }
+
+    private Optional<FundComposition> source(Snapshot data)
+    {
+        // Preserve invalid source metadata too: the engine must distinguish an
+        // unusable composition from one the provider never supplied. An older
+        // retained usable source still takes precedence over a failed refresh.
+        return data.usableComposition().or(data::unverifiedComposition)
+                        .or(() -> data.latestAttempt().flatMap(CompositionResult::composition));
     }
 }

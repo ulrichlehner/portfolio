@@ -96,6 +96,14 @@ public final class CompositionRequestBudget
         return account(account).suspended;
     }
 
+    /** Recheck suspension/backoff before executing work whose cost is already reserved. */
+    public synchronized boolean canExecuteReserved(ProviderAccount account)
+    {
+        var state = account(account);
+        var current = now();
+        return !state.suspended && !current.isBefore(providerRetryAt) && !current.isBefore(state.retryAt);
+    }
+
     /** Empty when no finite deadline exists (suspended or cost exceeds capacity). */
     public synchronized Optional<Instant> nextAvailable(ProviderAccount account, long units)
     {

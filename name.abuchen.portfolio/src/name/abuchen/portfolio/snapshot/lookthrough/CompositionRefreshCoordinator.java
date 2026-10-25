@@ -6,14 +6,16 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import name.abuchen.portfolio.online.FundCompositionProvider;
 
@@ -96,6 +98,11 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                 throw new IllegalArgumentException();
             this.result = result;
         }
+
+        public CompositionResult result()
+        {
+            return result;
+        }
     }
 
     private record Key(ProviderAccount account, Map<String, String> identifiers)
@@ -115,6 +122,7 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
     private final CompositionRequestBudget budget;
     private final Clock clock;
     private final Executor executor;
+    private final Executor classificationExecutor;
     private final long compositionCost;
     private final long enrichmentCost;
     private final int maxEnrichmentLookups;
@@ -128,10 +136,19 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                     Clock clock, Executor executor, long compositionCost, long enrichmentCost,
                     int maxEnrichmentLookups, int maxPending, EnrichmentLookup lookup)
     {
+        this(provider, budget, clock, executor, Runnable::run, compositionCost, enrichmentCost,
+                        maxEnrichmentLookups, maxPending, lookup);
+    }
+
+    public CompositionRefreshCoordinator(FundCompositionProvider provider, CompositionRequestBudget budget,
+                    Clock clock, Executor executor, Executor classificationExecutor, long compositionCost,
+                    long enrichmentCost, int maxEnrichmentLookups, int maxPending, EnrichmentLookup lookup)
+    {
         this.provider = Objects.requireNonNull(provider);
         this.budget = Objects.requireNonNull(budget);
         this.clock = Objects.requireNonNull(clock);
         this.executor = Objects.requireNonNull(executor);
+        this.classificationExecutor = Objects.requireNonNull(classificationExecutor);
         this.lookup = Objects.requireNonNull(lookup);
         if (compositionCost <= 0 || enrichmentCost <= 0 || maxEnrichmentLookups < 0 || maxPending <= 0)
             throw new IllegalArgumentException();
@@ -303,51 +320,132 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                     CompletableFuture<Refresh> future)
     {
         var resolver = new InstrumentResolver();
-        var resolved = new ArrayList<InstrumentResolution>();
+        var tasks = new ArrayList<CompletableFuture<InstrumentResolution>>();
+        var distinct = new HashMap<Map<String, String>, CompletableFuture<InstrumentResolution>>();
         var evidence = new HashMap<Map<String, String>, List<InstrumentEvidence>>();
         synchronized (this)
         {
             for (var previous : entry.snapshot.resolutions())
                 evidence.put(previous.source().identifiers(), previous.evidence());
         }
-        var attempted = new HashSet<Map<String, String>>();
-        int[] permits = { 0 };
+        int permits = 0;
         for (var row : composition.constituents())
         {
+            var source = row.instrument();
+            var existing = distinct.get(source.identifiers());
+            if (existing != null)
+            {
+                tasks.add(existing);
+                continue;
+            }
+            var known = evidence.getOrDefault(source.identifiers(), List.of());
+            var task = new CompletableFuture<InstrumentResolution>();
+            tasks.add(task);
+            distinct.put(source.identifiers(), task);
+            var initial = resolver.resolve(source, known, ignored -> List.of(), () -> false);
+            boolean admitted;
             synchronized (this)
             {
                 if (!active(entry, future))
                     return List.of();
+                admitted = initial.lookupStatus() == InstrumentResolution.LookupStatus.BUDGET_EXHAUSTED
+                                && permits < maxEnrichmentLookups && budget.acquirePermit(account, enrichmentCost);
+                if (admitted)
+                    permits++;
             }
-            var source = row.instrument();
-            var resolution = resolver.resolve(source, evidence.getOrDefault(source.identifiers(), List.of()), item -> {
-                try
-                {
-                    return List.copyOf(lookup.lookup(account, item));
-                }
-                catch (IOException | RuntimeException e)
-                {
+            if (!admitted)
+            {
+                task.complete(initial);
+                continue;
+            }
+            try
+            {
+                classificationExecutor.execute(() -> {
                     synchronized (this)
                     {
-                        if (active(entry, future))
-                            budget.record(account, e instanceof EnrichmentFailure failure ? failure.result
-                                            : failure(CompositionResult.Status.FAILED));
+                        if (!active(entry, future))
+                        {
+                            task.complete(null);
+                            return;
+                        }
+                        if (!budget.canExecuteReserved(account))
+                        {
+                            task.complete(initial);
+                            return;
+                        }
                     }
-                    throw new IOException();
-                }
-            }, () -> {
+                    try
+                    {
+                        task.complete(resolver.resolve(source, known, item -> {
+                            try
+                            {
+                                return List.copyOf(lookup.lookup(account, item));
+                            }
+                            catch (IOException | RuntimeException e)
+                            {
+                                synchronized (this)
+                                {
+                                    if (active(entry, future))
+                                        budget.record(account, e instanceof EnrichmentFailure failure
+                                                        ? failure.result : failure(CompositionResult.Status.FAILED));
+                                }
+                                throw new IOException();
+                            }
+                        }, () -> true));
+                    }
+                    catch (RuntimeException e)
+                    {
+                        task.completeExceptionally(e);
+                    }
+                });
+            }
+            catch (RejectedExecutionException e)
+            {
+                task.complete(initial);
+            }
+        }
+        var resolved = new ArrayList<InstrumentResolution>();
+        for (int index = 0; index < tasks.size(); index++)
+        {
+            var task = tasks.get(index);
+            InstrumentResolution resolution = null;
+            while (resolution == null)
+            {
                 synchronized (this)
                 {
-                    if (!active(entry, future) || permits[0] >= maxEnrichmentLookups
-                                    || !attempted.add(source.identifiers())
-                                    || !budget.acquirePermit(account, enrichmentCost))
-                        return false;
-                    permits[0]++;
-                    return true;
+                    if (!active(entry, future))
+                        return List.of();
                 }
-            });
-            evidence.put(source.identifiers(), resolution.evidence());
-            resolved.add(resolution);
+                try
+                {
+                    resolution = task.get(100, TimeUnit.MILLISECONDS);
+                    if (resolution == null)
+                        break;
+                }
+                catch (TimeoutException e)
+                {
+                    // Keep cancellation responsive while a transport is blocked.
+                }
+                catch (InterruptedException e)
+                {
+                    Thread.currentThread().interrupt();
+                    return List.of();
+                }
+                catch (ExecutionException e)
+                {
+                    throw new IllegalStateException(e.getCause());
+                }
+            }
+            if (resolution != null)
+                resolved.add(new InstrumentResolution(composition.constituents().get(index).instrument(),
+                                resolution.state(), resolution.reason(), resolution.instrument(),
+                                resolution.classification(), resolution.company(), resolution.evidence(),
+                                resolution.lookupStatus()));
+        }
+        synchronized (this)
+        {
+            if (!active(entry, future))
+                return List.of();
         }
         return List.copyOf(resolved);
     }

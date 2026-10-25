@@ -8,11 +8,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.CompositionCredentials.Mode;
 import name.abuchen.portfolio.online.FundCompositionProvider;
+import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
@@ -20,6 +25,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.Refresh;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.Snapshot;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRequestBudget;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidationResult;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentClassifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
@@ -48,7 +54,9 @@ final class PortfolioLensSession implements RefreshGateway
     private final SessionCompositionStore store;
     private final CompositionRefreshCoordinator coordinator;
     private final InstrumentClassifier classifier;
-    private final Map<Map<String, String>, List<InstrumentEvidence>> evidenceCache = new HashMap<>();
+    private final CompositionRequestBudget budget;
+    private final long classificationCost;
+    private final Map<Key, CompletableFuture<List<InstrumentEvidence>>> evidenceCache = new HashMap<>();
     private final Map<Key, CompletableFuture<Refresh>> pending = new HashMap<>();
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
@@ -61,32 +69,92 @@ final class PortfolioLensSession implements RefreshGateway
         this.classifier = classifier;
         this.store = new SessionCompositionStore(clock);
         // Conservative application budget, not a statement of plan entitlement.
-        // Classification costs one unit per instrument; a broad fund can hold
-        // over a thousand constituents, so the budget must cover the held
-        // universe without claiming the observed provider limit.
-        var budget = new CompositionRequestBudget(provider.getId(), clock, 20000, Duration.ofHours(24),
+        // Reserve the adapter's worst-case request count, including fallbacks.
+        this.classificationCost = classifier instanceof EulerpoolFundCompositionProvider
+                        ? EulerpoolFundCompositionProvider.CLASSIFICATION_REQUEST_COST : 1;
+        this.budget = new CompositionRequestBudget(provider.getId(), clock, 20000, Duration.ofHours(24),
                         Duration.ofMinutes(15));
-        this.coordinator = new CompositionRefreshCoordinator(provider, budget, clock, executor, 1, 1, 5000, 1,
-                        this::classifyCached);
+        this.coordinator = new CompositionRefreshCoordinator(provider, budget, clock, executor,
+                        classificationExecutor(), 1, classificationCost, 5000, 1, this::classifyCached);
+    }
+
+    private static Executor classificationExecutor()
+    {
+        var sequence = new AtomicInteger();
+        ThreadFactory factory = task -> {
+            var thread = new Thread(task, "portfolio-lens-classification-" + sequence.incrementAndGet()); //$NON-NLS-1$
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newFixedThreadPool(8, factory);
     }
 
     /**
      * Session-wide classification cache: one provider answer per identifier, so
      * overlapping funds share their constituents without repeated lookups.
      */
-    private synchronized List<InstrumentEvidence> classifyCached(ProviderAccount account,
-                    CompositionInstrument instrument)
+    private List<InstrumentEvidence> classifyCached(ProviderAccount account,
+                    CompositionInstrument instrument) throws IOException
     {
-        return evidenceCache.computeIfAbsent(instrument.identifiers(), identifiers -> {
+        var key = classificationKey(account, instrument);
+        var created = new CompletableFuture<List<InstrumentEvidence>>();
+        CompletableFuture<List<InstrumentEvidence>> future;
+        synchronized (evidenceCache)
+        {
+            future = evidenceCache.get(key);
+            if (future == null)
+            {
+                future = created;
+                evidenceCache.put(key, future);
+            }
+        }
+        if (future == created)
+        {
             try
             {
-                return classifier.classify(account, instrument).map(List::of).orElseGet(List::of);
+                future.complete(classifier.classify(account, instrument).map(List::of).orElseGet(List::of));
             }
             catch (IOException e)
             {
-                return List.of();
+                synchronized (evidenceCache)
+                {
+                    evidenceCache.remove(key, future);
+                }
+                future.completeExceptionally(e);
             }
-        });
+            catch (RuntimeException e)
+            {
+                synchronized (evidenceCache)
+                {
+                    evidenceCache.remove(key, future);
+                }
+                future.completeExceptionally(e);
+            }
+        }
+        try
+        {
+            return future.get();
+        }
+        catch (InterruptedException e)
+        {
+            Thread.currentThread().interrupt();
+            throw new IOException(e);
+        }
+        catch (ExecutionException e)
+        {
+            if (e.getCause() instanceof IOException io)
+                throw io;
+            if (e.getCause() instanceof RuntimeException runtime)
+                throw runtime;
+            throw new IOException(e.getCause());
+        }
+    }
+
+    private Key classificationKey(ProviderAccount account, CompositionInstrument instrument)
+    {
+        var isin = instrument.identifiers().get(InstrumentEvidence.ISIN);
+        return new Key(account, isin == null || isin.isBlank() ? instrument.identifiers()
+                        : Map.of(InstrumentEvidence.ISIN, isin));
     }
 
     synchronized void configure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
@@ -147,7 +215,28 @@ final class PortfolioLensSession implements RefreshGateway
         return coordinator.refresh(account, fund, manual).thenApply(refresh -> {
             // Classify the held instrument itself (fund, stock or bond) so a
             // direct holding resolves to an issuer, not to an unresolved row.
-            classifyCached(account, fund);
+            try
+            {
+                if (refresh.disposition() == Disposition.COMPLETED
+                                || refresh.disposition() == Disposition.NO_COMPOSITION)
+                {
+                    boolean cached;
+                    synchronized (evidenceCache)
+                    {
+                        cached = evidenceCache.containsKey(classificationKey(account, fund));
+                    }
+                    if (cached || budget.acquirePermit(account, classificationCost))
+                        classifyCached(account, fund);
+                }
+            }
+            catch (IOException e)
+            {
+                // A failed classification does not discard the composition or
+                // make the refresh fail; it remains uncached for the next pass.
+                budget.record(account, e instanceof CompositionRefreshCoordinator.EnrichmentFailure failure
+                                ? failure.result() : new CompositionResult(CompositionResult.Status.FAILED,
+                                                Optional.empty(), Optional.empty()));
+            }
             // Deferred reads are not new attempts and must not rewrite the store.
             if (refresh.disposition() == Disposition.COMPLETED)
                 refresh.snapshot().latestAttempt().ifPresent(attempt -> store.complete(ticket, attempt));
@@ -156,8 +245,13 @@ final class PortfolioLensSession implements RefreshGateway
     }
 
     /** Cached classification of held instruments and constituents, exposed to the analysis. */
-    synchronized List<InstrumentEvidence> classifications()
+    List<InstrumentEvidence> classifications()
     {
-        return evidenceCache.values().stream().flatMap(List::stream).toList();
+        synchronized (evidenceCache)
+        {
+            return evidenceCache.values().stream().filter(CompletableFuture::isDone)
+                            .filter(future -> !future.isCompletedExceptionally())
+                            .flatMap(future -> future.join().stream()).toList();
+        }
     }
 }

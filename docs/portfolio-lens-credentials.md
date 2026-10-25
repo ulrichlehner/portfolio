@@ -10,7 +10,10 @@ into a portfolio, notes, URLs, ordinary preferences or diagnostic reports.
 Choose **Save encrypted / replace key** to use local Equinox secure storage, or
 explicitly choose **Use for this session only / replace key**. These actions take
 effect immediately, even if the settings dialog is later cancelled. Existing keys
-are not displayed or prefilled. The page configures the local `default` Eulerpool
+are not displayed or prefilled. A masked placeholder indicates an active key;
+it contains no secret and is not submitted as a replacement. The status text
+distinguishes encrypted storage, session-only entry and unavailable storage.
+The page includes a link to obtain an individual API key and configures the local `default` Eulerpool
 account; this is an opaque local identifier, not a provider login.
 
 Encrypted storage requires a usable password provider on the running platform.

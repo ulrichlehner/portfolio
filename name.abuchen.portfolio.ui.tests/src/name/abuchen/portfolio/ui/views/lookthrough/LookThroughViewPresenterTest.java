@@ -45,6 +45,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuation;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuationAdapter;
+import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
@@ -462,5 +463,36 @@ public class LookThroughViewPresenterTest
         assertTrue(model.empty());
         assertTrue(model.rows().isEmpty());
         assertTrue(model.denominator().isEmpty());
+    }
+
+    @Test
+    public void testKnownFundWithoutCompositionHasSpecificExplanation()
+    {
+        hold("missing-fund", "Synthetic missing fund", AssetType.FUND, null, 1, 100);
+        var unresolved = category(model(result()), Category.UNRESOLVED);
+        assertEquals(Messages.LookThroughCategoryUnresolved, unresolved.label());
+        assertEquals(Messages.LookThroughReasonMissingComposition, unresolved.details().getFirst().note());
+    }
+
+    @Test
+    public void testShortfallDoesNotLookLikeMissingClassification()
+    {
+        hold("partial-fund", "Synthetic partial fund", AssetType.FUND, null, 1, 100);
+        composition(instruments.get("partial-fund"),
+                        row(instrument("issuer", AssetType.EQUITY, "SYNTH-ISSUER"), "0.8"));
+        assertEquals(Messages.LookThroughReasonCompositionShortfall,
+                        category(model(result()), Category.UNRESOLVED).details().getFirst().note());
+    }
+
+    @Test
+    public void testCompleteDeclarationCannotValidateUnknownAllocationSemantics()
+    {
+        hold("unverified-fund", "Synthetic unverified fund", AssetType.FUND, null, 1, 100);
+        var fund = instruments.get("unverified-fund");
+        var issuer = instrument("issuer", AssetType.EQUITY, "SYNTH-ISSUER");
+        unverified.put(resolutions.get(fund).instrument().orElseThrow(), new FundComposition(
+                        new CompositionProvenance(SOURCE, fund, RETRIEVED, Optional.empty(), Optional.empty()),
+                        Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.COMPLETE, List.of(row(issuer, "1"))));
+        assertEquals(LookThroughViewPresenter.Completeness.PARTIAL, model(result()).completeness());
     }
 }
