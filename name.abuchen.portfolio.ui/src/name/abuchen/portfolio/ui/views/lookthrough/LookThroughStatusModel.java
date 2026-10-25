@@ -45,7 +45,7 @@ public final class LookThroughStatusModel
 {
     /**
      * Supplies the facts currently worth showing: the global storage facts and
-     * the funds of the current selection. An empty result means that no
+     * the funds of the current portfolio. An empty result means that no
      * look-through data is available for display, for example before the first
      * client input arrives.
      */
@@ -55,7 +55,7 @@ public final class LookThroughStatusModel
         Optional<Snapshot> current();
     }
 
-    /** One display snapshot: global storage facts plus the selected funds. */
+    /** One display snapshot: global storage facts plus the held funds. */
     public record Snapshot(GlobalFacts global, List<FundRef> funds)
     {
         public Snapshot

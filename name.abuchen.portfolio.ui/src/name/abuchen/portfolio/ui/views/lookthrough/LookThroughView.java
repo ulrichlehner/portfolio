@@ -36,6 +36,7 @@ import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.DetailRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 
@@ -53,6 +54,7 @@ public class LookThroughView extends AbstractFinanceView
     private Label scopeLabel;
     private Label denominatorLabel;
     private Label completenessLabel;
+    private Label noticeLabel;
     private TreeViewer viewer;
 
     private final Runnable automaticRefresh = this::automaticRefresh;
@@ -182,6 +184,9 @@ public class LookThroughView extends AbstractFinanceView
         completenessLabel = new Label(container, SWT.NONE);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(completenessLabel);
 
+        noticeLabel = new Label(container, SWT.WRAP);
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(noticeLabel);
+
         var tableContainer = new Composite(container, SWT.NONE);
         GridDataFactory.fillDefaults().grab(true, true).applyTo(tableContainer);
 
@@ -219,6 +224,8 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
+                if (element instanceof DetailRow detail)
+                    return detail.label().isBlank() ? Messages.LookThroughDetailUnnamedInstrument : detail.label();
                 return ((Row) element).label();
             }
 
@@ -227,6 +234,8 @@ public class LookThroughView extends AbstractFinanceView
             {
                 if (element instanceof ExcludedRow excluded)
                     return excluded.reasonText();
+                if (element instanceof DetailRow detail)
+                    return detail.note();
                 return null;
             }
         });
@@ -239,7 +248,11 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
-                return element instanceof ContributionRow contribution ? contribution.sourceText() : null;
+                if (element instanceof ContributionRow contribution)
+                    return contribution.sourceText();
+                if (element instanceof DetailRow detail)
+                    return detail.sourceText();
+                return null;
             }
         });
         support.addColumn(column);
@@ -254,6 +267,8 @@ public class LookThroughView extends AbstractFinanceView
                     return formatAmount(company.direct());
                 if (element instanceof ContributionRow contribution && contribution.direct())
                     return formatAmount(contribution.value());
+                if (element instanceof DetailRow detail && detail.direct())
+                    return formatAmount(detail.value());
                 return null;
             }
         });
@@ -269,6 +284,8 @@ public class LookThroughView extends AbstractFinanceView
                     return formatAmount(company.indirect());
                 if (element instanceof ContributionRow contribution && !contribution.direct())
                     return formatAmount(contribution.value());
+                if (element instanceof DetailRow detail && !detail.direct())
+                    return formatAmount(detail.value());
                 return null;
             }
         });
@@ -284,6 +301,8 @@ public class LookThroughView extends AbstractFinanceView
                     return formatAmount(company.total());
                 if (element instanceof ContributionRow contribution)
                     return formatAmount(contribution.value());
+                if (element instanceof DetailRow detail)
+                    return formatAmount(detail.value());
                 if (element instanceof CategoryRow category)
                     return formatAmount(category.value());
                 return null;
@@ -301,6 +320,8 @@ public class LookThroughView extends AbstractFinanceView
                     return company.shareText().orElse(null);
                 if (element instanceof ContributionRow contribution)
                     return contribution.shareText().orElse(null);
+                if (element instanceof DetailRow detail)
+                    return detail.shareText().orElse(null);
                 if (element instanceof CategoryRow category)
                     return category.shareText().orElse(null);
                 return null;
@@ -325,6 +346,7 @@ public class LookThroughView extends AbstractFinanceView
             scopeLabel.setText(""); //$NON-NLS-1$
             denominatorLabel.setText(Messages.LookThroughLabelNoResult);
             completenessLabel.setText(""); //$NON-NLS-1$
+            noticeLabel.setText(""); //$NON-NLS-1$
             viewer.setInput(List.of());
             updateStatus();
             return;
@@ -333,8 +355,10 @@ public class LookThroughView extends AbstractFinanceView
         var model = presenter.present(result);
         currencyCode = model.currencyCode();
         scopeLabel.setText(model.scopeText());
-        denominatorLabel.setText(model.denominatorText().orElse(Messages.LookThroughLabelNoDenominator));
-        completenessLabel.setText(model.completenessText());
+        denominatorLabel.setText(model.empty() ? Messages.LookThroughLabelEmptyPortfolio
+                        : model.denominatorText().orElse(Messages.LookThroughLabelNoDenominator));
+        completenessLabel.setText(model.empty() ? "" : model.completenessText()); //$NON-NLS-1$
+        noticeLabel.setText(model.unverifiedNotice().orElse("")); //$NON-NLS-1$
         viewer.setInput(model.rows());
         updateStatus();
     }
@@ -443,6 +467,8 @@ public class LookThroughView extends AbstractFinanceView
         {
             if (parentElement instanceof CompanyRow company)
                 return company.contributions().toArray();
+            if (parentElement instanceof CategoryRow category)
+                return category.details().toArray();
             return NO_CHILDREN;
         }
 
@@ -455,7 +481,11 @@ public class LookThroughView extends AbstractFinanceView
         @Override
         public boolean hasChildren(Object element)
         {
-            return element instanceof CompanyRow company && !company.contributions().isEmpty();
+            if (element instanceof CompanyRow company)
+                return !company.contributions().isEmpty();
+            if (element instanceof CategoryRow category)
+                return !category.details().isEmpty();
+            return false;
         }
     }
 }

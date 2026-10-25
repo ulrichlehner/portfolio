@@ -176,12 +176,15 @@ public class PortfolioLensSessionTest
                             result.join().snapshot().latestAttempt().orElseThrow().status());
             assertTrue(result.join().snapshot().usableComposition().isEmpty());
         }
-        assertEquals(Disposition.DEFERRED, refresh("fund-two", true).disposition());
-        assertEquals(3, calls.size());
+        // Unverified but arithmetically usable rows are retained for display and
+        // do not set a failure backoff. A manual refresh is therefore admitted
+        // immediately; the automatic pass still waits for the daily cadence.
+        assertEquals(Disposition.COMPLETED, refresh("fund-two", true).disposition());
+        assertEquals(4, calls.size());
 
         // The provider answered definitively for "missing": no second request.
         assertEquals(Disposition.NO_COMPOSITION, refresh("missing", true).disposition());
-        assertEquals(3, calls.size());
+        assertEquals(4, calls.size());
     }
 
     @Test

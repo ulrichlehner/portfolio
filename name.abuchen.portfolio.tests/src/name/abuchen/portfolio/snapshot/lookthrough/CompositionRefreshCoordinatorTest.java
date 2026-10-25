@@ -300,7 +300,13 @@ public class CompositionRefreshCoordinatorTest
             assertSame(prior, coordinator.read(account, fund).usableComposition().orElseThrow());
             assertEquals(Denominator.UNKNOWN, coordinator.read(account, fund).latestAttempt().orElseThrow()
                             .composition().orElseThrow().denominator());
-            assertEquals(Disposition.DEFERRED, coordinator.refresh(account, fund, true).join().disposition());
+            assertTrue(coordinator.read(account, fund).unverifiedComposition().isPresent());
+            // Arithmetically usable but semantically unverified data is a
+            // definitive per-session answer: it is displayed and does not set a
+            // retry backoff, so a manual refresh may be admitted immediately.
+            var repeated = coordinator.refresh(account, fund, true);
+            executor.runAll();
+            assertEquals(Disposition.COMPLETED, repeated.join().disposition());
             response = this::received;
             var next = coordinator.refresh(account, instrument("other-fund"), true);
             executor.runAll();
@@ -483,6 +489,32 @@ public class CompositionRefreshCoordinatorTest
             assertTrue(rejected.read(account, fund).attemptedAt().isEmpty());
         }
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    public void testUnverifiedCompositionIsKeptForDisplayButNeverAsUsable()
+    {
+        response = (requested, requestedFund) -> {
+            var composition = new FundComposition(new CompositionProvenance(requested, requestedFund, clock.instant(),
+                            Optional.empty(), Optional.empty()), Denominator.UNKNOWN, ExposureBasis.UNKNOWN,
+                            Completeness.UNKNOWN, List.of(new Constituent(instrument("one"), Optional.of("0.5")),
+                                            new Constituent(instrument("two"), Optional.of("0.5"))));
+            return new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(composition), Optional.empty());
+        };
+        try (var coordinator = coordinator())
+        {
+            var pending = coordinator.refresh(account, fund, true);
+            executor.runAll();
+            var refresh = pending.join();
+            assertEquals(Disposition.COMPLETED, refresh.disposition());
+            assertTrue(refresh.snapshot().usableComposition().isEmpty());
+            assertTrue(refresh.snapshot().unverifiedComposition().isPresent());
+            assertTrue(refresh.retryAt().isEmpty());
+            // A received, arithmetically usable answer is a definitive per-session
+            // answer: the automatic pass waits for the daily cadence, not backoff.
+            assertEquals(Disposition.CADENCE, coordinator.refresh(account, fund, false).join().disposition());
+            assertEquals(1, calls.get());
+        }
     }
 
     @Test

@@ -92,7 +92,7 @@ public class LookThroughDataStatusTest
                         FundComposition.Denominator.UNKNOWN);
         var snapshot = new CompositionRefreshCoordinator.Snapshot(Optional.of(RETRIEVAL),
                         Optional.of(new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(preview),
-                                        Optional.empty())), Optional.empty(), List.of());
+                                        Optional.empty())), Optional.empty(), Optional.of(preview), List.of());
         var facts = LookThroughDataStatus.fundFacts(snapshot, ACCOUNT, FUND, false);
         assertTrue(facts.retained().isEmpty());
         var status = first(model(CompositionStore.State.SESSION_ONLY,
@@ -352,7 +352,7 @@ public class LookThroughDataStatusTest
             return new CompositionRefreshCoordinator.Snapshot(Optional.of(RETRIEVAL),
                             Optional.of(new CompositionResult(CompositionResult.Status.RECEIVED,
                                             Optional.of(composition), Optional.empty())),
-                            Optional.of(composition), List.of());
+                            Optional.of(composition), Optional.empty(), List.of());
         }
 
         @Override
@@ -363,7 +363,7 @@ public class LookThroughDataStatusTest
             return CompletableFuture.completedFuture(new CompositionRefreshCoordinator.Refresh(
                             CompositionRefreshCoordinator.Disposition.COMPLETED,
                             new CompositionRefreshCoordinator.Snapshot(Optional.empty(), Optional.empty(),
-                                            Optional.empty(), List.of()),
+                                            Optional.empty(), Optional.empty(), List.of()),
                             Optional.empty()));
         }
     }

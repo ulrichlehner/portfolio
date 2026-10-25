@@ -13,22 +13,51 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Denominator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis;
 
 /**
- * Accepts only nonnegative, unleveraged fractions of total NAV with verified
- * physical-holdings semantics. Provider declarations require independent
- * evidence; neither a reconciled sum nor completeness metadata verifies them.
+ * Two explicit levels of acceptance:
+ * <ul>
+ * <li>{@link #validate(FundComposition)} requires nonnegative, unleveraged
+ * fractions of total NAV with verified physical-holdings semantics. This is the
+ * only level that counts as validated coverage.</li>
+ * <li>{@link #validateArithmetic(FundComposition)} checks the same numerical
+ * rules but not the allocation semantics. Its rows may be displayed as an
+ * unverified decomposition; they never become validated coverage and never
+ * close the provider evidence gate.</li>
+ * </ul>
  * All rows share the snapshot's semantics and are never merged by name or ID.
+ * Neither a reconciled sum nor completeness metadata verifies the declarations.
  */
 public final class CompositionValidator
 {
     public CompositionValidationResult validate(FundComposition source)
     {
         Objects.requireNonNull(source);
+        var diagnostics = semanticsDiagnostics(source);
+        return check(source, diagnostics);
+    }
+
+    /**
+     * Numerical acceptance only. Semantics stay unverified; a caller must label
+     * the result as such and keep coverage partial.
+     */
+    public CompositionValidationResult validateArithmetic(FundComposition source)
+    {
+        Objects.requireNonNull(source);
+        return check(source, new ArrayList<>());
+    }
+
+    private List<Diagnostic> semanticsDiagnostics(FundComposition source)
+    {
         var diagnostics = new ArrayList<Diagnostic>();
         if (source.denominator() != Denominator.TOTAL_FUND_NAV)
             diagnostics.add(new Diagnostic(Reason.UNVERIFIED_DENOMINATOR, Optional.empty()));
         if (source.exposureBasis() != ExposureBasis.PHYSICAL_HOLDINGS)
             diagnostics.add(new Diagnostic(Reason.UNSUPPORTED_EXPOSURE_BASIS, Optional.empty()));
+        return diagnostics;
+    }
 
+    private CompositionValidationResult check(FundComposition source, List<Diagnostic> diagnostics)
+    {
+        boolean semanticsVerified = semanticsDiagnostics(source).isEmpty();
         var rows = new ArrayList<ValidatedRow>();
         var total = BigDecimal.ZERO;
         boolean allWeightsPresent = true;
@@ -65,7 +94,9 @@ public final class CompositionValidator
             diagnostics.add(new Diagnostic(Reason.TOTAL_EXCEEDS_ONE, Optional.empty()));
 
         if (!diagnostics.isEmpty())
-            return new CompositionValidationResult(source, List.of(), Optional.empty(), diagnostics);
-        return new CompositionValidationResult(source, rows, Optional.of(BigDecimal.ONE.subtract(total)), diagnostics);
+            return new CompositionValidationResult(source, List.of(), Optional.empty(), diagnostics,
+                            semanticsVerified);
+        return new CompositionValidationResult(source, rows, Optional.of(BigDecimal.ONE.subtract(total)), diagnostics,
+                        semanticsVerified);
     }
 }

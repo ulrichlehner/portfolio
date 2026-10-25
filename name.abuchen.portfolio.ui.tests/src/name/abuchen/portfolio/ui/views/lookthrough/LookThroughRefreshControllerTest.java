@@ -56,7 +56,7 @@ public class LookThroughRefreshControllerTest
     private static CompositionRefreshCoordinator.Snapshot emptySnapshot()
     {
         return new CompositionRefreshCoordinator.Snapshot(Optional.empty(), Optional.empty(), Optional.empty(),
-                        List.of());
+                        Optional.empty(), List.of());
     }
 
     private static CompositionRefreshCoordinator.Refresh emptyRefresh()
@@ -78,6 +78,7 @@ public class LookThroughRefreshControllerTest
                         Optional.of(new CompositionResult(CompositionResult.Status.FAILED, Optional.empty(),
                                         Optional.empty())), //
                         Optional.of(retained), //
+                        Optional.empty(), //
                         List.of());
         return new CompositionRefreshCoordinator.Refresh(CompositionRefreshCoordinator.Disposition.COMPLETED, snapshot,
                         Optional.empty());

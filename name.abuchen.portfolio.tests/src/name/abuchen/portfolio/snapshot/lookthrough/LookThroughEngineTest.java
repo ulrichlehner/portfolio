@@ -41,6 +41,7 @@ public class LookThroughEngineTest
     private final Map<Security, InstrumentResolution> owned = new HashMap<>();
     private final Map<CompositionInstrument, InstrumentResolution> resolutions = new HashMap<>();
     private final Map<Identifier, FundComposition> compositions = new HashMap<>();
+    private final Map<Identifier, FundComposition> unverifiedCompositions = new HashMap<>();
     private final List<Position> positions = new ArrayList<>();
 
     private Identifier identity(String id)
@@ -101,9 +102,19 @@ public class LookThroughEngineTest
         return new SecuritiesValuation(DATE, positions, diagnostics, Money.of("EUR", total));
     }
 
+    private FundComposition unverifiedComposition(CompositionInstrument fund, Constituent... rows)
+    {
+        var result = new FundComposition(new CompositionProvenance(SOURCE, fund, RETRIEVED, Optional.empty(),
+                        Optional.empty()), Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN,
+                        List.of(rows));
+        unverifiedCompositions.put(resolutions.get(fund).instrument().orElseThrow(), result);
+        return result;
+    }
+
     private LookThroughResult calculate()
     {
-        return new LookThroughEngine().calculate(valuation(List.of()), owned, resolutions, compositions);
+        return new LookThroughEngine().calculate(valuation(List.of()), owned, resolutions, compositions,
+                        unverifiedCompositions);
     }
 
     private void amount(String expected, BigDecimal actual)
@@ -421,5 +432,57 @@ public class LookThroughEngineTest
         assertTrue(result.denominator().isEmpty());
         assertTrue(result.contributions().isEmpty());
         reconciles(result);
+    }
+
+    @Test
+    public void testUnverifiedWeightsBecomeTheirOwnCategoryWithoutCompanyClaim()
+    {
+        var fund = instrument("unverified-fund", AssetType.FUND, null);
+        var position = new CompositionInstrument("Synthetic position", Map.of("ISIN", "SYNTHETIC-CHILD"));
+        holding(fund, 10000);
+        unverifiedComposition(fund, row(position, "0.6"), row(position, "0.4"));
+
+        var result = calculate();
+
+        reconciles(result);
+        assertTrue(result.companies().isEmpty());
+        amount("10000", result.value(Category.UNVERIFIED_HOLDING));
+        amount("0", result.value(Category.UNRESOLVED));
+        assertTrue(result.contributions().stream()
+                        .allMatch(row -> row.category() == Category.UNVERIFIED_HOLDING
+                                        && row.reason() == Reason.PROVIDER_WEIGHT_UNVERIFIED
+                                        && !row.isDirect()));
+    }
+
+    @Test
+    public void testUnverifiedShortfallStaysUnresolvedAndIsNeverNormalized()
+    {
+        var fund = instrument("unverified-short", AssetType.FUND, null);
+        var position = new CompositionInstrument("Synthetic position", Map.of("ISIN", "SYNTHETIC-CHILD"));
+        holding(fund, 10000);
+        unverifiedComposition(fund, row(position, "0.75"));
+
+        var result = calculate();
+
+        reconciles(result);
+        amount("7500", result.value(Category.UNVERIFIED_HOLDING));
+        amount("2500", result.value(Category.UNRESOLVED));
+        assertEquals(Reason.NAV_SHORTFALL, result.contributions().getLast().reason());
+    }
+
+    @Test
+    public void testArithmeticallyInvalidUnverifiedSourceStaysEntirelyUnresolved()
+    {
+        var fund = instrument("unverified-overfull", AssetType.FUND, null);
+        var position = new CompositionInstrument("Synthetic position", Map.of("ISIN", "SYNTHETIC-CHILD"));
+        holding(fund, 10000);
+        unverifiedComposition(fund, row(position, "0.9"), row(position, "0.2"));
+
+        var result = calculate();
+
+        reconciles(result);
+        amount("0", result.value(Category.UNVERIFIED_HOLDING));
+        amount("10000", result.value(Category.UNRESOLVED));
+        assertEquals(Reason.UNUSABLE_COMPOSITION, result.contributions().getFirst().reason());
     }
 }

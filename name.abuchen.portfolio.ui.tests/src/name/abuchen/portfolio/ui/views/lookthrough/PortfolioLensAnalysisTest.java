@@ -103,7 +103,7 @@ public class PortfolioLensAnalysisTest
                         FundComposition.ExposureBasis.PHYSICAL_HOLDINGS, FundComposition.Completeness.PARTIAL,
                         List.of(new FundComposition.Constituent(child, Optional.of("0.5"))));
         var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.of(composition),
-                        List.of(resolution(child, AssetType.EQUITY), resolution(parent, AssetType.FUND)));
+                        Optional.empty(), List.of(resolution(child, AssetType.EQUITY)));
         var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(share, fund), List.of(retained));
         assertEquals(Money.of("EUR", 10000), result.denominator().orElseThrow());
         var company = result.companies().getFirst();
@@ -111,6 +111,24 @@ public class PortfolioLensAnalysisTest
         assertEquals(0, company.indirect().compareTo(new BigDecimal("2000")));
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("2000")));
         assertEquals(0, result.total().compareTo(new BigDecimal("10000")));
+    }
+
+    @Test
+    public void testUnverifiedProviderWeightsAreShownWithoutCompanyClaim()
+    {
+        var fund = holding("SYNTHETIC-FUND", 4);
+        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var child = new CompositionInstrument("Synthetic position", java.util.Map.of("ISIN", "SYNTHETIC-CHILD"));
+        var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
+                        Optional.empty()), FundComposition.Denominator.UNKNOWN,
+                        FundComposition.ExposureBasis.UNKNOWN, FundComposition.Completeness.UNKNOWN,
+                        List.of(new FundComposition.Constituent(child, Optional.of("0.5"))));
+        var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.empty(),
+                        Optional.of(composition), List.of());
+        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained));
+        assertEquals(0, result.value(Category.UNVERIFIED_HOLDING).compareTo(new BigDecimal("2000")));
+        assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("2000")));
+        assertTrue(result.companies().isEmpty());
     }
 
     @Test

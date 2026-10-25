@@ -62,7 +62,7 @@ public class LookThroughStatusModelTest
     {
         return new CompositionRefreshCoordinator.Snapshot(Optional.of(NOW.minus(Duration.ofHours(2))), //
                         attempt.map(status -> new CompositionResult(status, retained, Optional.empty())), retained,
-                        List.of());
+                        Optional.empty(), List.of());
     }
 
     private static FundComposition composition(FundRef fund, Instant retrievedAt)

@@ -68,4 +68,29 @@ public record InstrumentEvidence(Map<String, String> identifiers, Assertion<Iden
         Objects.requireNonNull(classification);
         Objects.requireNonNull(company);
     }
+
+    public static final String ISIN = "ISIN"; //$NON-NLS-1$
+
+    /**
+     * Evidence supplied by a provider that answered with an ETF holdings list for
+     * exactly this identifier. The provider thereby classifies the instrument as a
+     * fund; nothing is inferred from its label. The allocation semantics of the
+     * rows stay independent and unverified here.
+     */
+    public static InstrumentEvidence fundFromComposition(FundComposition composition)
+    {
+        Objects.requireNonNull(composition);
+        var identifiers = composition.provenance().fund().identifiers();
+        var identity = Optional.ofNullable(identifiers.get(ISIN)) //
+                        .map(value -> new Identifier(ISIN, value)) //
+                        .or(() -> identifiers.entrySet().stream().filter(entry -> !entry.getValue().isBlank())
+                                        .sorted(Map.Entry.comparingByKey())
+                                        .map(entry -> new Identifier(entry.getKey(), entry.getValue())).findFirst());
+        if (identity.isEmpty())
+            throw new IllegalArgumentException();
+        var provenance = new Provenance(composition.provenance().source(), "etf/holdings", //$NON-NLS-1$
+                        composition.provenance().retrievedAt());
+        return new InstrumentEvidence(identifiers, new Assertion<>(identity.orElseThrow(), provenance),
+                        Optional.of(new Assertion<>(AssetType.FUND, provenance)), Optional.empty());
+    }
 }

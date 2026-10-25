@@ -13,7 +13,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
 
 /**
  * Synthetic-only tests of the request candidate mapping. No client data, no
- * credentials and no provider access; only the translation from selected
+ * credentials and no provider access; only the translation from held
  * securities to fund references is exercised.
  */
 @SuppressWarnings("nls")

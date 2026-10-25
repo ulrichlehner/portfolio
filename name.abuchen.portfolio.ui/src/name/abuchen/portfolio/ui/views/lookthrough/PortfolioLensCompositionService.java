@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.time.Clock;
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -8,7 +9,6 @@ import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 
 import org.eclipse.e4.core.di.annotations.Creatable;
@@ -20,18 +20,21 @@ import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePreferences;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
+import name.abuchen.portfolio.snapshot.lookthrough.HeldSecurities;
 import name.abuchen.portfolio.ui.preferences.EclipseCompositionPersistencePreferences;
 import name.abuchen.portfolio.ui.preferences.EulerpoolPreferencePage;
-import name.abuchen.portfolio.ui.selection.SelectionService;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.GlobalFacts;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.RefreshGateway;
 
 /**
  * Application wiring with one provider budget/session across clients and views.
- * Only selected identifiers are sent; selection does not assert fund or equity
- * classification. Unverified evidence remains unresolved in the calculation.
- * Real provider data stays in memory while persistence permission is unverified.
+ * The scope is every security with a nonzero net position across the client's
+ * portfolios, not an external selection: the view is a portfolio x-ray and needs
+ * no prior selection step. Only held identifiers are sent; holding does not
+ * assert fund or equity classification. Unverified evidence stays unverified in
+ * the calculation and never becomes validated coverage. Real provider data stays
+ * in memory while persistence permission is unverified.
  */
 @Creatable
 @Singleton
@@ -49,9 +52,6 @@ public final class PortfolioLensCompositionService
         private static final PortfolioLensSession SESSION = new PortfolioLensSession(PROVIDER,
                         CompositionCredentials.local(), Clock.systemUTC(), EXECUTOR);
     }
-
-    @Inject
-    private SelectionService selectionService;
 
     private final CompositionPersistencePreferences preferences = new EclipseCompositionPersistencePreferences();
 
@@ -107,9 +107,7 @@ public final class PortfolioLensCompositionService
         @Override
         public List<Security> securities()
         {
-            return selectionService == null ? List.of()
-                            : selectionService.getSelection(client).map(value -> List.copyOf(value.getSecurities()))
-                                            .orElse(List.of());
+            return HeldSecurities.of(client, LocalDate.now());
         }
 
         @Override

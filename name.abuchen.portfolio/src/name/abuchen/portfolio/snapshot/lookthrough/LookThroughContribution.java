@@ -12,13 +12,22 @@ public record LookThroughContribution(SecuritiesValuation.Position origin,
 {
     public enum Category
     {
-        COMPANY, UNGROUPED_EQUITY, CASH_OR_OTHER, UNRESOLVED
+        COMPANY, UNGROUPED_EQUITY, CASH_OR_OTHER, UNRESOLVED,
+
+        /**
+         * A provider-supplied fund position whose allocation semantics are not
+         * verified. Shown for transparency, never counted as validated coverage.
+         */
+        UNVERIFIED_HOLDING
     }
 
     public enum Reason
     {
         CLASSIFIED, MISSING_RESOLUTION, UNRESOLVED_INSTRUMENT, MISSING_COMPOSITION, UNUSABLE_COMPOSITION,
-        COMPOSITION_IDENTITY_MISMATCH, NAV_SHORTFALL, CYCLE, DEPTH_LIMIT
+        COMPOSITION_IDENTITY_MISMATCH, NAV_SHORTFALL, CYCLE, DEPTH_LIMIT,
+
+        /** Arithmetic-usable provider weights without verified semantics. */
+        PROVIDER_WEIGHT_UNVERIFIED
     }
 
     /** Source occurrence indices preserve even identical legitimate rows. */

@@ -29,6 +29,10 @@ import name.abuchen.portfolio.ui.Messages;
  * Shares are display values only. They never decide whether coverage is complete:
  * even a single minor unit of unresolved value keeps the result partial although
  * every displayed share may round to a full 100 percent.
+ * <p>
+ * Unverified provider weights are shown as their own category with per-position
+ * detail rows. They are visible for transparency and never described as verified
+ * company exposure.
  */
 public final class LookThroughViewPresenter
 {
@@ -40,6 +44,10 @@ public final class LookThroughViewPresenter
                     .thenComparing(company -> company.identity().value()) //
                     .thenComparing(company -> company.identity().namespace());
 
+    private static final Comparator<DetailRow> BY_DETAIL_VALUE = Comparator //
+                    .comparing(DetailRow::value).reversed() //
+                    .thenComparing(DetailRow::label);
+
     public enum Completeness
     {
         COMPLETE, PARTIAL
@@ -47,10 +55,10 @@ public final class LookThroughViewPresenter
 
     public enum RowKind
     {
-        COMPANY, CONTRIBUTION, CATEGORY, EXCLUDED
+        COMPANY, CONTRIBUTION, CATEGORY, DETAIL, EXCLUDED
     }
 
-    public sealed interface Row permits CompanyRow, ContributionRow, CategoryRow, ExcludedRow
+    public sealed interface Row permits CompanyRow, ContributionRow, CategoryRow, DetailRow, ExcludedRow
     {
         RowKind kind();
 
@@ -85,10 +93,29 @@ public final class LookThroughViewPresenter
         }
     }
 
+    /**
+     * One position inside a non-company coverage category. The note states why
+     * the position is not verified company exposure.
+     */
+    public record DetailRow(String label, String sourceText, String note, boolean direct, BigDecimal value,
+                    Optional<BigDecimal> share, Optional<String> shareText) implements Row
+    {
+        @Override
+        public RowKind kind()
+        {
+            return RowKind.DETAIL;
+        }
+    }
+
     /** Always-present aggregate for a non-company coverage category. */
     public record CategoryRow(Category category, String label, BigDecimal value, Optional<BigDecimal> share,
-                    Optional<String> shareText) implements Row
+                    Optional<String> shareText, List<DetailRow> details) implements Row
     {
+        public CategoryRow
+        {
+            details = List.copyOf(details);
+        }
+
         @Override
         public RowKind kind()
         {
@@ -108,7 +135,7 @@ public final class LookThroughViewPresenter
 
     public record Model(LocalDate valuationDate, String currencyCode, String scopeText, Optional<Money> denominator,
                     Optional<String> denominatorText, Completeness completeness, String completenessText,
-                    List<Row> rows)
+                    Optional<String> unverifiedNotice, boolean empty, List<Row> rows)
     {
         public Model
         {
@@ -122,6 +149,8 @@ public final class LookThroughViewPresenter
 
         var denominator = result.denominator();
         var denominatorAmount = denominator.map(value -> BigDecimal.valueOf(value.getAmount()));
+        var valuation = result.valuation();
+        var empty = valuation.positions().isEmpty() && valuation.diagnostics().isEmpty();
 
         var rows = new ArrayList<Row>();
         result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER)
@@ -129,16 +158,23 @@ public final class LookThroughViewPresenter
 
         // The coverage categories are rendered even when zero: their absence
         // would look like complete coverage of everything that was not resolved.
-        rows.add(categoryRow(result, Category.UNGROUPED_EQUITY, denominatorAmount));
-        rows.add(categoryRow(result, Category.CASH_OR_OTHER, denominatorAmount));
-        rows.add(categoryRow(result, Category.UNRESOLVED, denominatorAmount));
+        // Unverified provider positions get their own category, and only when
+        // present, so a portfolio without them stays uncluttered. An empty
+        // portfolio shows the explicit empty state instead of zero rows.
+        if (!empty)
+        {
+            if (result.value(Category.UNVERIFIED_HOLDING).signum() > 0)
+                rows.add(categoryRow(result, Category.UNVERIFIED_HOLDING, denominatorAmount));
+            rows.add(categoryRow(result, Category.UNGROUPED_EQUITY, denominatorAmount));
+            rows.add(categoryRow(result, Category.CASH_OR_OTHER, denominatorAmount));
+            rows.add(categoryRow(result, Category.UNRESOLVED, denominatorAmount));
+        }
 
-        for (var diagnostic : result.valuation().diagnostics())
+        for (var diagnostic : valuation.diagnostics())
             rows.add(new ExcludedRow(Objects.toString(diagnostic.security().getName(), ""), //$NON-NLS-1$
                             diagnostic.reason(), exclusionText(diagnostic.reason())));
 
         var completeness = completeness(result, denominator);
-        var valuation = result.valuation();
 
         return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(),
                         MessageFormat.format(Messages.LookThroughLabelScope, Values.Date.format(valuation.date())),
@@ -148,7 +184,10 @@ public final class LookThroughViewPresenter
                         completeness,
                         completeness == Completeness.COMPLETE ? Messages.LookThroughLabelComplete
                                         : Messages.LookThroughLabelPartial,
-                        rows);
+                        result.value(Category.UNVERIFIED_HOLDING).signum() > 0
+                                        ? Optional.of(Messages.LookThroughLabelUnverifiedNotice)
+                                        : Optional.empty(),
+                        empty, rows);
     }
 
     /** Formats an exact minor-unit value for display only, never for decisions. */
@@ -170,9 +209,7 @@ public final class LookThroughViewPresenter
 
     private ContributionRow contributionRow(LookThroughContribution contribution, Optional<BigDecimal> denominator)
     {
-        var path = contribution.path().stream() //
-                        .map(edge -> edge.composition().source().provenance().fund().label()) //
-                        .collect(Collectors.joining(" / ")); //$NON-NLS-1$
+        var path = pathText(contribution);
         var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
         var sourceText = contribution.isDirect()
                         ? MessageFormat.format(Messages.LookThroughSourceDirect, origin)
@@ -187,7 +224,65 @@ public final class LookThroughViewPresenter
     {
         var value = result.value(category);
         var share = share(value, denominator);
-        return new CategoryRow(category, categoryText(category), value, share, shareText(share));
+        return new CategoryRow(category, categoryText(category), value, share, shareText(share),
+                        details(result, category, denominator));
+    }
+
+    private List<DetailRow> details(LookThroughResult result, Category category, Optional<BigDecimal> denominator)
+    {
+        return result.contributions().stream() //
+                        .filter(contribution -> contribution.category() == category) //
+                        .map(contribution -> detailRow(contribution, denominator)) //
+                        .sorted(BY_DETAIL_VALUE) //
+                        .toList();
+    }
+
+    private DetailRow detailRow(LookThroughContribution contribution, Optional<BigDecimal> denominator)
+    {
+        var path = pathText(contribution);
+        var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
+        var sourceText = contribution.isDirect()
+                        ? MessageFormat.format(Messages.LookThroughSourceDirect, origin)
+                        : MessageFormat.format(Messages.LookThroughSourceIndirect, path, origin);
+        var share = share(contribution.value(), denominator);
+        return new DetailRow(Objects.toString(contribution.instrument().label(), ""), sourceText, //$NON-NLS-1$
+                        note(contribution), contribution.isDirect(), contribution.value(), share, shareText(share));
+    }
+
+    private String pathText(LookThroughContribution contribution)
+    {
+        return contribution.path().stream() //
+                        .map(edge -> edge.composition().source().provenance().fund().label()) //
+                        .collect(Collectors.joining(" / ")); //$NON-NLS-1$
+    }
+
+    private String note(LookThroughContribution contribution)
+    {
+        return switch (contribution.category())
+        {
+            case UNVERIFIED_HOLDING -> Messages.LookThroughReasonProviderWeightUnverified;
+            case UNGROUPED_EQUITY -> Messages.LookThroughReasonMissingCompany;
+            case UNRESOLVED -> unresolvedText(contribution);
+            case CASH_OR_OTHER -> ""; //$NON-NLS-1$
+            default -> ""; //$NON-NLS-1$
+        };
+    }
+
+    private String unresolvedText(LookThroughContribution contribution)
+    {
+        if (contribution.resolution().isEmpty())
+            return Messages.LookThroughReasonMissingResolution;
+        return switch (contribution.resolution().orElseThrow().reason())
+        {
+            case MISSING_IDENTIFIERS -> Messages.LookThroughReasonMissingIdentifiers;
+            case MISSING_IDENTITY -> Messages.LookThroughReasonMissingIdentity;
+            case AMBIGUOUS_IDENTITY -> Messages.LookThroughReasonAmbiguousIdentity;
+            case UNKNOWN_CLASSIFICATION -> Messages.LookThroughReasonUnknownClassification;
+            case AMBIGUOUS_CLASSIFICATION -> Messages.LookThroughReasonAmbiguousClassification;
+            case MISSING_COMPANY -> Messages.LookThroughReasonMissingCompany;
+            case AMBIGUOUS_COMPANY -> Messages.LookThroughReasonAmbiguousCompany;
+            case VERIFIED -> Messages.LookThroughReasonMissingResolution;
+        };
     }
 
     private Optional<BigDecimal> share(BigDecimal value, Optional<BigDecimal> denominator)
@@ -204,9 +299,9 @@ public final class LookThroughViewPresenter
     {
         // A present denominator already implies a complete valuation with a
         // positive valued subset. Complete coverage additionally requires the
-        // entire selection to be supported, no unresolved value at all (checked
-        // exactly, never through a rounded share), no unverified company
-        // grouping and an affirmative complete declaration for every
+        // entire selection to be supported, no unresolved or unverified value at
+        // all (checked exactly, never through a rounded share), no unverified
+        // company grouping and an affirmative complete declaration for every
         // contributing composition. Display rounding is deliberately not
         // consulted.
         var valuation = result.valuation();
@@ -214,6 +309,7 @@ public final class LookThroughViewPresenter
                         && valuation.isValuationComplete() //
                         && valuation.isEntireSelectionSupported() //
                         && result.value(Category.UNRESOLVED).signum() == 0 //
+                        && result.value(Category.UNVERIFIED_HOLDING).signum() == 0 //
                         && result.value(Category.UNGROUPED_EQUITY).signum() == 0 //
                         && hasAffirmativelyCompleteCompositions(result);
         return complete ? Completeness.COMPLETE : Completeness.PARTIAL;
@@ -243,6 +339,7 @@ public final class LookThroughViewPresenter
             case CASH_OR_OTHER -> Messages.LookThroughCategoryCashOrOther;
             case UNGROUPED_EQUITY -> Messages.LookThroughCategoryUngroupedEquity;
             case UNRESOLVED -> Messages.LookThroughCategoryUnresolved;
+            case UNVERIFIED_HOLDING -> Messages.LookThroughCategoryUnverified;
             default -> throw new IllegalArgumentException(category.name());
         };
     }

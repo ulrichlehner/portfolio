@@ -37,7 +37,10 @@ import name.abuchen.portfolio.online.FundCompositionProvider;
  * identifier lookup). Enrichment admits at most maxEnrichmentLookups operations
  * per refresh through InstrumentResolver's acquirePermit contract. Only usable
  * validated snapshots are enriched. Prior usable data keeps its original dates
- * after retrieval/validation failures; source previews remain separate. This is
+ * after retrieval/validation failures; source previews remain separate. A
+ * composition that is arithmetically usable but not semantically verified is
+ * retained separately as an unverified snapshot for display only: it is never
+ * persisted, never enriched and never counts as validated coverage. This is
  * not the retention/persistence store. UI jobs and interruptible transport are
  * separate concerns: close prevents queued requests and further enrichment,
  * discards late responses and clears memory, but cannot interrupt an already
@@ -57,13 +60,15 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
     }
 
     public record Snapshot(Optional<Instant> attemptedAt, Optional<CompositionResult> latestAttempt,
-                    Optional<FundComposition> usableComposition, List<InstrumentResolution> resolutions)
+                    Optional<FundComposition> usableComposition, Optional<FundComposition> unverifiedComposition,
+                    List<InstrumentResolution> resolutions)
     {
         public Snapshot
         {
             Objects.requireNonNull(attemptedAt);
             Objects.requireNonNull(latestAttempt);
             Objects.requireNonNull(usableComposition);
+            Objects.requireNonNull(unverifiedComposition);
             resolutions = List.copyOf(resolutions);
         }
     }
@@ -138,7 +143,7 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
 
     private static Snapshot emptySnapshot()
     {
-        return new Snapshot(Optional.empty(), Optional.empty(), Optional.empty(), List.of());
+        return new Snapshot(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), List.of());
     }
 
     private Key key(ProviderAccount account, CompositionInstrument fund)
@@ -221,7 +226,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                 return;
             }
             entry.snapshot = new Snapshot(Optional.of(clock.instant()), entry.snapshot.latestAttempt(),
-                            entry.snapshot.usableComposition(), entry.snapshot.resolutions());
+                            entry.snapshot.usableComposition(), entry.snapshot.unverifiedComposition(),
+                            entry.snapshot.resolutions());
         }
 
         CompositionResult result;
@@ -244,7 +250,14 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                 return;
             budget.record(key.account(), result);
         }
-        var usable = result.composition().filter(value -> new CompositionValidator().validate(value).isUsable());
+        var validator = new CompositionValidator();
+        var received = result.composition();
+        var usable = received.filter(value -> validator.validate(value).isUsable());
+        // Arithmetic acceptance only, explicitly unverified. Never persisted and
+        // never enriched; it is displayed for transparency in this session.
+        var unverified = usable.isEmpty()
+                        ? received.filter(value -> validator.validateArithmetic(value).isUsable())
+                        : Optional.<FundComposition>empty();
         synchronized (this)
         {
             if (active(entry, future))
@@ -256,7 +269,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                 boolean noComposition = result.status() == CompositionResult.Status.UNAVAILABLE
                                 || result.status() == CompositionResult.Status.UNSUPPORTED;
                 entry.noComposition = noComposition;
-                boolean unusableComposition = !noComposition && result.composition().isPresent() && usable.isEmpty();
+                boolean unusableComposition = !noComposition && received.isPresent() && usable.isEmpty()
+                                && unverified.isEmpty();
                 entry.retryAt = unusableComposition ? clock.instant().plus(budget.getFailureBackoff())
                                 : Instant.MIN;
             }
@@ -266,9 +280,17 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
         {
             if (!active(entry, future))
                 return;
-            entry.snapshot = new Snapshot(entry.snapshot.attemptedAt(), Optional.of(result),
-                            usable.isPresent() ? usable : entry.snapshot.usableComposition(),
-                            resolutions.orElse(entry.snapshot.resolutions()));
+            var nextUsable = entry.snapshot.usableComposition();
+            var nextUnverified = entry.snapshot.unverifiedComposition();
+            if (usable.isPresent())
+            {
+                nextUsable = usable;
+                nextUnverified = Optional.empty();
+            }
+            else if (unverified.isPresent())
+                nextUnverified = unverified;
+            entry.snapshot = new Snapshot(entry.snapshot.attemptedAt(), Optional.of(result), nextUsable,
+                            nextUnverified, resolutions.orElse(entry.snapshot.resolutions()));
             finish(entry, future, new Refresh(Disposition.COMPLETED, entry.snapshot, Optional.empty()));
         }
     }
@@ -351,7 +373,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                             .filter(status -> status == CompositionResult.Status.AUTHENTICATION_FAILED
                                             || status == CompositionResult.Status.ENTITLEMENT_FAILED).isPresent())
                 entry.snapshot = new Snapshot(Optional.empty(), entry.snapshot.latestAttempt(),
-                                entry.snapshot.usableComposition(), entry.snapshot.resolutions());
+                                entry.snapshot.usableComposition(), entry.snapshot.unverifiedComposition(),
+                                entry.snapshot.resolutions());
             if (entry.pending != null)
                 finish(entry, entry.pending,
                                 new Refresh(Disposition.CONFIGURATION_CHANGED, entry.snapshot, Optional.empty()));

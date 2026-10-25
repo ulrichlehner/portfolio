@@ -58,6 +58,48 @@ public class CompositionValidatorTest
     }
 
     @Test
+    public void testArithmeticAcceptanceKeepsUnknownSemanticsUnverified()
+    {
+        var source = snapshot(Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN,
+                        List.of(row("0.30"), row("0.50")));
+
+        var strict = validator.validate(source);
+        assertFalse(strict.isUsable());
+        assertFalse(strict.semanticsVerified());
+
+        var arithmetic = validator.validateArithmetic(source);
+        assertTrue(arithmetic.isUsable());
+        assertFalse(arithmetic.semanticsVerified());
+        assertSame(source, arithmetic.source());
+        assertEquals(2, arithmetic.rows().size());
+        assertEquals(new BigDecimal("0.20"), arithmetic.shortfall().orElseThrow());
+    }
+
+    @Test
+    public void testVerifiedSemanticsAreReportedIndependentlyOfArithmetic()
+    {
+        var verified = snapshot("0.30", "0.50");
+        assertTrue(validator.validate(verified).semanticsVerified());
+        assertTrue(validator.validateArithmetic(verified).semanticsVerified());
+
+        var overfull = snapshot("0.70", "0.50");
+        assertFalse(validator.validate(overfull).isUsable());
+        assertTrue(validator.validate(overfull).semanticsVerified());
+    }
+
+    @Test
+    public void testArithmeticRejectsMissingAndNegativeWeightsRegardlessOfSemantics()
+    {
+        var missing = snapshot(Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN,
+                        List.of(row(null)));
+        assertFalse(validator.validateArithmetic(missing).isUsable());
+
+        var negative = snapshot(Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN,
+                        List.of(row("-0.10")));
+        assertFalse(validator.validateArithmetic(negative).isUsable());
+    }
+
+    @Test
     public void testPartialFractionsAreNotNormalized()
     {
         var source = snapshot("0.30", "0.50");

@@ -11,6 +11,11 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Constituent;
  * of completeness. The source and its provenance remain available even on
  * rejection. Unusable results expose no calculation rows or numerical shortfall:
  * the entire fund must remain unresolved. Diagnostics contain no source payload.
+ * <p>
+ * A result can be arithmetically usable while its allocation semantics stay
+ * unverified. Such a source may be displayed as an unverified decomposition, but
+ * it is never validated coverage: neither its rows nor a reconciled sum prove
+ * the denominator, the exposure basis or completeness.
  */
 public final class CompositionValidationResult
 {
@@ -34,14 +39,16 @@ public final class CompositionValidationResult
     private final List<ValidatedRow> rows;
     private final Optional<BigDecimal> shortfall;
     private final List<Diagnostic> diagnostics;
+    private final boolean semanticsVerified;
 
     CompositionValidationResult(FundComposition source, List<ValidatedRow> rows, Optional<BigDecimal> shortfall,
-                    List<Diagnostic> diagnostics)
+                    List<Diagnostic> diagnostics, boolean semanticsVerified)
     {
         this.source = source;
         this.rows = List.copyOf(rows);
         this.shortfall = shortfall;
         this.diagnostics = List.copyOf(diagnostics);
+        this.semanticsVerified = semanticsVerified;
     }
 
     public FundComposition source()
@@ -68,5 +75,15 @@ public final class CompositionValidationResult
     public List<Diagnostic> diagnostics()
     {
         return diagnostics;
+    }
+
+    /**
+     * True when the provider declarations allow treating the rows as validated
+     * fractions of total fund NAV with physical-holdings semantics. Independent
+     * of the arithmetic outcome; only an affirmative declaration counts.
+     */
+    public boolean semanticsVerified()
+    {
+        return semanticsVerified;
     }
 }

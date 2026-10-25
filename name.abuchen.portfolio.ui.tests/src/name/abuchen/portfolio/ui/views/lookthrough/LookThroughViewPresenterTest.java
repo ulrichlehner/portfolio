@@ -69,6 +69,7 @@ public class LookThroughViewPresenterTest
     private final Map<Security, InstrumentResolution> owned = new HashMap<>();
     private final Map<CompositionInstrument, InstrumentResolution> resolutions = new HashMap<>();
     private final Map<Identifier, FundComposition> compositions = new HashMap<>();
+    private final Map<Identifier, FundComposition> unverified = new HashMap<>();
     private final Map<String, CompositionInstrument> instruments = new HashMap<>();
     private final List<Security> selected = new ArrayList<>();
 
@@ -139,6 +140,11 @@ public class LookThroughViewPresenterTest
 
     private LookThroughResult result()
     {
+        return result(unverified);
+    }
+
+    private LookThroughResult result(Map<Identifier, FundComposition> unverifiedCompositions)
+    {
         portfolio.addTo(client);
 
         var rates = new ExchangeRateProviderFactory(client)
@@ -151,7 +157,7 @@ public class LookThroughViewPresenterTest
         };
         var snapshot = ClientSnapshot.create(client, new CurrencyConverterImpl(rates, "EUR"), VALUATION_DATE);
         var valuation = new SecuritiesValuationAdapter(rates).value(snapshot, selected);
-        return new LookThroughEngine().calculate(valuation, owned, resolutions, compositions);
+        return new LookThroughEngine().calculate(valuation, owned, resolutions, compositions, unverifiedCompositions);
     }
 
     private Model model(LookThroughResult result)
@@ -427,5 +433,38 @@ public class LookThroughViewPresenterTest
                 assertEquals(LookThroughViewPresenter.RowKind.EXCLUDED, row.kind());
             }
         }
+    }
+
+    @Test
+    public void testUnverifiedProviderPositionsGetTheirOwnCategoryAndNotice()
+    {
+        hold("unverified-fund", "Synthetic unverified fund", AssetType.FUND, null, 1, 100);
+        var fund = instrument("unverified-fund", AssetType.FUND, null);
+        var position = new CompositionInstrument("Synthetic provider position",
+                        Map.of("synthetic:instrument", "provider-position"));
+        var provenance = new CompositionProvenance(SOURCE, fund, RETRIEVED, Optional.empty(), Optional.empty());
+        unverified.put(resolutions.get(fund).instrument().orElseThrow(), new FundComposition(provenance,
+                        Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.UNKNOWN, List.of(row(position, "1"))));
+
+        var model = model(result());
+
+        assertEquals(LookThroughViewPresenter.Completeness.PARTIAL, model.completeness());
+        assertTrue(model.unverifiedNotice().isPresent());
+        var category = category(model, Category.UNVERIFIED_HOLDING);
+        amount("10000", category.value());
+        assertEquals(1, category.details().size());
+        assertEquals("Synthetic provider position", category.details().getFirst().label());
+        assertEquals(LookThroughViewPresenter.RowKind.DETAIL, category.details().getFirst().kind());
+        assertTrue(model.rows().stream().noneMatch(CompanyRow.class::isInstance));
+    }
+
+    @Test
+    public void testEmptyPortfolioIsReportedAsEmptyWithoutInventingCategories()
+    {
+        var model = model(result());
+
+        assertTrue(model.empty());
+        assertTrue(model.rows().isEmpty());
+        assertTrue(model.denominator().isEmpty());
     }
 }

@@ -9,12 +9,11 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
 
 /**
  * Supplies the look-through view with the memory-only access to retained
- * compositions, the global storage facts and the funds of the current
- * selection.
+ * compositions, the global storage facts and the funds of the current portfolio.
  * <p>
  * Implementations must not perform requests in any of these methods. The
  * gateway read is memory-only, {@link #globalFacts()} reports the current
- * store state and {@link #funds()} only lists the selected funds. Every method
+ * store state and {@link #funds()} only lists the held funds. Every method
  * is called on the user interface thread while rendering or while preparing a
  * manual refresh, so a request here would turn a redraw or a resize into
  * provider traffic.
@@ -25,7 +24,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  */
 public interface LookThroughCompositionSource
 {
-    /** Owned selection, including securities without provider identifiers. */
+    /** Securities with a nonzero net position, including those without identifiers. */
     default List<Security> securities()
     {
         return List.of();

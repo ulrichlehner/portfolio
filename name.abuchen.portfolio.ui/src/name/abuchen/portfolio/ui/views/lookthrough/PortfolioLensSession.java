@@ -25,8 +25,8 @@ import name.abuchen.portfolio.snapshot.lookthrough.SessionCompositionStore;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.RefreshGateway;
 
 /**
- * One provider session shared across clients. Serial admission drains a selection
- * without overflowing the coordinator's bounded transport capacity. Queued and
+ * One provider session shared across clients. Serial admission drains the held
+ * portfolio without overflowing the coordinator's bounded transport capacity. Queued and
  * running requests coalesce by account and identifiers, independent of labels.
  * Credential storage and all request admission run off the UI thread.
  */
@@ -76,7 +76,8 @@ final class PortfolioLensSession implements RefreshGateway
         // Keep source previews and attempt dates even when validation rejected
         // the payload. Only the store decides whether data is usable/retained.
         return new Snapshot(latest.attemptedAt(), latest.latestAttempt(),
-                        retained.usableComposition().map(CompositionValidationResult::source), latest.resolutions());
+                        retained.usableComposition().map(CompositionValidationResult::source),
+                        latest.unverifiedComposition(), latest.resolutions());
     }
 
     @Override
