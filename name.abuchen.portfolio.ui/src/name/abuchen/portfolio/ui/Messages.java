@@ -1022,6 +1022,7 @@ public class Messages extends NLS
     public static String LookThroughLabelComplete;
     public static String LookThroughLabelDenominator;
     public static String LookThroughLabelEmptyPortfolio;
+    public static String LookThroughLabelLoading;
     public static String LookThroughLabelNoDenominator;
     public static String LookThroughLabelNoResult;
     public static String LookThroughLabelPartial;

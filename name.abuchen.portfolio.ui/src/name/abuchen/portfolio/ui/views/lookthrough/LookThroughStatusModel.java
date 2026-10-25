@@ -72,11 +72,11 @@ public final class LookThroughStatusModel
     private final LookThroughRefreshController controller;
 
     private final Map<FundRef, CompositionRefreshCoordinator.Refresh> lastRefreshes = new HashMap<>();
-    private Set<FundRef> refreshingFunds = Set.of();
+    private volatile Set<FundRef> refreshingFunds = Set.of();
     private Object callToken;
     private Object dispatchingToken;
     private final List<Result> earlyResults = new ArrayList<>();
-    private int outstanding;
+    private volatile int outstanding;
     private Runnable changeListener = () -> {
     };
 
@@ -99,6 +99,18 @@ public final class LookThroughStatusModel
     public boolean isRefreshing()
     {
         return callToken != null;
+    }
+
+    /** Number of funds whose outcome is still outstanding in the running call. */
+    public int outstanding()
+    {
+        return outstanding;
+    }
+
+    /** Number of funds in the running refresh call. */
+    public int total()
+    {
+        return refreshingFunds.size();
     }
 
     /**

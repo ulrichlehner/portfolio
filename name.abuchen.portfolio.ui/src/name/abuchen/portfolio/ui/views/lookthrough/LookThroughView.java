@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
+import java.text.MessageFormat;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
@@ -55,6 +56,7 @@ public class LookThroughView extends AbstractFinanceView
     private Label denominatorLabel;
     private Label completenessLabel;
     private Label noticeLabel;
+    private Label loadingLabel;
     private TreeViewer viewer;
 
     private final Runnable automaticRefresh = this::automaticRefresh;
@@ -187,6 +189,9 @@ public class LookThroughView extends AbstractFinanceView
 
         noticeLabel = new Label(container, SWT.WRAP);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(noticeLabel);
+
+        loadingLabel = new Label(container, SWT.NONE);
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(loadingLabel);
 
         var tableContainer = new Composite(container, SWT.NONE);
         GridDataFactory.fillDefaults().grab(true, true).applyTo(tableContainer);
@@ -375,7 +380,25 @@ public class LookThroughView extends AbstractFinanceView
             return;
         var model = statusModel;
         setInformationPaneInput(model != null ? model.status().orElse(null) : null);
+        updateLoadingText();
         updateActionEnablement();
+    }
+
+    /**
+     * Shows that a long classification pass is running. The first x-ray of a
+     * broad fund needs one provider lookup per constituent, so the table alone
+     * is not enough feedback.
+     */
+    private void updateLoadingText()
+    {
+        if (loadingLabel == null || loadingLabel.isDisposed())
+            return;
+        var model = statusModel;
+        if (model != null && model.isRefreshing() && model.total() > 0)
+            loadingLabel.setText(MessageFormat.format(Messages.LookThroughLabelLoading,
+                            model.total() - model.outstanding(), model.total()));
+        else
+            loadingLabel.setText(""); //$NON-NLS-1$
     }
 
     private void updateActionEnablement()

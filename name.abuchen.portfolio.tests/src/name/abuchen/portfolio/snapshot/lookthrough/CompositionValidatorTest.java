@@ -217,13 +217,28 @@ public class CompositionValidatorTest
     @Test
     public void testOverfullTotalsAreRejectedWithoutToleranceOrNormalization()
     {
-        for (var source : List.of(snapshot("0.6", "0.5"), snapshot("0.6", "0.6"), snapshot("1", "1E-40"),
+        for (var source : List.of(snapshot("0.6", "0.5"), snapshot("0.6", "0.6"), snapshot("1", "0.0001"),
                         snapshot("1.1")))
         {
             var result = validator.validate(source);
             assertRejected(result, Reason.TOTAL_EXCEEDS_ONE, Optional.empty());
             assertSame(source, result.source());
         }
+    }
+
+    @Test
+    public void testProviderRoundingExcessIsAcceptedWithoutNormalization()
+    {
+        // A public UCITS fund published weights summing to 100.00000001%.
+        var source = snapshot("0.5", "0.5", "0.0000000001");
+        var result = validator.validateArithmetic(source);
+
+        assertTrue(result.isUsable());
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(3, result.rows().size());
+        assertEquals(new BigDecimal("0.5"), result.rows().get(0).weight());
+        assertEquals(new BigDecimal("0.0000000001"), result.rows().get(2).weight());
+        assertEquals(BigDecimal.ZERO, result.shortfall().orElseThrow());
     }
 
     @Test

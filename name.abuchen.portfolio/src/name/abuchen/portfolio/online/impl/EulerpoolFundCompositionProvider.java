@@ -415,25 +415,31 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
             throw new IllegalArgumentException();
     }
 
-    private static Response download(URI uri, String authorization) throws IOException
+    private static final org.apache.hc.client5.http.impl.classic.CloseableHttpClient CLIENT = createClient();
+
+    private static org.apache.hc.client5.http.impl.classic.CloseableHttpClient createClient()
     {
         var manager = new PoolingHttpClientConnectionManager();
         manager.setDefaultConnectionConfig(WebAccess.defaultConnectionConfig);
-        try (var client = HttpClientBuilder.create().setConnectionManager(manager)
+        manager.setDefaultMaxPerRoute(16);
+        manager.setMaxTotal(32);
+        return HttpClientBuilder.create().setConnectionManager(manager)
                         .setDefaultRequestConfig(WebAccess.defaultRequestConfig)
                         .setUserAgent(OnlineHelper.getUserAgent()).useSystemProperties().disableRedirectHandling()
-                        .disableAutomaticRetries().build())
-        {
-            var request = new HttpGet(uri);
-            request.setHeader("Authorization", authorization);
-            request.setHeader("Accept", "application/json");
-            return client.execute(request, response -> {
-                var retry = Optional.ofNullable(response.getFirstHeader("Retry-After")).map(h -> h.getValue());
-                // Error bodies are not needed and may reflect credentials.
-                var body = response.getCode() == 200 && response.getEntity() != null
-                                ? EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8) : null;
-                return new Response(response.getCode(), body, retry);
-            });
-        }
+                        .disableAutomaticRetries().build();
+    }
+
+    private static Response download(URI uri, String authorization) throws IOException
+    {
+        var request = new HttpGet(uri);
+        request.setHeader("Authorization", authorization);
+        request.setHeader("Accept", "application/json");
+        return CLIENT.execute(request, response -> {
+            var retry = Optional.ofNullable(response.getFirstHeader("Retry-After")).map(h -> h.getValue());
+            // Error bodies are not needed and may reflect credentials.
+            var body = response.getCode() == 200 && response.getEntity() != null
+                            ? EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8) : null;
+            return new Response(response.getCode(), body, retry);
+        });
     }
 }

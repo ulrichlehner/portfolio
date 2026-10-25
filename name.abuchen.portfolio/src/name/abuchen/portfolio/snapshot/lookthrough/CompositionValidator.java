@@ -28,6 +28,15 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis
  */
 public final class CompositionValidator
 {
+    /**
+     * Published weights are rounded decimals and their sum can exceed 100% by a
+     * rounding artefact. A public UCITS fund returned 100.00000001%. Accept up
+     * to one millionth above one so a complete fund is not rejected for a
+     * publishing artefact. Rows are never scaled; larger overfull totals remain
+     * unusable. Any further tolerance needs new evidence.
+     */
+    private static final BigDecimal ROUNDING_EXCESS_TOLERANCE = new BigDecimal("0.000001");
+
     public CompositionValidationResult validate(FundComposition source)
     {
         Objects.requireNonNull(source);
@@ -90,13 +99,16 @@ public final class CompositionValidator
             rows.add(new ValidatedRow(index, row, weight));
         }
 
-        if (allWeightsPresent && total.compareTo(BigDecimal.ONE) > 0)
+        if (allWeightsPresent && total.compareTo(BigDecimal.ONE.add(ROUNDING_EXCESS_TOLERANCE)) > 0)
             diagnostics.add(new Diagnostic(Reason.TOTAL_EXCEEDS_ONE, Optional.empty()));
 
         if (!diagnostics.isEmpty())
             return new CompositionValidationResult(source, List.of(), Optional.empty(), diagnostics,
                             semanticsVerified);
-        return new CompositionValidationResult(source, rows, Optional.of(BigDecimal.ONE.subtract(total)), diagnostics,
+        var shortfall = BigDecimal.ONE.subtract(total);
+        if (shortfall.signum() < 0)
+            shortfall = BigDecimal.ZERO;
+        return new CompositionValidationResult(source, rows, Optional.of(shortfall), diagnostics,
                         semanticsVerified);
     }
 }
