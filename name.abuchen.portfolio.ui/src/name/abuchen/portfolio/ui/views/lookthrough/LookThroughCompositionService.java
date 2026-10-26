@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -123,6 +124,14 @@ public final class LookThroughCompositionService
         public List<InstrumentEvidence> classifications()
         {
             return Backend.SESSION.classifications();
+        }
+
+        @Override
+        public Optional<Boolean> keyConfigured()
+        {
+            var mode = Backend.CREDENTIALS.state(EulerpoolPreferencePage.ACCOUNT).mode();
+            return Optional.of(mode == CompositionCredentials.Mode.SECURE
+                            || mode == CompositionCredentials.Mode.SESSION_ONLY);
         }
     }
 }

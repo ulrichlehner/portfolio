@@ -2,6 +2,7 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -15,6 +16,7 @@ import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.viewers.TableViewer;
 import org.eclipse.jface.viewers.TableViewerColumn;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.FillLayout;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.widgets.Composite;
@@ -22,6 +24,7 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.TableColumn;
 
+import name.abuchen.portfolio.ui.Images;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundStatus;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Model;
@@ -29,9 +32,11 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
 import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
 
 /**
- * Read-only status page for the look-through data. It shows the effective
- * storage mode with the persistence reason and the restart limitation above a
- * table with one row per fund.
+ * Read-only status page for the look-through data. One line names the
+ * effective storage mode (or the reason for session-only storage) and keeps
+ * the restart limitation in its tooltip. The table lists each fund with a
+ * status icon, the retrieval date and the decomposed share; all other facts
+ * are in the row tooltip.
  * <p>
  * The page only renders the model it receives. It performs no retrieval and no
  * persistence access itself, and a recalculation request does not change that:
@@ -42,16 +47,27 @@ import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
  */
 public class LookThroughDataStatusPane implements InformationPanePage
 {
-    private static final int COLUMN_WIDTH = 180;
+    /**
+     * Input of the page: the status model plus the decomposed share text per
+     * fund, keyed by the identifiers of the fund instrument. The share comes
+     * from the calculation result, which the status model does not know.
+     */
+    public record Input(Model status, Map<Map<String, String>, String> decomposedShares)
+    {
+        public Input
+        {
+            Objects.requireNonNull(status);
+            decomposedShares = Map.copyOf(decomposedShares);
+        }
+    }
 
     private Composite container;
-    private Label modeLabel;
-    private Label reasonLabel;
-    private Label limitationLabel;
+    private Label storageLabel;
     private Label emptyLabel;
     private TableViewer viewer;
-    private Model rendered;
+    private Input rendered;
     private boolean hasRendered;
+    private List<Object> renderedVisible = List.of();
 
     @Override
     public String getLabel()
@@ -65,9 +81,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         container = new Composite(parent, SWT.NONE);
         GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).applyTo(container);
 
-        modeLabel = createWrappingLabel(container);
-        reasonLabel = createWrappingLabel(container);
-        limitationLabel = createWrappingLabel(container);
+        storageLabel = createWrappingLabel(container);
         emptyLabel = createWrappingLabel(container);
 
         var tableContainer = new Composite(container, SWT.NONE);
@@ -97,31 +111,26 @@ public class LookThroughDataStatusPane implements InformationPanePage
 
     private void addColumns()
     {
-        addColumn(Messages.LookThroughStatusColumnFund, this::fundText);
-        addColumn(Messages.LookThroughStatusColumnAttempt, status -> status.attemptText());
-        addColumn(Messages.LookThroughStatusColumnRetry, status -> status.retryText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnProvider, status -> status.providerAccountText());
-        addColumn(Messages.LookThroughStatusColumnRetrieved, status -> status.retrievalText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnProviderRefreshed,
-                        status -> status.providerRefreshedText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnHoldings, status -> status.holdingsText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnFreshness, status -> status.freshnessText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnSourceData, status -> status.sourceDataText().orElse("")); //$NON-NLS-1$
-        addColumn(Messages.LookThroughStatusColumnDenominator, status -> status.denominatorText().orElse("")); //$NON-NLS-1$
+        addColumn(Messages.LookThroughStatusColumnFund, SWT.LEFT, 220, FundStatus::fundLabel, null);
+        addColumn("", SWT.CENTER, 28, status -> "", this::healthImage); //$NON-NLS-1$
+        addColumn(Messages.LookThroughStatusColumnRetrieved, SWT.LEFT, 130,
+                        status -> status.retrievedDateText().orElse(""), null); //$NON-NLS-1$
+        addColumn(Messages.LookThroughStatusColumnShare, SWT.RIGHT, 110, this::shareText, null);
     }
 
-    private void addColumn(String title, Function<FundStatus, String> text)
+    private void addColumn(String title, int style, int width, Function<FundStatus, String> text,
+                    Function<FundStatus, Image> image)
     {
-        var column = new TableColumn(viewer.getTable(), SWT.NONE);
+        var column = new TableColumn(viewer.getTable(), style);
         column.setText(title);
-        column.setWidth(COLUMN_WIDTH);
+        column.setWidth(width);
 
         new TableViewerColumn(viewer, column).setLabelProvider(new ColumnLabelProvider()
         {
             @Override
             public String getToolTipText(Object element)
             {
-                return text.apply((FundStatus) element);
+                return ((FundStatus) element).tooltipText();
             }
 
             @Override
@@ -129,49 +138,94 @@ public class LookThroughDataStatusPane implements InformationPanePage
             {
                 return text.apply((FundStatus) element);
             }
+
+            @Override
+            public Image getImage(Object element)
+            {
+                return image != null ? image.apply((FundStatus) element) : null;
+            }
         });
     }
 
-    /**
-     * A pending refresh is marked with a short text after the fund label
-     * instead of a row colour: it stays readable, needs no image or colour
-     * resource and also reaches the copied cell text.
-     */
-    private String fundText(FundStatus status)
+    private Image healthImage(FundStatus status)
     {
-        if (status.refreshPending())
-            return status.fundLabel() + " " + Messages.LookThroughStatusPendingRefresh; //$NON-NLS-1$
-        return status.fundLabel();
+        return switch (status.health())
+        {
+            case OK -> Images.OK.image();
+            case WARNING -> Images.WARNING.image();
+            case ERROR -> Images.ERROR.image();
+            case PENDING -> Images.CLOCK.image();
+            case NONE -> null;
+            default -> null;
+        };
+    }
+
+    private String shareText(FundStatus status)
+    {
+        var input = rendered;
+        if (input == null)
+            return ""; //$NON-NLS-1$
+        return input.decomposedShares().getOrDefault(status.reference().fund().identifiers(), ""); //$NON-NLS-1$
     }
 
     @Override
     public void setInput(Object input)
     {
-        if (input instanceof Model status)
+        if (input instanceof Input status)
             render(status);
+        else if (input instanceof Model status)
+            render(new Input(status, Map.of()));
         else if (input == null)
             render(null);
         // Any other input belongs to a different selection and is ignored.
     }
 
-    private void render(Model status)
+    private void render(Input input)
     {
         if (viewer == null || viewer.getControl().isDisposed())
             return;
 
-        if (hasRendered && Objects.equals(status, rendered))
+        // The fund ages move with the clock, so models are compared by what
+        // the pane shows; an unchanged display keeps the table untouched.
+        var visible = visible(input);
+        rendered = input;
+        if (hasRendered && visible.equals(renderedVisible))
             return;
         hasRendered = true;
-        rendered = status;
+        renderedVisible = visible;
 
+        var status = input != null ? input.status() : null;
         setRows(status != null ? status.funds() : List.of());
 
-        setText(modeLabel, status != null ? status.modeText() : ""); //$NON-NLS-1$
-        setText(reasonLabel, status != null ? status.reasonText().orElse("") : ""); //$NON-NLS-1$
-        setText(limitationLabel, status != null ? status.limitationText().orElse("") : ""); //$NON-NLS-1$
+        setText(storageLabel, status != null ? status.storageText() : ""); //$NON-NLS-1$
+        storageLabel.setToolTipText(status != null ? storageTooltip(status) : null);
         setText(emptyLabel, status == null ? Messages.LookThroughStatusPaneEmpty : ""); //$NON-NLS-1$
 
         container.layout(true);
+    }
+
+    private List<Object> visible(Input input)
+    {
+        if (input == null)
+            return List.of();
+        var status = input.status();
+        var visible = new ArrayList<Object>();
+        visible.add(status.storageText());
+        visible.add(storageTooltip(status));
+        for (var fund : status.funds())
+            visible.add(List.of(fund.reference(), fund.fundLabel(), fund.health(), fund.refreshPending(),
+                            fund.retrievedDateText(), fund.tooltipText(), input.decomposedShares()
+                                            .getOrDefault(fund.reference().fund().identifiers(), ""))); //$NON-NLS-1$
+        return visible;
+    }
+
+    /** The mode and the restart limitation, which the single line leaves out. */
+    private String storageTooltip(Model status)
+    {
+        var lines = new ArrayList<String>();
+        lines.add(status.modeText());
+        status.limitationText().ifPresent(lines::add);
+        return String.join("\n\n", lines); //$NON-NLS-1$
     }
 
     private void setRows(List<FundStatus> funds)

@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.util.List;
+import java.util.Optional;
 
 import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
@@ -18,6 +19,9 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  * is called on the user interface thread while rendering or while preparing a
  * manual refresh, so a request here would turn a redraw or a resize into
  * provider traffic.
+ * <p>
+ * The only exception is {@link #keyConfigured()}, which reads the local
+ * credential state and is called off the user interface thread.
  * <p>
  * The source may be absent when no composition backend is configured. The view
  * then shows no status and offers no refresh, but keeps working with the
@@ -45,5 +49,16 @@ public interface LookThroughCompositionSource
     default List<InstrumentEvidence> classifications()
     {
         return List.of();
+    }
+
+    /**
+     * Whether an API key is configured, for the onboarding banner. Empty when
+     * the source has no credentials. Unlike the other methods this may read
+     * the secure storage, so callers must not invoke it on the user interface
+     * thread. It never performs a request.
+     */
+    default Optional<Boolean> keyConfigured()
+    {
+        return Optional.empty();
     }
 }

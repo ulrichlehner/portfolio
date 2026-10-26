@@ -1,13 +1,17 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.text.MessageFormat;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -54,6 +58,8 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Excl
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Model;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Segment;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.SegmentKind;
 
 /**
  * Synthetic-only tests of the SWT-free presenter. The look-through result is
@@ -561,5 +567,140 @@ public class LookThroughViewPresenterTest
         assertEquals(2, companies.size());
         assertEquals(companies.get(0).label(), companies.get(1).label());
         assertNotEquals(companies.get(0).key(), companies.get(1).key());
+    }
+
+    private Segment segment(Model model, SegmentKind kind)
+    {
+        return model.coverage().orElseThrow().segments().stream().filter(segment -> segment.kind() == kind)
+                        .findFirst().orElseThrow();
+    }
+
+    @Test
+    public void testSummaryOfPartialCoverageCountsFundsAndSplitsCoverage()
+    {
+        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-CO", 3, 10);
+        hold("first-fund", "Synthetic first fund holding", AssetType.FUND, null, 1, 100);
+        hold("second-fund", "Synthetic second fund holding", AssetType.FUND, null, 1, 100);
+
+        var company = instrument("company", AssetType.EQUITY, "SYNTH-CO");
+        var cash = instrument("cash", AssetType.CASH, null);
+        var ungrouped = instrument("ungrouped", AssetType.EQUITY, null);
+        var missing = new CompositionInstrument("Synthetic missing constituent",
+                        Map.of("synthetic:instrument", "missing"));
+        var nested = instrument("nested-fund", AssetType.FUND, null);
+
+        composition(instruments.get("first-fund"), row(company, "0.4"), row(cash, "0.1"), row(ungrouped, "0.2"),
+                        row(missing, "0.3"));
+        composition(instruments.get("second-fund"), row(company, "0.5"), row(nested, "0.5"));
+
+        var model = model(result());
+        var summary = model.summary();
+
+        // 8000 of 23000 stay unresolved: the missing constituent and the
+        // nested fund without composition.
+        var resolved = BigDecimal.ONE.subtract(new BigDecimal("8000").divide(new BigDecimal("23000"), 6,
+                        RoundingMode.HALF_UP));
+        amount(resolved.toPlainString(), summary.resolvedShare().orElseThrow());
+        assertEquals(Values.Percent.format(resolved.setScale(4, RoundingMode.DOWN).doubleValue()),
+                        summary.resolvedText().orElseThrow());
+        amount(new BigDecimal("12000").divide(new BigDecimal("23000"), 6, RoundingMode.HALF_UP).toPlainString(),
+                        summary.topTenShare().orElseThrow());
+        assertEquals(2, summary.heldFunds());
+        assertEquals(2, summary.decomposedFunds());
+        assertEquals("2 of 2", summary.fundsText().orElseThrow());
+        assertTrue(summary.needsCompositions());
+        assertTrue(summary.valueText().contains(Values.Money.format(Money.of("EUR", 23000))));
+        assertTrue(summary.indicatorText().contains(model.scopeText()));
+        assertTrue(summary.indicatorText().contains(model.denominatorText().orElseThrow()));
+        assertTrue(summary.indicatorText().contains(Messages.LookThroughLabelPartial));
+        assertTrue(summary.asOfText().contains(Values.Date.format(VALUATION_DATE)));
+
+        amount("12000", segment(model, SegmentKind.COMPANIES).value());
+        amount("2000", segment(model, SegmentKind.UNGROUPED_EQUITY).value());
+        amount("1000", segment(model, SegmentKind.CASH_OR_OTHER).value());
+        amount("8000", segment(model, SegmentKind.UNRESOLVED).value());
+        assertEquals(4, model.coverage().orElseThrow().segments().size());
+        var fractions = model.coverage().orElseThrow().segments().stream().map(Segment::fraction)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertTrue(fractions.subtract(BigDecimal.ONE).abs().compareTo(new BigDecimal("0.00001")) < 0);
+
+        assertEquals(Values.Percent.format(0.7d), model.decomposedShares().get(Map.of("ISIN", "SYNTH-first-fund")));
+        assertEquals(Values.Percent.format(0.5d), model.decomposedShares().get(Map.of("ISIN", "SYNTH-second-fund")));
+    }
+
+    @Test
+    public void testTinyUnresolvedRemainderStaysVisibleAndNeverReadsAsFullCoverage()
+    {
+        hold("big-fund", "Synthetic big fund holding", AssetType.FUND, null, 1, 1_000_000);
+        var company = instrument("company", AssetType.EQUITY, "SYNTH-CO");
+        var missing = new CompositionInstrument("Synthetic missing constituent",
+                        Map.of("synthetic:instrument", "missing"));
+        composition(instruments.get("big-fund"), row(company, "0.999999"), row(missing, "0.000001"));
+
+        var model = model(result());
+        var unresolved = segment(model, SegmentKind.UNRESOLVED);
+
+        amount("100", unresolved.value());
+        assertTrue(unresolved.nonzero());
+        assertEquals("< " + Values.Percent.format(0.0001d), unresolved.shareText());
+        assertNotEquals(Values.Percent.format(1d), model.summary().resolvedText().orElseThrow());
+        assertNotEquals(Values.Percent.format(1d), segment(model, SegmentKind.COMPANIES).shareText());
+        assertNotEquals(Values.Percent.format(1d), model.decomposedShares().get(Map.of("ISIN", "SYNTH-big-fund")));
+
+        var coverage = model.coverage().orElseThrow();
+        var widths = coverage.widths(200, 3);
+        var index = coverage.segments().indexOf(unresolved);
+        assertTrue(widths[index] >= 3);
+        assertEquals(200, Arrays.stream(widths).sum());
+        for (int ii = 0; ii < widths.length; ii++)
+            assertEquals(coverage.segments().get(ii).nonzero(), widths[ii] > 0);
+    }
+
+    @Test
+    public void testMissingDenominatorWithholdsPercentagesAndNamesTheMissingValuation()
+    {
+        holdWithoutPrice("unpriced-company", "Synthetic unpriced holding", AssetType.EQUITY, "SYNTH-UNPRICED", 4);
+        hold("priced-company", "Synthetic priced holding", AssetType.EQUITY, "SYNTH-PRICED", 1, 100);
+
+        var model = model(result());
+        var summary = model.summary();
+
+        assertTrue(summary.resolvedShare().isEmpty());
+        assertTrue(summary.resolvedText().isEmpty());
+        assertTrue(summary.topTenText().isEmpty());
+        assertTrue(model.coverage().isEmpty());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryValueIncomplete,
+                        Values.Money.format(Money.of("EUR", 10000))), summary.valueText());
+        assertTrue(summary.attention());
+        assertTrue(summary.indicatorText().contains(Messages.LookThroughLabelNoDenominator));
+        assertTrue(summary.indicatorText().contains("Synthetic unpriced holding"));
+        assertTrue(summary.indicatorText().contains(Messages.LookThroughReasonMissingValuation));
+    }
+
+    @Test
+    public void testOnlyDirectHoldingsNeedNoComposition()
+    {
+        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-ONE", 1, 10);
+
+        var summary = model(result()).summary();
+
+        assertFalse(summary.needsCompositions());
+        assertFalse(summary.attention());
+        assertEquals(0, summary.heldFunds());
+        assertTrue(summary.fundsText().isEmpty());
+        assertEquals(Values.Percent.format(1d), summary.resolvedText().orElseThrow());
+    }
+
+    @Test
+    public void testEmptyPortfolioHasNoCoverageAndNeedsNoComposition()
+    {
+        var model = model(result());
+
+        assertTrue(model.empty());
+        assertTrue(model.coverage().isEmpty());
+        assertFalse(model.summary().needsCompositions());
+        assertTrue(model.summary().fundsText().isEmpty());
+        assertTrue(model.summary().resolvedText().isEmpty());
+        assertTrue(model.decomposedShares().isEmpty());
     }
 }

@@ -7,15 +7,18 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.money.Money;
 import name.abuchen.portfolio.money.Values;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
@@ -178,13 +181,96 @@ public final class LookThroughViewPresenter
         }
     }
 
+    /**
+     * Key figures shown above the table. Percentages are absent whenever the
+     * denominator is missing; the values stay visible. The indicator text
+     * collects every notice of the result as paragraphs, so no disclosure
+     * needs a permanent label above the table.
+     */
+    public record Summary(String asOfText, String valueText, Optional<BigDecimal> resolvedShare,
+                    Optional<String> resolvedText, Optional<BigDecimal> topTenShare, Optional<String> topTenText,
+                    int decomposedFunds, int heldFunds, Optional<String> fundsText, boolean needsCompositions,
+                    boolean attention, String indicatorText)
+    {
+    }
+
+    public enum SegmentKind
+    {
+        COMPANIES, UNGROUPED_EQUITY, CASH_OR_OTHER, UNVERIFIED, UNRESOLVED
+    }
+
+    /**
+     * One part of the coverage bar. The fraction is the exact share of the
+     * denominator; {@code nonzero} tells the renderer to keep the segment
+     * visible even when its proportional width rounds to nothing.
+     */
+    public record Segment(SegmentKind kind, String label, BigDecimal value, String valueText, BigDecimal fraction,
+                    String shareText, boolean nonzero)
+    {
+    }
+
+    /** Split of the securities value into the coverage categories. */
+    public record Coverage(List<Segment> segments)
+    {
+        public Coverage
+        {
+            segments = List.copyOf(segments);
+        }
+
+        /**
+         * Distributes the available width proportionally. A nonzero segment
+         * gets at least the minimum width, taken from the widest segments, so
+         * a tiny unresolved remainder never disappears through rounding.
+         * Segments with a zero value get no width.
+         */
+        public int[] widths(int totalWidth, int minimumWidth)
+        {
+            var widths = new int[segments.size()];
+            if (totalWidth <= 0)
+                return widths;
+
+            int used = 0;
+            for (int ii = 0; ii < widths.length; ii++)
+            {
+                var segment = segments.get(ii);
+                if (!segment.nonzero())
+                    continue;
+                int width = segment.fraction().multiply(BigDecimal.valueOf(totalWidth))
+                                .setScale(0, RoundingMode.HALF_UP).intValue();
+                widths[ii] = Math.max(minimumWidth, width);
+                used += widths[ii];
+            }
+
+            // Give or take the rounding difference from the widest segment,
+            // without pushing any nonzero segment below the minimum.
+            int difference = totalWidth - used;
+            while (difference != 0)
+            {
+                int widest = -1;
+                for (int ii = 0; ii < widths.length; ii++)
+                    if (widths[ii] > 0 && (widest < 0 || widths[ii] > widths[widest]))
+                        widest = ii;
+                if (widest < 0)
+                    break;
+                int change = difference > 0 ? difference : Math.max(difference, minimumWidth - widths[widest]);
+                if (change == 0)
+                    break;
+                widths[widest] += change;
+                difference -= change;
+            }
+            return widths;
+        }
+    }
+
     public record Model(LocalDate valuationDate, String currencyCode, String scopeText, Optional<Money> denominator,
                     Optional<String> denominatorText, Completeness completeness, String completenessText,
-                    Optional<String> unverifiedNotice, boolean empty, List<Row> rows)
+                    Optional<String> unverifiedNotice, boolean empty, List<Row> rows, Summary summary,
+                    Optional<Coverage> coverage, Map<Map<String, String>, String> decomposedShares)
     {
         public Model
         {
             rows = List.copyOf(rows);
+            decomposedShares = Map.copyOf(decomposedShares);
         }
     }
 
@@ -222,19 +308,191 @@ public final class LookThroughViewPresenter
         }
 
         var completeness = completeness(result, denominator);
+        var scopeText = MessageFormat.format(Messages.LookThroughLabelScope, Values.Date.format(valuation.date()));
+        var denominatorText = denominator.map(value -> MessageFormat.format(Messages.LookThroughLabelDenominator,
+                        Values.Money.format(value)));
+        var completenessText = completeness == Completeness.COMPLETE ? Messages.LookThroughLabelComplete
+                        : Messages.LookThroughLabelPartial;
+        var unverifiedNotice = hasUnverifiedAllocationSemantics(result)
+                        ? Optional.of(Messages.LookThroughLabelUnverifiedNotice)
+                        : Optional.<String>empty();
 
-        return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(),
-                        MessageFormat.format(Messages.LookThroughLabelScope, Values.Date.format(valuation.date())),
-                        denominator,
-                        denominator.map(value -> MessageFormat.format(Messages.LookThroughLabelDenominator,
-                                        Values.Money.format(value))),
-                        completeness,
-                        completeness == Completeness.COMPLETE ? Messages.LookThroughLabelComplete
-                                        : Messages.LookThroughLabelPartial,
-                        hasUnverifiedAllocationSemantics(result)
-                                        ? Optional.of(Messages.LookThroughLabelUnverifiedNotice)
-                                        : Optional.empty(),
-                        empty, rows);
+        var funds = new FundCounts(result);
+        var notices = new ArrayList<String>();
+        notices.add(scopeText);
+        notices.add(denominatorText.orElse(Messages.LookThroughLabelNoDenominator));
+        exclusionNotice(valuation).ifPresent(notices::add);
+        unverifiedNotice.ifPresent(notices::add);
+        notices.add(completenessText);
+
+        var open = result.value(Category.UNRESOLVED).add(result.value(Category.UNVERIFIED_HOLDING));
+        var resolvedShare = share(open, denominatorAmount).map(BigDecimal.ONE::subtract);
+        var topTenShare = topTenShare(result, denominatorAmount);
+        var summary = new Summary(MessageFormat.format(Messages.LookThroughSummaryAsOf,
+                        Values.Date.format(valuation.date())), valueText(valuation), resolvedShare,
+                        resolvedShare.map(value -> boundedShareText(value, value.signum() > 0, open.signum() != 0)),
+                        topTenShare, topTenShare.map(value -> Values.Percent.format(value.doubleValue())),
+                        funds.decomposed(), funds.held(),
+                        funds.held() > 0 ? Optional.of(MessageFormat.format(Messages.LookThroughSummaryOf,
+                                        funds.decomposed(), funds.held())) : Optional.empty(),
+                        funds.held() > 0 || funds.unclassified(),
+                        denominator.isEmpty() || !valuation.diagnostics().isEmpty() || unverifiedNotice.isPresent(),
+                        String.join("\n\n", notices)); //$NON-NLS-1$
+
+        return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(), scopeText, denominator,
+                        denominatorText, completeness, completenessText, unverifiedNotice, empty, rows, summary,
+                        empty ? Optional.empty() : coverage(result, denominatorAmount), funds.shares());
+    }
+
+    /**
+     * The securities value is always shown. Without a denominator it is only
+     * the known part of the selection and labelled as incomplete.
+     */
+    private String valueText(SecuritiesValuation valuation)
+    {
+        var text = Values.Money.format(valuation.valuedSubset());
+        return valuation.denominator().isPresent() ? text
+                        : MessageFormat.format(Messages.LookThroughSummaryValueIncomplete, text);
+    }
+
+    /** Names every excluded position with its reason, or nothing. */
+    private Optional<String> exclusionNotice(SecuritiesValuation valuation)
+    {
+        if (valuation.diagnostics().isEmpty())
+            return Optional.empty();
+        var names = valuation.diagnostics().stream() //
+                        .map(diagnostic -> MessageFormat.format("{0} ({1})", //$NON-NLS-1$
+                                        Objects.toString(diagnostic.security().getName(), ""), //$NON-NLS-1$
+                                        exclusionText(diagnostic.reason()))) //
+                        .collect(Collectors.joining(", ")); //$NON-NLS-1$
+        return Optional.of(MessageFormat.format(Messages.LookThroughNoticeExcluded, names));
+    }
+
+    /** Combined share of the ten largest companies. */
+    private Optional<BigDecimal> topTenShare(LookThroughResult result, Optional<BigDecimal> denominator)
+    {
+        if (result.companies().isEmpty())
+            return Optional.empty();
+        var top = result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER).limit(10).map(Company::total)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return share(top, denominator);
+    }
+
+    private Optional<Coverage> coverage(LookThroughResult result, Optional<BigDecimal> denominator)
+    {
+        if (denominator.isEmpty())
+            return Optional.empty();
+
+        var segments = new ArrayList<Segment>();
+        segments.add(segment(SegmentKind.COMPANIES, Messages.LookThroughCoverageCompanies,
+                        result.value(Category.COMPANY), denominator.orElseThrow(), result));
+        segments.add(segment(SegmentKind.UNGROUPED_EQUITY, Messages.LookThroughCategoryUngroupedEquity,
+                        result.value(Category.UNGROUPED_EQUITY), denominator.orElseThrow(), result));
+        segments.add(segment(SegmentKind.CASH_OR_OTHER, Messages.LookThroughCategoryCashOrOther,
+                        result.value(Category.CASH_OR_OTHER), denominator.orElseThrow(), result));
+        // Like the table, unverified provider positions only appear when present.
+        var unverifiedValue = result.value(Category.UNVERIFIED_HOLDING);
+        if (unverifiedValue.signum() != 0)
+            segments.add(segment(SegmentKind.UNVERIFIED, Messages.LookThroughCategoryUnverified, unverifiedValue,
+                            denominator.orElseThrow(), result));
+        segments.add(segment(SegmentKind.UNRESOLVED, Messages.LookThroughCategoryUnresolved,
+                        result.value(Category.UNRESOLVED), denominator.orElseThrow(), result));
+        return Optional.of(new Coverage(segments));
+    }
+
+    private Segment segment(SegmentKind kind, String label, BigDecimal value, BigDecimal denominator,
+                    LookThroughResult result)
+    {
+        var fraction = value.divide(denominator, SHARE_SCALE, RoundingMode.HALF_UP);
+        var nonzero = value.signum() != 0;
+        var currency = result.valuation().valuedSubset().getCurrencyCode();
+        return new Segment(kind, label, value, formatAmount(value, currency), fraction,
+                        boundedShareText(fraction, nonzero, value.compareTo(denominator) < 0), nonzero);
+    }
+
+    /**
+     * Display text of a coverage share. While a remainder exists the share is
+     * rounded down, so it can never read as a full 100 percent, and a nonzero
+     * value whose share rounds to zero is shown as below the smallest
+     * displayable share instead of as zero.
+     */
+    private static String boundedShareText(BigDecimal fraction, boolean nonzero, boolean remainder)
+    {
+        var value = remainder ? fraction.setScale(4, RoundingMode.DOWN) : fraction;
+        var text = Values.Percent.format(value.doubleValue());
+        if (nonzero && text.equals(Values.Percent.format(0d)))
+            return "< " + Values.Percent.format(0.0001d); //$NON-NLS-1$
+        return text;
+    }
+
+    /**
+     * Held funds and how many of them were decomposed, counted per held
+     * security that the provider evidence classifies as a fund. A fund is
+     * decomposed when at least one contribution passes through its
+     * composition. The decomposed share of a fund is the part of its value
+     * that reached a category other than unresolved.
+     */
+    private static final class FundCounts
+    {
+        private final Map<Security, BigDecimal> held = new LinkedHashMap<>();
+        private final Map<Security, BigDecimal> decomposed = new HashMap<>();
+        private boolean unclassified;
+
+        private FundCounts(LookThroughResult result)
+        {
+            for (var contribution : result.contributions())
+            {
+                var security = contribution.origin().security();
+                var fund = contribution.originResolution()
+                                .filter(resolution -> resolution.state() == InstrumentResolution.State.FUND)
+                                .isPresent();
+                if (!fund)
+                {
+                    // A held position without classification may still be a
+                    // fund that needs a composition.
+                    if (contribution.isDirect() && contribution.category() == Category.UNRESOLVED)
+                        unclassified = true;
+                    continue;
+                }
+                held.putIfAbsent(security, BigDecimal.valueOf(contribution.origin().value().getAmount()));
+                if (!contribution.isDirect())
+                {
+                    var value = contribution.category() == Category.UNRESOLVED
+                                    || contribution.category() == Category.UNVERIFIED_HOLDING ? BigDecimal.ZERO
+                                                    : contribution.value();
+                    decomposed.merge(security, value, BigDecimal::add);
+                }
+            }
+        }
+
+        private int held()
+        {
+            return held.size();
+        }
+
+        private int decomposed()
+        {
+            return decomposed.size();
+        }
+
+        private boolean unclassified()
+        {
+            return unclassified;
+        }
+
+        private Map<Map<String, String>, String> shares()
+        {
+            var shares = new HashMap<Map<String, String>, String>();
+            held.forEach((security, value) -> {
+                if (value.signum() <= 0)
+                    return;
+                var resolved = decomposed.getOrDefault(security, BigDecimal.ZERO);
+                var fraction = resolved.divide(value, SHARE_SCALE, RoundingMode.DOWN);
+                var text = boundedShareText(fraction, resolved.signum() != 0, resolved.compareTo(value) < 0);
+                shares.putIfAbsent(LookThroughCompositionService.instrumentOf(security).identifiers(), text);
+            });
+            return shares;
+        }
     }
 
     /**

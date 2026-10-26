@@ -26,6 +26,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Freshness;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Health;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundStatus;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.GlobalFacts;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Model;
@@ -157,6 +158,53 @@ public class LookThroughDataStatusTest
         assertEquals(Optional.of(RETRIEVAL), status.retrieval());
         assertEquals(Optional.of(PROVIDER_REFRESHED), status.providerRefreshedAt());
         assertEquals(Freshness.FRESH, status.freshness().orElseThrow());
+    }
+
+    @Test
+    public void testFailedRefreshWithRetainedDataIsAWarningWithReasonAndDatesInTheTooltip()
+    {
+        var status = first(singleFundModel(
+                        Optional.of(composition(RETRIEVAL, Optional.of(PROVIDER_REFRESHED),
+                                        Optional.of(HOLDINGS_DATE), PARTIAL, NAV)), //
+                        Optional.of(CompositionResult.Status.FAILED), Optional.empty()));
+
+        assertEquals(Health.WARNING, status.health());
+        assertTrue(status.retrievedDateText().isPresent());
+
+        var tooltip = status.tooltipText();
+        assertTrue(tooltip.contains("The last retrieval attempt failed."));
+        assertTrue(tooltip.contains(status.retrievalText().orElseThrow()));
+        assertTrue(tooltip.contains(status.providerRefreshedText().orElseThrow()));
+        assertTrue(tooltip.contains(status.holdingsText().orElseThrow()));
+        assertTrue(tooltip.contains(status.retrievedDateText().orElseThrow()));
+        assertTrue(tooltip.contains(status.providerAccountText()));
+    }
+
+    @Test
+    public void testRejectedKeyIsAnErrorAndSuspendsAccess()
+    {
+        var model = singleFundModel(Optional.empty(), Optional.of(CompositionResult.Status.AUTHENTICATION_FAILED),
+                        Optional.empty());
+
+        assertEquals(Health.ERROR, first(model).health());
+        assertTrue(model.isAccessSuspended());
+
+        var healthy = singleFundModel(
+                        Optional.of(composition(RETRIEVAL, Optional.empty(), Optional.empty(), PARTIAL, NAV)),
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty());
+        assertEquals(Health.OK, first(healthy).health());
+        assertFalse(healthy.isAccessSuspended());
+
+        var nothing = singleFundModel(Optional.empty(), Optional.empty(), Optional.empty());
+        assertEquals(Health.NONE, first(nothing).health());
+    }
+
+    @Test
+    public void testStorageLineShowsTheReasonInsteadOfTheMode()
+    {
+        var model = singleFundModel(Optional.empty(), Optional.empty(), Optional.empty());
+
+        assertEquals(model.reasonText().orElseThrow(), model.storageText());
     }
 
     @Test

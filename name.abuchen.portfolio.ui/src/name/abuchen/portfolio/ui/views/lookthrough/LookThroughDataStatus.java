@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
@@ -72,6 +73,24 @@ public final class LookThroughDataStatus
         PERSISTENT, SESSION_ONLY, DISK_FAILURE
     }
 
+    /**
+     * Condensed state of one fund row for the status icon. The details stay
+     * available in the row tooltip.
+     */
+    public enum Health
+    {
+        /** Usable data and no failed attempt since. */
+        OK,
+        /** A refresh failed, but earlier usable data is still used. */
+        WARNING,
+        /** Access suspended, or the received data cannot be used. */
+        ERROR,
+        /** A refresh of this fund is running. */
+        PENDING,
+        /** Nothing to report, for example before the first attempt. */
+        NONE
+    }
+
     /** Global facts: the composition store state and the policy-built mode. */
     public record GlobalFacts(CompositionStore.State storeState,
                     CompositionPersistencePolicy.EffectiveMode effectiveMode)
@@ -92,7 +111,8 @@ public final class LookThroughDataStatus
      */
     public record FundFacts(CompositionInstrument fund, ProviderAccount account, Optional<FundComposition> retained,
                     Optional<CompositionResult.Status> latestAttempt, Optional<Instant> retryAfter,
-                    boolean refreshPending, Optional<FundComposition> sourcePreview)
+                    boolean refreshPending, Optional<FundComposition> sourcePreview,
+                    Optional<FundComposition> unverifiedComposition)
     {
         public FundFacts(CompositionInstrument fund, ProviderAccount account, Optional<FundComposition> retained,
                         Optional<CompositionResult.Status> latestAttempt, Optional<Instant> retryAfter,
@@ -101,12 +121,20 @@ public final class LookThroughDataStatus
             this(fund, account, retained, latestAttempt, retryAfter, refreshPending, Optional.empty());
         }
 
+        public FundFacts(CompositionInstrument fund, ProviderAccount account, Optional<FundComposition> retained,
+                        Optional<CompositionResult.Status> latestAttempt, Optional<Instant> retryAfter,
+                        boolean refreshPending, Optional<FundComposition> sourcePreview)
+        {
+            this(fund, account, retained, latestAttempt, retryAfter, refreshPending, sourcePreview, Optional.empty());
+        }
+
         public FundFacts
         {
             Objects.requireNonNull(fund);
             Objects.requireNonNull(account);
             Objects.requireNonNull(retained);
             Objects.requireNonNull(sourcePreview);
+            Objects.requireNonNull(unverifiedComposition);
             Objects.requireNonNull(latestAttempt);
             Objects.requireNonNull(retryAfter);
         }
@@ -122,11 +150,14 @@ public final class LookThroughDataStatus
                     Optional<String> holdingsText, Optional<Freshness> freshness, Optional<Duration> age,
                     Optional<String> freshnessText, Optional<String> sourceDataText, Optional<String> denominatorText,
                     Optional<CompositionResult.Status> latestAttempt, String attemptText, Optional<Instant> retryAfter,
-                    Optional<String> retryText, boolean refreshPending, FundRef reference)
+                    Optional<String> retryText, boolean refreshPending, FundRef reference, Health health,
+                    Optional<String> retrievedDateText)
     {
         public FundStatus
         {
             Objects.requireNonNull(reference);
+            Objects.requireNonNull(health);
+            Objects.requireNonNull(retrievedDateText);
             Objects.requireNonNull(fundLabel);
             Objects.requireNonNull(providerAccountText);
             Objects.requireNonNull(retrieval);
@@ -145,6 +176,29 @@ public final class LookThroughDataStatus
             Objects.requireNonNull(retryAfter);
             Objects.requireNonNull(retryText);
         }
+
+        /**
+         * All details of the row as one text, one fact per line: the pane
+         * shows only the fund, the status, the retrieval date and the share,
+         * so the remaining facts must stay reachable here.
+         */
+        public String tooltipText()
+        {
+            var lines = new ArrayList<String>();
+            lines.add(fundLabel);
+            if (refreshPending)
+                lines.add(Messages.LookThroughStatusPendingRefresh);
+            lines.add(attemptText);
+            retryText.ifPresent(lines::add);
+            retrievalText.ifPresent(lines::add);
+            freshnessText.ifPresent(lines::add);
+            providerRefreshedText.ifPresent(lines::add);
+            holdingsText.ifPresent(lines::add);
+            sourceDataText.ifPresent(lines::add);
+            denominatorText.ifPresent(lines::add);
+            lines.add(providerAccountText);
+            return String.join("\n", lines); //$NON-NLS-1$
+        }
     }
 
     /** The complete status: global row, fund rows and the local-render fact. */
@@ -160,6 +214,22 @@ public final class LookThroughDataStatus
             Objects.requireNonNull(reasonText);
             Objects.requireNonNull(limitationText);
             funds = List.copyOf(funds);
+        }
+
+        /**
+         * The single storage line of the pane: the persistence reason when one
+         * applies, because it already names the mode, otherwise the mode.
+         */
+        public String storageText()
+        {
+            return reasonText.orElse(modeText);
+        }
+
+        /** True when the provider rejected the key or its permission. */
+        public boolean isAccessSuspended()
+        {
+            return funds.stream().anyMatch(status -> status.latestAttempt().filter(LookThroughDataStatus::isSuspension)
+                            .isPresent());
         }
     }
 
@@ -217,7 +287,8 @@ public final class LookThroughDataStatus
                         snapshot.usableComposition(), //
                         snapshot.latestAttempt().map(CompositionResult::status), //
                         retryAfter, refreshPending,
-                        snapshot.latestAttempt().flatMap(CompositionResult::composition));
+                        snapshot.latestAttempt().flatMap(CompositionResult::composition),
+                        snapshot.unverifiedComposition());
     }
 
     private static StorageMode storageMode(CompositionStore.State storeState)
@@ -313,11 +384,54 @@ public final class LookThroughDataStatus
                         .map(instant -> MessageFormat.format(Messages.LookThroughStatusRetrievalDate, //
                                         Values.DateTime.format(LocalDateTime.ofInstant(instant, clock.getZone()))));
         var retryText = retryText(clock, facts);
+        var retrievedDateText = retrieval.map(
+                        instant -> Values.DateTime.format(LocalDateTime.ofInstant(instant, clock.getZone())));
 
         return new FundStatus(facts.fund().label(), providerAccountText, retrieval, retrievalText, providerRefreshedAt,
                         providerRefreshedText, holdingsEffectiveDate, holdingsText, freshness, age, freshnessText,
                         sourceDataText, denominatorText, latestAttempt, attemptText, facts.retryAfter(), retryText,
-                        facts.refreshPending(), new FundRef(facts.account(), facts.fund()));
+                        facts.refreshPending(), new FundRef(facts.account(), facts.fund()), health(facts),
+                        retrievedDateText);
+    }
+
+    private static boolean isSuspension(CompositionResult.Status status)
+    {
+        return status == CompositionResult.Status.AUTHENTICATION_FAILED
+                        || status == CompositionResult.Status.ENTITLEMENT_FAILED;
+    }
+
+    /**
+     * A provider answer without composition (for example for a directly held
+     * share) is not a problem and gets no icon. Failures that a later retry
+     * may fix are warnings; unusable data and suspended access are errors.
+     */
+    private static Health health(FundFacts facts)
+    {
+        if (facts.refreshPending())
+            return Health.PENDING;
+
+        var attempt = facts.latestAttempt();
+        if (attempt.filter(LookThroughDataStatus::isSuspension).isPresent())
+            return Health.ERROR;
+
+        // Arithmetic-usable data without verified semantics is still used by
+        // the calculation, so it counts as data here.
+        if (facts.retained().or(facts::unverifiedComposition).isPresent())
+        {
+            var failed = attempt.filter(status -> status != CompositionResult.Status.RECEIVED
+                            && status != CompositionResult.Status.CANCELLED).isPresent();
+            return failed ? Health.WARNING : Health.OK;
+        }
+
+        if (facts.sourcePreview().isPresent())
+            return Health.ERROR;
+
+        return switch (attempt.orElse(CompositionResult.Status.CANCELLED))
+        {
+            case MALFORMED_RESPONSE -> Health.ERROR;
+            case FAILED, RATE_LIMITED -> Health.WARNING;
+            default -> Health.NONE;
+        };
     }
 
     /**

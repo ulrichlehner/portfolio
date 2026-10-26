@@ -1,7 +1,6 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
-import java.text.MessageFormat;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -13,8 +12,15 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 import jakarta.inject.Inject;
+
+import org.eclipse.core.commands.Parameterization;
+import org.eclipse.core.commands.ParameterizedCommand;
+import org.eclipse.core.commands.common.NotDefinedException;
+import org.eclipse.e4.core.commands.ECommandService;
+import org.eclipse.e4.core.commands.EHandlerService;
 
 import org.eclipse.jface.action.ToolBarManager;
 import org.eclipse.jface.layout.GridDataFactory;
@@ -28,10 +34,12 @@ import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.viewers.TreeViewer;
 import org.eclipse.jface.window.ToolTip;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.custom.SashForm;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
-import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.Listener;
+import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.TreeItem;
 
 import name.abuchen.portfolio.model.Client;
@@ -43,6 +51,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.PortfolioPlugin;
+import name.abuchen.portfolio.ui.UIConstants;
 import name.abuchen.portfolio.ui.editor.AbstractFinanceView;
 import name.abuchen.portfolio.ui.util.SimpleAction;
 import name.abuchen.portfolio.ui.util.viewers.Column;
@@ -73,12 +82,13 @@ public class LookThroughView extends AbstractFinanceView
 
     private final LookThroughViewPresenter presenter = new LookThroughViewPresenter();
 
-    private Label scopeLabel;
-    private Label denominatorLabel;
-    private Label completenessLabel;
-    private Label noticeLabel;
-    private Label loadingLabel;
+    private LookThroughHeader header;
     private TreeViewer viewer;
+    private LookThroughViewPresenter.Model presented;
+
+    /** Empty until the credential state was read off the UI thread. */
+    private Optional<Boolean> keyConfigured = Optional.empty();
+    private final Listener shellActivation = event -> readCredentialState();
 
     private final Runnable automaticRefresh = this::automaticRefresh;
     private volatile boolean disposed;
@@ -90,6 +100,7 @@ public class LookThroughView extends AbstractFinanceView
     }
 
     private ExecutorService calculationExecutor;
+    private Shell shell;
     private LookThroughRecalculation<LookThroughResult> recalculation;
     private Inputs calculatedInputs;
 
@@ -100,11 +111,19 @@ public class LookThroughView extends AbstractFinanceView
     private LookThroughCompositionSource compositionSource;
     private LookThroughStatusModel statusModel;
     private SimpleAction refreshAction;
-    private SimpleAction cancelAction;
     private String currencyCode = ""; //$NON-NLS-1$
 
     @Inject
     private LookThroughCompositionService compositionService;
+
+    /** Optional so the view can also be created in a bare context. */
+    @Inject
+    @org.eclipse.e4.core.di.annotations.Optional
+    private ECommandService commandService;
+
+    @Inject
+    @org.eclipse.e4.core.di.annotations.Optional
+    private EHandlerService handlerService;
 
     @Override
     protected String getDefaultTitle()
@@ -140,6 +159,7 @@ public class LookThroughView extends AbstractFinanceView
             statusModel.cancel();
         this.compositionSource = source;
         this.calculatedInputs = null;
+        this.keyConfigured = Optional.empty();
 
         if (source == null)
         {
@@ -215,10 +235,79 @@ public class LookThroughView extends AbstractFinanceView
         Display.getDefault().timerExec(ELIGIBILITY_INTERVAL, automaticRefresh);
     }
 
+    /**
+     * Reads whether an API key is configured. The secure storage may be slow,
+     * so the read runs on the calculation thread and the banner is updated
+     * afterwards. Called when the view is created, when its window becomes
+     * active again (for example after the settings dialog closed) and after
+     * the settings were opened from the banner.
+     */
+    private void readCredentialState()
+    {
+        var source = compositionSource;
+        var executor = calculationExecutor;
+        if (disposed || source == null || executor == null || executor.isShutdown())
+            return;
+        var display = Display.getDefault();
+        try
+        {
+            executor.execute(() -> {
+                Optional<Boolean> configured;
+                try
+                {
+                    configured = source.keyConfigured();
+                }
+                catch (RuntimeException e)
+                {
+                    PortfolioPlugin.log(e);
+                    configured = Optional.empty();
+                }
+                var value = configured;
+                if (!display.isDisposed())
+                    display.asyncExec(() -> {
+                        if (disposed || source != compositionSource)
+                            return;
+                        keyConfigured = value;
+                        updateStatus();
+                    });
+            });
+        }
+        catch (RejectedExecutionException e)
+        {
+            // The view is being disposed; nothing is left to update.
+        }
+    }
+
+    /**
+     * Opens the settings dialog on the Eulerpool page. The dialog is modal,
+     * so the credential state is read again once it returns.
+     */
+    private void openProviderSettings()
+    {
+        if (commandService == null || handlerService == null)
+            return;
+        try
+        {
+            var command = commandService.getCommand(UIConstants.Command.PREFERENCES);
+            var page = command.getParameter(UIConstants.Parameter.PAGE);
+            var parameterized = new ParameterizedCommand(command,
+                            new Parameterization[] { new Parameterization(page, "eulerpool") }); //$NON-NLS-1$
+            if (handlerService.canExecute(parameterized))
+                handlerService.executeHandler(parameterized);
+        }
+        catch (NotDefinedException e)
+        {
+            PortfolioPlugin.log(e);
+        }
+        readCredentialState();
+    }
+
     @Override
     public void dispose()
     {
         disposed = true;
+        if (shell != null && !shell.isDisposed())
+            shell.removeListener(SWT.Activate, shellActivation);
         Display.getDefault().timerExec(-1, automaticRefresh);
         if (statusModel != null)
             statusModel.cancel();
@@ -247,25 +336,17 @@ public class LookThroughView extends AbstractFinanceView
         }, this::setResult, PortfolioPlugin::log);
 
         var container = new Composite(parent, SWT.NONE);
-        GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).applyTo(container);
+        GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).spacing(0, 8).applyTo(container);
 
-        scopeLabel = new Label(container, SWT.NONE);
-        GridDataFactory.fillDefaults().grab(true, false).applyTo(scopeLabel);
+        header = new LookThroughHeader(container, this::stopRefresh, this::openProviderSettings);
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(header.getControl());
 
-        denominatorLabel = new Label(container, SWT.NONE);
-        GridDataFactory.fillDefaults().grab(true, false).applyTo(denominatorLabel);
+        // The table is the only child for now; the sash leaves room for a
+        // chart next to it.
+        var sash = new SashForm(container, SWT.HORIZONTAL);
+        GridDataFactory.fillDefaults().grab(true, true).applyTo(sash);
 
-        completenessLabel = new Label(container, SWT.NONE);
-        GridDataFactory.fillDefaults().grab(true, false).applyTo(completenessLabel);
-
-        noticeLabel = new Label(container, SWT.WRAP);
-        GridDataFactory.fillDefaults().grab(true, false).applyTo(noticeLabel);
-
-        loadingLabel = new Label(container, SWT.NONE);
-        GridDataFactory.fillDefaults().grab(true, false).applyTo(loadingLabel);
-
-        var tableContainer = new Composite(container, SWT.NONE);
-        GridDataFactory.fillDefaults().grab(true, true).applyTo(tableContainer);
+        var tableContainer = new Composite(sash, SWT.NONE);
 
         var layout = new TreeColumnLayout();
         tableContainer.setLayout(layout);
@@ -288,6 +369,9 @@ public class LookThroughView extends AbstractFinanceView
         // application wiring so the status and refresh work without extra setup.
         if (compositionSource == null)
             applyCompositionSource(compositionService.sourceFor(getClient()));
+
+        shell = container.getShell();
+        shell.addListener(SWT.Activate, shellActivation);
 
         applyResult();
         updateStatus();
@@ -436,22 +520,17 @@ public class LookThroughView extends AbstractFinanceView
         if (result == null)
         {
             currencyCode = ""; //$NON-NLS-1$
-            scopeLabel.setText(""); //$NON-NLS-1$
-            denominatorLabel.setText(Messages.LookThroughLabelNoResult);
-            completenessLabel.setText(""); //$NON-NLS-1$
-            noticeLabel.setText(""); //$NON-NLS-1$
+            presented = null;
+            header.setSummary(null, Optional.empty());
             setRows(List.of());
             updateStatus();
             return;
         }
 
         var model = presenter.present(result);
+        presented = model;
         currencyCode = model.currencyCode();
-        scopeLabel.setText(model.scopeText());
-        denominatorLabel.setText(model.empty() ? Messages.LookThroughLabelEmptyPortfolio
-                        : model.denominatorText().orElse(Messages.LookThroughLabelNoDenominator));
-        completenessLabel.setText(model.empty() ? "" : model.completenessText()); //$NON-NLS-1$
-        noticeLabel.setText(model.unverifiedNotice().orElse("")); //$NON-NLS-1$
+        header.setSummary(model.empty() ? null : model.summary(), model.coverage());
         setRows(model.rows());
         updateStatus();
     }
@@ -537,34 +616,38 @@ public class LookThroughView extends AbstractFinanceView
         if (disposed)
             return;
         var model = statusModel;
-        setInformationPaneInput(model != null ? model.status().orElse(null) : null);
-        updateLoadingText();
+        var status = model != null ? model.status() : Optional.<LookThroughDataStatus.Model>empty();
+        var shares = presented != null ? presented.decomposedShares() : Map.<Map<String, String>, String>of();
+        setInformationPaneInput(status.map(value -> new LookThroughDataStatusPane.Input(value, shares)).orElse(null));
+        updateBanner(status);
         updateActionEnablement();
     }
 
     /**
-     * Shows that a long classification pass is running. The first x-ray of a
-     * broad fund needs one provider lookup per constituent, so the table alone
-     * is not enough feedback.
+     * Shows the single most relevant banner. The progress banner matters
+     * most during a long first pass: a broad fund needs one provider lookup
+     * per constituent, so the table alone is not enough feedback.
      */
-    private void updateLoadingText()
+    private void updateBanner(Optional<LookThroughDataStatus.Model> status)
     {
-        if (loadingLabel == null || loadingLabel.isDisposed())
+        if (header == null || header.getControl().isDisposed())
             return;
         var model = statusModel;
-        if (model != null && model.isProgressVisible() && model.total() > 0)
-            loadingLabel.setText(MessageFormat.format(Messages.LookThroughLabelLoading,
-                            model.total() - model.outstanding(), model.total()));
-        else
-            loadingLabel.setText(""); //$NON-NLS-1$
+        var source = compositionSource;
+        var refreshing = model != null && model.isProgressVisible() && model.total() > 0;
+        var needsCompositions = presented != null && presented.summary().needsCompositions() && source != null
+                        && !source.funds().isEmpty();
+        var facts = new LookThroughBanner.Facts(refreshing, keyConfigured,
+                        status.map(LookThroughDataStatus.Model::isAccessSuspended).orElse(false), needsCompositions,
+                        presented != null && presented.empty());
+        var total = refreshing ? model.total() : 0;
+        header.setBanner(LookThroughBanner.select(facts), refreshing ? total - model.outstanding() : 0, total);
     }
 
     private void updateActionEnablement()
     {
         if (refreshAction != null)
             refreshAction.setEnabled(canRefresh());
-        if (cancelAction != null)
-            cancelAction.setEnabled(isRefreshing());
 
         var toolBarManager = getViewToolBarManager();
         if (toolBarManager != null && toolBarManager.getControl() != null
@@ -572,21 +655,33 @@ public class LookThroughView extends AbstractFinanceView
             toolBarManager.update(true);
     }
 
+    /**
+     * Refresh is offered when held securities can be looked up and still need
+     * a composition, no refresh with visible progress is running and a key is
+     * not known to be missing.
+     * A quiet automatic pass does not disable it: a manual refresh supersedes
+     * that pass.
+     */
     private boolean canRefresh()
     {
         var source = compositionSource;
         var model = statusModel;
-        return source != null && model != null && !source.funds().isEmpty() && !model.isProgressVisible();
+        return source != null && model != null && !source.funds().isEmpty() && !model.isProgressVisible()
+                        && (presented == null || presented.summary().needsCompositions())
+                        && !keyConfigured.equals(Optional.of(Boolean.FALSE));
     }
 
     /**
-     * A quiet automatic pass is not shown as refreshing: a manual refresh
-     * supersedes it, so the actions stay as they were before the pass.
+     * Stops waiting for the running refresh. Results that were already
+     * applied stay.
      */
-    private boolean isRefreshing()
+    private void stopRefresh()
     {
         var model = statusModel;
-        return model != null && model.isProgressVisible();
+        if (model == null)
+            return;
+        model.cancel();
+        updateStatus();
     }
 
     @Override
@@ -601,16 +696,6 @@ public class LookThroughView extends AbstractFinanceView
         });
         refreshAction.setEnabled(canRefresh());
         toolBarManager.add(refreshAction);
-
-        cancelAction = new SimpleAction(Messages.LookThroughCancelAction, a -> {
-            var model = statusModel;
-            if (model == null)
-                return;
-            model.cancel();
-            updateStatus();
-        });
-        cancelAction.setEnabled(isRefreshing());
-        toolBarManager.add(cancelAction);
     }
 
     @Override
@@ -636,6 +721,7 @@ public class LookThroughView extends AbstractFinanceView
     {
         updateStatus();
         recalculate(true);
+        readCredentialState();
         automaticRefresh();
     }
 
