@@ -1,4 +1,4 @@
-# Portfolio Lens
+# Breakdown (look-through analysis)
 
 ## Experimental development notice
 
@@ -11,10 +11,11 @@ caching remains disabled. This notice does not grant provider rights or establis
 a legal transfer of responsibility. Official upstream integration and binary
 releases remain subject to separate permission, data-quality and maintainer review.
 
-Portfolio Lens is the look-through view of Portfolio Performance. It opens under
-**Reports** in the sidebar of a client and shows which companies and instruments
-are held indirectly through funds, next to what is held directly. The internal
-domain term is look-through; the visible feature name is Portfolio Lens.
+Breakdown (look-through analysis) is a view of Portfolio Performance. It opens
+under **Reports > Statement of Assets > Breakdown** in the sidebar of a client
+and shows which companies and instruments are held indirectly through funds,
+next to what is held directly. The internal term is look-through; the visible
+feature name is Breakdown.
 
 ## Scope and current values
 
@@ -68,7 +69,7 @@ equity nor a fund, for example bonds, cash-like or other asset types.
 Fund constituents are classified by the provider into issuers, funds and other
 assets and grouped by their security identifier. Each issuer appears as a
 **Company / instrument** row with direct, indirect and total exposure. The
-breakdown is therefore an issuer-level x-ray; the notice below the header states
+view is therefore an issuer-level x-ray; the notice below the header states
 that the underlying fund weights are not validated, so coverage stays partial
 even when every position is resolved.
 
@@ -78,7 +79,7 @@ conversion. They are never silently dropped.
 
 ## Refresh and provider requests
 
-Open Portfolio Lens. Opening the analysis schedules initial retrieval when a
+Open Breakdown. Opening the analysis schedules initial retrieval when a
 credential is configured. While the view remains open, an eligibility pass runs
 every minute; actual automatic requests occur at most once per rolling 24 hours
 per instrument. Redraws, resizing and recalculation perform memory-only reads and
@@ -152,9 +153,9 @@ never looks more durable than the data actually is.
 
 ## Provider setup
 
-Portfolio Lens uses an individual Eulerpool API key. Setup, encrypted storage,
+Breakdown uses an individual Eulerpool API key. Setup, encrypted storage,
 session-only entry, replacement and deletion are described in
-[portfolio-lens-credentials.md](portfolio-lens-credentials.md). The view shows no
+[look-through-credentials.md](look-through-credentials.md). The view shows no
 status and offers no refresh until a composition source is available.
 
 ## Composition persistence
@@ -189,7 +190,7 @@ usable for the same session even if a later refresh fails.
 - Turning persistence off deletes the retained compositions of that provider
   account.
 - Quitting Portfolio Performance discards all session-only data.
-- Portfolio Lens writes no cache directory while persistence is disabled and
+- Breakdown writes no cache directory while persistence is disabled and
   never modifies the portfolio file.
 
 ## Known limits
@@ -205,7 +206,7 @@ usable for the same session even if a later refresh fails.
   as two issuer rows. The column is therefore labelled company / instrument.
 - The allocation semantics of the fund weights are not validated: the provider
   reports no denominator, exposure basis, completeness or holdings-effective
-  date. The breakdown is an issuer-level x-ray from provider data, not a
+  date. The view is an issuer-level x-ray from provider data, not a
   validated NAV decomposition, and coverage stays partial.
 - Coverage is reported as the provider declares it. A reconciled sum or a
   rounded display never turns a partial result into complete coverage, and

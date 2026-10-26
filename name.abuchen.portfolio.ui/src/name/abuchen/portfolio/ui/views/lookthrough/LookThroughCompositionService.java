@@ -39,12 +39,12 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  */
 @Creatable
 @Singleton
-public final class PortfolioLensCompositionService
+public final class LookThroughCompositionService
 {
     private static final class Backend
     {
         private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
-            var thread = new Thread(runnable, "PortfolioLens-composition"); //$NON-NLS-1$
+            var thread = new Thread(runnable, "lookthrough-composition"); //$NON-NLS-1$
             thread.setDaemon(true);
             return thread;
         });
@@ -52,7 +52,7 @@ public final class PortfolioLensCompositionService
                         .install(CompositionCredentials.local(), EulerpoolPreferencePage.ACCOUNT);
         private static final EulerpoolFundCompositionProvider PROVIDER = new EulerpoolFundCompositionProvider(
                         account -> CREDENTIALS.getBearerToken(account));
-        private static final PortfolioLensSession SESSION = new PortfolioLensSession(PROVIDER, PROVIDER,
+        private static final LookThroughSession SESSION = new LookThroughSession(PROVIDER, PROVIDER,
                         CREDENTIALS, Clock.systemUTC(), EXECUTOR);
     }
 

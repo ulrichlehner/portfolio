@@ -28,7 +28,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuationAdapter;
  * holdings list for exactly this identifier. Arithmetic-usable answers without
  * verified semantics are passed separately and stay labelled unverified.
  */
-final class PortfolioLensAnalysis
+final class LookThroughAnalysis
 {
     LookThroughResult calculate(ClientSnapshot snapshot, ExchangeRateProviderFactory rates, List<Security> securities,
                     List<Snapshot> retained, List<InstrumentEvidence> heldClassifications)
@@ -45,7 +45,7 @@ final class PortfolioLensAnalysis
         var owned = new HashMap<Security, InstrumentResolution>();
         for (var position : valuation.positions())
         {
-            var instrument = PortfolioLensCompositionService.instrumentOf(position.security());
+            var instrument = LookThroughCompositionService.instrumentOf(position.security());
             var resolved = resolver.resolve(instrument, evidence, ignored -> List.of(), () -> false);
             resolutions.put(instrument, resolved);
             owned.put(position.security(), resolved);

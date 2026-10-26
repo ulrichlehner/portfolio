@@ -47,7 +47,7 @@ public class DevelopmentCredentialsTest
 
     private Path keyFile(String content) throws Exception
     {
-        var file = Files.createTempFile("lens-dev-key", ".txt");
+        var file = Files.createTempFile("lookthrough-dev-key", ".txt");
         file.toFile().deleteOnExit();
         Files.writeString(file, content, StandardCharsets.UTF_8);
         return file;
@@ -82,7 +82,7 @@ public class DevelopmentCredentialsTest
     @Test
     public void testMissingFileAndInvalidContentStayUnconfigured() throws Exception
     {
-        System.setProperty(DevelopmentCredentials.KEY_FILE_PROPERTY, "/nonexistent/lens-dev-key");
+        System.setProperty(DevelopmentCredentials.KEY_FILE_PROPERTY, "/nonexistent/lookthrough-dev-key");
         DevelopmentCredentials.install(credentials, ACCOUNT);
         assertEquals(CompositionCredentials.Mode.UNCONFIGURED, credentials.state(ACCOUNT).mode());
 
@@ -100,7 +100,7 @@ public class DevelopmentCredentialsTest
         assertEquals(CompositionCredentials.Mode.UNCONFIGURED, credentials.state(ACCOUNT).mode());
 
         var target = keyFile("linked-token");
-        var link = Files.createTempFile("lens-dev-link", ".txt");
+        var link = Files.createTempFile("lookthrough-dev-link", ".txt");
         Files.delete(link);
         Files.createSymbolicLink(link, target);
         System.setProperty(DevelopmentCredentials.KEY_FILE_PROPERTY, link.toString());

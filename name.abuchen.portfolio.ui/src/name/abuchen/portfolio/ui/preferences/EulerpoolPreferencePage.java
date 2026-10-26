@@ -42,7 +42,7 @@ public class EulerpoolPreferencePage extends PreferencePage
     public EulerpoolPreferencePage()
     {
         // Installing here as well keeps the development key visible when the
-        // page is opened before the Lens view ever initialised its backend.
+        // page is opened before the Breakdown view ever initialised its backend.
         this(DevelopmentCredentials.install(CompositionCredentials.local(), ACCOUNT));
     }
 

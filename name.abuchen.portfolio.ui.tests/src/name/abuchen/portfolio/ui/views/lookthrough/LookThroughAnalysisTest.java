@@ -39,7 +39,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Reaso
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 
 @SuppressWarnings("nls")
-public class PortfolioLensAnalysisTest
+public class LookThroughAnalysisTest
 {
     private static final ProviderAccount ACCOUNT = new ProviderAccount("synthetic", "test");
     private static final Instant NOW = Instant.parse("2026-01-31T12:00:00Z");
@@ -86,7 +86,7 @@ public class PortfolioLensAnalysisTest
     {
         var selected = holding("SYNTHETIC-ONE", 6);
         holding("SYNTHETIC-UNSELECTED", 20);
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(selected), List.of(), List.of());
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(selected), List.of(), List.of());
         assertEquals(Money.of("EUR", 6000), result.denominator().orElseThrow());
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("6000")));
         assertEquals(1, result.contributions().size());
@@ -98,15 +98,15 @@ public class PortfolioLensAnalysisTest
     {
         var share = holding("SYNTHETIC-SHARE", 6);
         var fund = holding("SYNTHETIC-FUND", 4);
-        var child = PortfolioLensCompositionService.instrumentOf(share);
-        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var child = LookThroughCompositionService.instrumentOf(share);
+        var parent = LookThroughCompositionService.instrumentOf(fund);
         var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
                         Optional.empty()), FundComposition.Denominator.TOTAL_FUND_NAV,
                         FundComposition.ExposureBasis.PHYSICAL_HOLDINGS, FundComposition.Completeness.PARTIAL,
                         List.of(new FundComposition.Constituent(child, Optional.of("0.5"))));
         var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.of(composition),
                         Optional.empty(), List.of(resolution(child, AssetType.EQUITY)));
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(share, fund), List.of(retained),
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(share, fund), List.of(retained),
                         List.of());
         assertEquals(Money.of("EUR", 10000), result.denominator().orElseThrow());
         var company = result.companies().getFirst();
@@ -120,7 +120,7 @@ public class PortfolioLensAnalysisTest
     public void testUnverifiedCompositionExpandsIntoClassifiedConstituents()
     {
         var fund = holding("SYNTHETIC-FUND", 4);
-        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var parent = LookThroughCompositionService.instrumentOf(fund);
         var child = new CompositionInstrument("Synthetic position", java.util.Map.of("ISIN", "SYNTHETIC-CHILD"));
         var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
                         Optional.empty()), FundComposition.Denominator.UNKNOWN,
@@ -128,7 +128,7 @@ public class PortfolioLensAnalysisTest
                         List.of(new FundComposition.Constituent(child, Optional.of("1"))));
         var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.empty(),
                         Optional.of(composition), List.of(resolution(child, AssetType.EQUITY)));
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
                         List.of());
         assertEquals(0, result.value(Category.UNVERIFIED_HOLDING).compareTo(new BigDecimal("0")));
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("0")));
@@ -140,10 +140,10 @@ public class PortfolioLensAnalysisTest
     public void testChangedPricesRecalculateWithoutStoredDerivedResults()
     {
         var security = holding("SYNTHETIC-SHARE", 6);
-        var first = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
+        var first = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
         security.addPrice(new SecurityPrice(LocalDate.parse("2026-01-30"),
                         Values.Quote.factorize(20)));
-        var second = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
+        var second = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(security), List.of(), List.of());
         assertEquals(Money.of("EUR", 6000), first.denominator().orElseThrow());
         assertEquals(Money.of("EUR", 12000), second.denominator().orElseThrow());
     }
@@ -152,7 +152,7 @@ public class PortfolioLensAnalysisTest
     public void testInvalidCompositionIsNotReportedAsMissingClassification()
     {
         var fund = holding("SYNTHETIC-FUND", 4);
-        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var parent = LookThroughCompositionService.instrumentOf(fund);
         var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
                         Optional.empty()), FundComposition.Denominator.UNKNOWN,
                         FundComposition.ExposureBasis.UNKNOWN, FundComposition.Completeness.UNKNOWN,
@@ -160,7 +160,7 @@ public class PortfolioLensAnalysisTest
         var retained = new Snapshot(Optional.of(NOW), Optional.of(new CompositionResult(
                         CompositionResult.Status.RECEIVED, Optional.of(composition), Optional.empty())),
                         Optional.empty(), Optional.empty(), List.of());
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
                         List.of());
         assertEquals(Reason.UNUSABLE_COMPOSITION, result.contributions().getFirst().reason());
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("4000")));
@@ -170,7 +170,7 @@ public class PortfolioLensAnalysisTest
     public void testIdentifierlessPositionIsNotInventedAsCash()
     {
         var fund = holding("SYNTHETIC-FUND", 4);
-        var parent = PortfolioLensCompositionService.instrumentOf(fund);
+        var parent = LookThroughCompositionService.instrumentOf(fund);
         var child = new CompositionInstrument("Synthetic unknown asset", java.util.Map.of());
         var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
                         Optional.empty()), FundComposition.Denominator.UNKNOWN,
@@ -178,7 +178,7 @@ public class PortfolioLensAnalysisTest
                         List.of(new FundComposition.Constituent(child, Optional.of("1"))));
         var retained = new Snapshot(Optional.of(NOW), Optional.empty(), Optional.empty(), Optional.of(composition),
                         List.of());
-        var result = new PortfolioLensAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(fund), List.of(retained),
                         List.of());
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("4000")));
         assertEquals(0, result.value(Category.CASH_OR_OTHER).signum());

@@ -20,7 +20,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
  */
 public final class DevelopmentCredentials
 {
-    static final String KEY_FILE_PROPERTY = "portfolio.lens.developmentKeyFile"; //$NON-NLS-1$
+    static final String KEY_FILE_PROPERTY = "portfolio.lookthrough.developmentKeyFile"; //$NON-NLS-1$
 
     /** Refuse larger files: a key is a short single line, not a blob. */
     private static final long MAX_BYTES = 4096;

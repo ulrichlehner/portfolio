@@ -39,7 +39,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  * running requests coalesce by account and identifiers, independent of labels.
  * Credential storage and all request admission run off the UI thread.
  */
-final class PortfolioLensSession implements RefreshGateway
+final class LookThroughSession implements RefreshGateway
 {
     private record Key(ProviderAccount account, Map<String, String> identifiers)
     {
@@ -61,7 +61,7 @@ final class PortfolioLensSession implements RefreshGateway
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
 
-    PortfolioLensSession(FundCompositionProvider provider, InstrumentClassifier classifier,
+    LookThroughSession(FundCompositionProvider provider, InstrumentClassifier classifier,
                     CompositionCredentials credentials, Clock clock, Executor executor)
     {
         this.credentials = credentials;
@@ -82,7 +82,7 @@ final class PortfolioLensSession implements RefreshGateway
     {
         var sequence = new AtomicInteger();
         ThreadFactory factory = task -> {
-            var thread = new Thread(task, "portfolio-lens-classification-" + sequence.incrementAndGet()); //$NON-NLS-1$
+            var thread = new Thread(task, "lookthrough-classification-" + sequence.incrementAndGet()); //$NON-NLS-1$
             thread.setDaemon(true);
             return thread;
         };

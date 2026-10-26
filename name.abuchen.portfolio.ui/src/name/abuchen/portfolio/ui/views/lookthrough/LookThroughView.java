@@ -73,12 +73,12 @@ public class LookThroughView extends AbstractFinanceView
     private String currencyCode = ""; //$NON-NLS-1$
 
     @Inject
-    private PortfolioLensCompositionService compositionService;
+    private LookThroughCompositionService compositionService;
 
     @Override
     protected String getDefaultTitle()
     {
-        return Messages.LabelPortfolioLens;
+        return Messages.LookThroughViewTitle;
     }
 
     /**
@@ -149,7 +149,7 @@ public class LookThroughView extends AbstractFinanceView
         var snapshot = ClientSnapshot.create(getClient(), converter, LocalDate.now());
         var retained = compositionSource.funds().stream()
                         .map(fund -> compositionSource.gateway().read(fund.account(), fund.fund())).toList();
-        setResult(new PortfolioLensAnalysis().calculate(snapshot, rates, compositionSource.securities(), retained,
+        setResult(new LookThroughAnalysis().calculate(snapshot, rates, compositionSource.securities(), retained,
                         compositionSource.classifications()));
     }
 

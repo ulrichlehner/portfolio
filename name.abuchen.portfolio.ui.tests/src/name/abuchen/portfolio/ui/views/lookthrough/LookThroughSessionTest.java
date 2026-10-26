@@ -33,7 +33,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 
 @SuppressWarnings("nls")
-public class PortfolioLensSessionTest
+public class LookThroughSessionTest
 {
     private static final ProviderAccount ACCOUNT = new ProviderAccount("synthetic", "test");
     private static final CompositionPersistencePolicy POLICY = new CompositionPersistencePolicy(ACCOUNT,
@@ -138,7 +138,7 @@ public class PortfolioLensSessionTest
             return new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(composition), Optional.empty());
         }
     };
-    private final PortfolioLensSession session = new PortfolioLensSession(provider,
+    private final LookThroughSession session = new LookThroughSession(provider,
                     (account, instrument) -> Optional.empty(), credentials, clock, executor);
 
     private static CompositionInstrument instrument(String id)
@@ -273,7 +273,7 @@ public class PortfolioLensSessionTest
         var other = new ProviderAccount(ACCOUNT.providerId(), "other");
         credentials.replaceSession(other, "synthetic-valid");
         var classifications = new AtomicInteger();
-        var isolated = new PortfolioLensSession(provider, (account, instrument) -> {
+        var isolated = new LookThroughSession(provider, (account, instrument) -> {
             classifications.incrementAndGet();
             return Optional.empty();
         }, credentials, clock, executor);
@@ -294,7 +294,7 @@ public class PortfolioLensSessionTest
     {
         configure();
         var classifications = new AtomicInteger();
-        var retrying = new PortfolioLensSession(provider, (account, instrument) -> {
+        var retrying = new LookThroughSession(provider, (account, instrument) -> {
             if (classifications.incrementAndGet() == 1)
                 throw new java.io.IOException();
             return Optional.empty();
@@ -316,7 +316,7 @@ public class PortfolioLensSessionTest
     {
         configure();
         var classifications = new AtomicInteger();
-        var shared = new PortfolioLensSession(provider, (account, instrument) -> {
+        var shared = new LookThroughSession(provider, (account, instrument) -> {
             classifications.incrementAndGet();
             return Optional.empty();
         }, credentials, clock, executor);

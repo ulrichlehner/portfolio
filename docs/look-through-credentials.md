@@ -1,8 +1,8 @@
-# Portfolio Lens credentials
+# Breakdown credentials
 
 ## Individual setup
 
-In Settings, open **API Keys > Eulerpool (Portfolio Lens)**. Obtain an individual
+In Settings, open **API Keys > Eulerpool**. Obtain an individual
 API key from Eulerpool under the terms applicable to your account. Enter the API
 key, not the website password. PP does not ship a shared key. Do not paste keys
 into a portfolio, notes, URLs, ordinary preferences or diagnostic reports.
@@ -37,7 +37,7 @@ change use the new key, never the old one. A request already handed to the
 transport cannot be recalled by changing credentials.
 
 Choose **Remove key from this session and secure storage** to stop new authenticated
-requests and delete only this account's Portfolio Lens credential. Other providers,
+requests and delete only this account's Breakdown credential. Other providers,
 other local accounts and unrelated PP credentials/settings are not changed.
 This does not revoke the key at Eulerpool; use the provider's account controls to
 revoke it as well if required.

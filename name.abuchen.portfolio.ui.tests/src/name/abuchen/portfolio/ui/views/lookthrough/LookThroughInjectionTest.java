@@ -14,7 +14,7 @@ import name.abuchen.portfolio.ui.selection.SelectionService;
 
 /** Exercises the real view's field injection without constructing SWT controls. */
 @SuppressWarnings("nls")
-public class PortfolioLensInjectionTest
+public class LookThroughInjectionTest
 {
     @Test
     public void testViewCreatesItsBackendWithoutPreRegisteredService() throws Exception
@@ -32,7 +32,7 @@ public class PortfolioLensInjectionTest
             ContextInjectionFactory.inject(view, context);
             var backend = LookThroughView.class.getDeclaredField("compositionService");
             backend.setAccessible(true);
-            assertNotNull("Opening Lens must create the backend even in a fresh context", backend.get(view));
+            assertNotNull("Opening the look-through view must create the backend even in a fresh context", backend.get(view));
         }
         finally
         {

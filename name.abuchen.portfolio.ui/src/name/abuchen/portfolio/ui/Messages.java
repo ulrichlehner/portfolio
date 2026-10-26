@@ -592,6 +592,7 @@ public class Messages extends NLS
     public static String LabelBenchmarks;
     public static String LabelBiggerSize;
     public static String LabelBlueGrayOrange;
+    public static String LabelBreakdown;
     public static String LabelCapitalGains;
     public static String LabelCapitalGainsMethod;
     public static String LabelCategoryOtherMovements;
@@ -852,7 +853,6 @@ public class Messages extends NLS
     public static String LabelPlan;
     public static String LabelPNTransfers;
     public static String LabelPortfolioFeeRate;
-    public static String LabelPortfolioLens;
     public static String LabelPortfolioPerformance;
     public static String LabelPortfolioPerformanceFile;
     public static String LabelPortfolioRateNotAvailable;
@@ -1089,6 +1089,7 @@ public class Messages extends NLS
     public static String LookThroughStatusSourceDenominatorTotalFundNav;
     public static String LookThroughStatusSourceDenominatorUnknown;
     public static String LookThroughStatusStale;
+    public static String LookThroughViewTitle;
     public static String MarkSecurityPageDescription;
     public static String MarkSecurityPageTitle;
     public static String MenuActivateDiscreetMode;

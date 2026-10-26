@@ -494,8 +494,7 @@ public final class Navigation
 
         statementOfAssets.add(new Item(Messages.ClientEditorLabelChart, StatementOfAssetsHistoryView.class, true));
         statementOfAssets.add(new Item(Messages.ClientEditorLabelHoldings, HoldingsPieChartView.class, true));
-
-        section.add(new Item(Messages.LabelPortfolioLens, null, LookThroughView.class));
+        statementOfAssets.add(new Item(Messages.LabelBreakdown, LookThroughView.class));
 
         Item performance = new Item(Messages.ClientEditorLabelPerformance, DashboardView.class, true);
         section.add(performance);

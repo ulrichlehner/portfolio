@@ -17,7 +17,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  * securities to fund references is exercised.
  */
 @SuppressWarnings("nls")
-public class PortfolioLensCompositionServiceTest
+public class LookThroughCompositionServiceTest
 {
     private static Security security(String name, String isin)
     {
@@ -34,7 +34,7 @@ public class PortfolioLensCompositionServiceTest
     @Test
     public void testOnlySecuritiesWithAnIsinBecomeCandidates()
     {
-        var funds = PortfolioLensCompositionService.fundsOf(List.of(//
+        var funds = LookThroughCompositionService.fundsOf(List.of(//
                         security("Synthetic fund A", "DE0000000001"), //
                         security("Synthetic fund without isin", null), //
                         security("Synthetic fund with blank isin", "  ")));
@@ -48,7 +48,7 @@ public class PortfolioLensCompositionServiceTest
     @Test
     public void testDuplicateIsinsKeepTheFirstLabelAndTheSelectionOrder()
     {
-        var funds = PortfolioLensCompositionService.fundsOf(List.of(//
+        var funds = LookThroughCompositionService.fundsOf(List.of(//
                         security("Synthetic fund A", "DE0000000001"), //
                         security("Synthetic fund renamed", "DE0000000001"), //
                         security("Synthetic fund B", "DE0000000002")));
@@ -62,7 +62,7 @@ public class PortfolioLensCompositionServiceTest
     @Test
     public void testIsinIsTrimmedAndIdentifiersCarryNothingElse()
     {
-        var funds = PortfolioLensCompositionService.fundsOf(
+        var funds = LookThroughCompositionService.fundsOf(
                         List.of(security("Synthetic fund A", "  DE0000000001  ")));
 
         assertEquals(1, funds.size());
@@ -73,6 +73,6 @@ public class PortfolioLensCompositionServiceTest
     @Test
     public void testEmptySelectionYieldsNoCandidates()
     {
-        assertTrue(PortfolioLensCompositionService.fundsOf(List.of()).isEmpty());
+        assertTrue(LookThroughCompositionService.fundsOf(List.of()).isEmpty());
     }
 }
