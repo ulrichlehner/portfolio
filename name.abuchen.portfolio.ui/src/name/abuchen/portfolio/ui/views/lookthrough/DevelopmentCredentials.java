@@ -18,7 +18,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
  * read, format or validation problem is ignored, so a missing file simply keeps
  * the unconfigured state. This must not be used outside local development.
  */
-final class DevelopmentCredentials
+public final class DevelopmentCredentials
 {
     static final String KEY_FILE_PROPERTY = "portfolio.lens.developmentKeyFile"; //$NON-NLS-1$
 
@@ -29,7 +29,7 @@ final class DevelopmentCredentials
     {
     }
 
-    static CompositionCredentials install(CompositionCredentials credentials, ProviderAccount account)
+    public static CompositionCredentials install(CompositionCredentials credentials, ProviderAccount account)
     {
         if (credentials.state(account).mode() != CompositionCredentials.Mode.UNCONFIGURED)
             return credentials;

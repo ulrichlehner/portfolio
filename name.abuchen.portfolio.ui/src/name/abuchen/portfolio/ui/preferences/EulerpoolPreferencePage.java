@@ -23,6 +23,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePrefere
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.util.DesktopAPI;
+import name.abuchen.portfolio.ui.views.lookthrough.DevelopmentCredentials;
 
 /** No field editor: keys must never enter the dialog's ordinary preference store. */
 public class EulerpoolPreferencePage extends PreferencePage
@@ -40,7 +41,9 @@ public class EulerpoolPreferencePage extends PreferencePage
 
     public EulerpoolPreferencePage()
     {
-        this(CompositionCredentials.local());
+        // Installing here as well keeps the development key visible when the
+        // page is opened before the Lens view ever initialised its backend.
+        this(DevelopmentCredentials.install(CompositionCredentials.local(), ACCOUNT));
     }
 
     public EulerpoolPreferencePage(CompositionCredentials credentials)
