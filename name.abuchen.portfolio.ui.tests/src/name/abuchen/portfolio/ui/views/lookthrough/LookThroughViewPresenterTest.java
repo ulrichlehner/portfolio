@@ -438,6 +438,66 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
+    public void testChartModelHasOnlyCompaniesWithDirectAndIndirectParts()
+    {
+        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-CO", 3, 10);
+        hold("fund", "Synthetic fund holding", AssetType.FUND, null, 1, 100);
+        hold("unknown-fund", "Synthetic unknown fund holding", AssetType.FUND, null, 1, 100);
+
+        var company = instrument("company", AssetType.EQUITY, "SYNTH-CO");
+        var cash = instrument("cash", AssetType.CASH, null);
+        var ungrouped = instrument("ungrouped", AssetType.EQUITY, null);
+        composition(instruments.get("fund"), row(company, "0.6"), row(cash, "0.1"), row(ungrouped, "0.3"));
+
+        var model = model(result());
+        var chart = model.chart();
+
+        assertEquals(1, chart.companies().size());
+        var entry = chart.companies().get(0);
+        assertEquals(company(model, "Synthetic company").key(), entry.key());
+        assertEquals("Synthetic company", entry.label());
+        amount("3000", entry.direct());
+        amount("6000", entry.indirect());
+        amount("9000", entry.total());
+        assertEquals(1d / 3d, entry.directFraction(), 0.0001);
+        assertEquals(company(model, "Synthetic company").shareText(), entry.shareText());
+
+        // cash, ungrouped equities and the unresolved fund stay out
+        amount("1000", category(model, Category.CASH_OR_OTHER).value());
+        amount("3000", category(model, Category.UNGROUPED_EQUITY).value());
+        assertTrue(category(model, Category.UNRESOLVED).value().signum() > 0);
+        assertEquals(chart.companies(), chart.top());
+    }
+
+    @Test
+    public void testChartModelWithoutCompaniesIsEmpty()
+    {
+        hold("unknown-fund", "Synthetic unknown fund holding", AssetType.FUND, null, 1, 100);
+
+        var chart = model(result()).chart();
+
+        assertTrue(chart.isEmpty());
+        assertTrue(chart.top().isEmpty());
+    }
+
+    @Test
+    public void testChartModelSortsAndCapsTheTopCompanies()
+    {
+        for (int ii = 1; ii <= 25; ii++)
+            hold("company-" + ii, "Synthetic " + ii + " holding", AssetType.EQUITY, "SYNTH-" + ii, ii, 10);
+
+        var chart = model(result()).chart();
+
+        assertEquals(25, chart.companies().size());
+        assertEquals(LookThroughViewPresenter.ChartModel.TOP_COMPANIES, chart.top().size());
+        assertEquals("Synthetic company-25", chart.top().get(0).label());
+        assertEquals("Synthetic company-6", chart.top().get(19).label());
+        for (int ii = 1; ii < chart.companies().size(); ii++)
+            assertTrue(chart.companies().get(ii - 1).total().compareTo(chart.companies().get(ii).total()) >= 0);
+        assertEquals(chart.companies().subList(0, 20), chart.top());
+    }
+
+    @Test
     public void testEveryRowCarriesItsExactValueAndCategory()
     {
         hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-CO", 1, 10);

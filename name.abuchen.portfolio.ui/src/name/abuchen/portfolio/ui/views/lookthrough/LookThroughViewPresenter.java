@@ -272,6 +272,65 @@ public final class LookThroughViewPresenter
             rows = List.copyOf(rows);
             decomposedShares = Map.copyOf(decomposedShares);
         }
+
+        /** The company charts, derived from the company rows only. */
+        public ChartModel chart()
+        {
+            return ChartModel.of(rows);
+        }
+    }
+
+    /**
+     * One company of the charts, with its direct and indirect part. The key is
+     * the key of the company row, so a chart element selects that row.
+     */
+    public record ChartCompany(RowKey key, String label, BigDecimal direct, BigDecimal indirect, BigDecimal total,
+                    Optional<String> shareText)
+    {
+        /** Part of the company exposure that is held directly, from 0 to 1. */
+        public double directFraction()
+        {
+            if (total.signum() <= 0)
+                return 0;
+            return Math.max(0, Math.min(1, direct.divide(total, SHARE_SCALE, RoundingMode.HALF_UP).doubleValue()));
+        }
+    }
+
+    /**
+     * Companies for the charts, largest first. Coverage categories, unresolved
+     * value and excluded positions are not part of the charts.
+     */
+    public record ChartModel(List<ChartCompany> companies)
+    {
+        /** Number of companies in the bar chart. */
+        public static final int TOP_COMPANIES = 20;
+
+        public ChartModel
+        {
+            companies = List.copyOf(companies);
+        }
+
+        static ChartModel of(List<Row> rows)
+        {
+            return new ChartModel(rows.stream() //
+                            .filter(CompanyRow.class::isInstance).map(CompanyRow.class::cast) //
+                            .filter(company -> company.total().signum() > 0) //
+                            .sorted(Comparator.comparing(CompanyRow::total).reversed()) //
+                            .map(company -> new ChartCompany(company.key(), company.label(), company.direct(),
+                                            company.indirect(), company.total(), company.shareText())) //
+                            .toList());
+        }
+
+        public boolean isEmpty()
+        {
+            return companies.isEmpty();
+        }
+
+        /** The largest companies for the bar chart. */
+        public List<ChartCompany> top()
+        {
+            return companies.subList(0, Math.min(TOP_COMPANIES, companies.size()));
+        }
     }
 
     public Model present(LookThroughResult result)

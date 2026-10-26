@@ -1,0 +1,209 @@
+package name.abuchen.portfolio.ui.views.lookthrough;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
+
+import org.eclipse.e4.ui.services.IStylingEngine;
+import org.eclipse.jface.layout.GridDataFactory;
+import org.eclipse.jface.layout.GridLayoutFactory;
+import org.eclipse.jface.layout.RowLayoutFactory;
+import org.eclipse.swt.SWT;
+import org.eclipse.swt.custom.StackLayout;
+import org.eclipse.swt.graphics.Color;
+import org.eclipse.swt.widgets.Canvas;
+import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Label;
+
+import name.abuchen.portfolio.ui.Messages;
+import name.abuchen.portfolio.ui.util.Colors;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartCompany;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartModel;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
+
+/**
+ * Holds the company charts and shows one of them, or a message when there is
+ * no company exposure. Only the visible chart is updated. The pane displays
+ * the model it was given and never starts a retrieval.
+ */
+class LookThroughChartPane
+{
+    enum Kind
+    {
+        TREEMAP, TOP_COMPANIES;
+
+        String label()
+        {
+            return this == TREEMAP ? Messages.LookThroughChartTreemap : Messages.LookThroughChartTopCompanies;
+        }
+    }
+
+    private static final int SWATCH_SIZE = 10;
+
+    private final Composite container;
+    private final Composite stackArea;
+    private final StackLayout stack = new StackLayout();
+    private final LookThroughTreeMap treeMap;
+    private final LookThroughBarChart barChart;
+    private final Composite emptyArea;
+    private final Composite legend;
+
+    private Kind kind = Kind.TREEMAP;
+    private ChartModel model = new ChartModel(List.of());
+    private String currencyCode = ""; //$NON-NLS-1$
+
+    LookThroughChartPane(Composite parent, IStylingEngine stylingEngine, Consumer<RowKey> onSelect)
+    {
+        container = new Composite(parent, SWT.NONE);
+        container.setBackground(Colors.theme().defaultBackground());
+        GridLayoutFactory.fillDefaults().numColumns(1).spacing(0, 4).applyTo(container);
+
+        stackArea = new Composite(container, SWT.NONE);
+        stackArea.setBackground(Colors.theme().defaultBackground());
+        stackArea.setLayout(stack);
+        GridDataFactory.fillDefaults().grab(true, true).hint(100, 100).applyTo(stackArea);
+
+        treeMap = new LookThroughTreeMap(stackArea, stylingEngine, onSelect);
+        barChart = new LookThroughBarChart(stackArea, onSelect);
+
+        emptyArea = new Composite(stackArea, SWT.NONE);
+        emptyArea.setBackground(Colors.theme().defaultBackground());
+        GridLayoutFactory.fillDefaults().margins(8, 8).applyTo(emptyArea);
+        var emptyMessage = new Label(emptyArea, SWT.WRAP | SWT.CENTER);
+        emptyMessage.setText(Messages.LookThroughChartEmpty);
+        emptyMessage.setForeground(Colors.theme().grayForeground());
+        emptyMessage.setBackground(Colors.theme().defaultBackground());
+        GridDataFactory.fillDefaults().grab(true, true).align(SWT.FILL, SWT.CENTER).hint(100, SWT.DEFAULT)
+                        .applyTo(emptyMessage);
+
+        legend = new Composite(container, SWT.NONE);
+        legend.setBackground(Colors.theme().defaultBackground());
+        RowLayoutFactory.fillDefaults().spacing(16).margins(4, 2).applyTo(legend);
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(legend);
+        createLegendEntry(Messages.LookThroughColumnDirect, directColor());
+        createLegendEntry(Messages.LookThroughColumnIndirect, indirectColor());
+
+        update();
+    }
+
+    Control getControl()
+    {
+        return container;
+    }
+
+    Kind getKind()
+    {
+        return kind;
+    }
+
+    void setKind(Kind kind)
+    {
+        if (this.kind == kind)
+            return;
+        this.kind = kind;
+        update();
+    }
+
+    void setModel(ChartModel model, String currencyCode)
+    {
+        this.model = model;
+        this.currencyCode = currencyCode;
+        update();
+    }
+
+    /** Highlights the company in the charts. The selection is not reported back. */
+    void setSelected(RowKey key)
+    {
+        treeMap.setSelected(key);
+        barChart.setSelected(key);
+    }
+
+    private void update()
+    {
+        if (container.isDisposed())
+            return;
+
+        Control top;
+        if (model.isEmpty())
+        {
+            top = emptyArea;
+        }
+        else if (kind == Kind.TREEMAP)
+        {
+            treeMap.setModel(model, currencyCode);
+            top = treeMap.getControl();
+        }
+        else
+        {
+            barChart.setModel(model, currencyCode);
+            top = barChart.getControl();
+        }
+
+        stack.topControl = top;
+        ((org.eclipse.swt.layout.GridData) legend.getLayoutData()).exclude = model.isEmpty();
+        legend.setVisible(!model.isEmpty());
+        container.layout(true, true);
+    }
+
+    private void createLegendEntry(String text, Color color)
+    {
+        var entry = new Composite(legend, SWT.NONE);
+        entry.setBackground(Colors.theme().defaultBackground());
+        GridLayoutFactory.fillDefaults().numColumns(2).spacing(4, 0).applyTo(entry);
+
+        var swatch = new Canvas(entry, SWT.NONE);
+        GridDataFactory.fillDefaults().align(SWT.CENTER, SWT.CENTER).hint(SWATCH_SIZE, SWATCH_SIZE).applyTo(swatch);
+        swatch.addPaintListener(event -> {
+            event.gc.setBackground(color);
+            event.gc.fillRectangle(0, 0, SWATCH_SIZE, SWATCH_SIZE);
+        });
+
+        var label = new Label(entry, SWT.NONE);
+        label.setText(text);
+        label.setBackground(Colors.theme().defaultBackground());
+        label.setForeground(Colors.theme().defaultForeground());
+    }
+
+    /** Mid-tone for the part held directly, readable on light and dark themes. */
+    static Color directColor()
+    {
+        return Colors.getColor(44, 160, 44); // 2CA02C
+    }
+
+    /** Mid-tone for the part held through funds, the blue of the coverage bar. */
+    static Color indirectColor()
+    {
+        return Colors.getColor(31, 119, 180); // 1F77B4
+    }
+
+    /** Blends from the fund color to the direct color by the direct part. */
+    static Color tileColor(double directFraction)
+    {
+        // 20 steps keep the number of cached colors small
+        double fraction = Math.round(Math.max(0, Math.min(1, directFraction)) * 20) / 20d;
+        var direct = directColor();
+        var indirect = indirectColor();
+        return Colors.getColor(blend(indirect.getRed(), direct.getRed(), fraction),
+                        blend(indirect.getGreen(), direct.getGreen(), fraction),
+                        blend(indirect.getBlue(), direct.getBlue(), fraction));
+    }
+
+    private static int blend(int from, int to, double fraction)
+    {
+        return (int) Math.round(from + (to - from) * fraction);
+    }
+
+    static String tooltip(ChartCompany company, String currencyCode)
+    {
+        var total = LookThroughViewPresenter.formatAmount(company.total(), currencyCode)
+                        + company.shareText().map(share -> " (" + share + ")").orElse(""); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        return String.join("\n", //$NON-NLS-1$
+                        Objects.toString(company.label(), ""), //$NON-NLS-1$
+                        Messages.LookThroughColumnTotal + ": " + total, //$NON-NLS-1$
+                        Messages.LookThroughColumnDirect + ": " //$NON-NLS-1$
+                                        + LookThroughViewPresenter.formatAmount(company.direct(), currencyCode),
+                        Messages.LookThroughColumnIndirect + ": " //$NON-NLS-1$
+                                        + LookThroughViewPresenter.formatAmount(company.indirect(), currencyCode));
+    }
+}

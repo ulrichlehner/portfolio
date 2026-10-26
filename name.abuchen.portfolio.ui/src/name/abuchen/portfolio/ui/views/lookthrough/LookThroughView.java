@@ -22,6 +22,7 @@ import org.eclipse.core.commands.common.NotDefinedException;
 import org.eclipse.e4.core.commands.ECommandService;
 import org.eclipse.e4.core.commands.EHandlerService;
 
+import org.eclipse.jface.action.IMenuManager;
 import org.eclipse.jface.action.ToolBarManager;
 import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.jface.layout.GridLayoutFactory;
@@ -53,11 +54,14 @@ import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.UIConstants;
 import name.abuchen.portfolio.ui.editor.AbstractFinanceView;
+import name.abuchen.portfolio.ui.util.DropDown;
 import name.abuchen.portfolio.ui.util.SimpleAction;
 import name.abuchen.portfolio.ui.util.viewers.Column;
 import name.abuchen.portfolio.ui.util.viewers.ShowHideColumnHelper;
 import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughChartPane.Kind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartModel;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.DetailRow;
@@ -79,11 +83,19 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowK
 public class LookThroughView extends AbstractFinanceView
 {
     private static final int ELIGIBILITY_INTERVAL = 60_000;
+    private static final String CHART_KEY = LookThroughView.class.getSimpleName() + "-chart"; //$NON-NLS-1$
+    private static final String SASH_KEY = LookThroughView.class.getSimpleName() + "-sash"; //$NON-NLS-1$
+    private static final int[] DEFAULT_WEIGHTS = { 40, 60 };
 
     private final LookThroughViewPresenter presenter = new LookThroughViewPresenter();
 
     private LookThroughHeader header;
     private TreeViewer viewer;
+    private LookThroughChartPane chartPane;
+    private DropDown chartDropDown;
+    private Kind chartKind;
+    private Map<RowKey, Row> rowsByKey = Map.of();
+    private Map<RowKey, RowKey> companyKeys = Map.of();
     private LookThroughViewPresenter.Model presented;
 
     /** Empty until the credential state was read off the UI thread. */
@@ -341,10 +353,12 @@ public class LookThroughView extends AbstractFinanceView
         header = new LookThroughHeader(container, this::stopRefresh, this::openProviderSettings);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(header.getControl());
 
-        // The table is the only child for now; the sash leaves room for a
-        // chart next to it.
+        // chart and table side by side; the weights are kept in the preferences
         var sash = new SashForm(container, SWT.HORIZONTAL);
         GridDataFactory.fillDefaults().grab(true, true).applyTo(sash);
+
+        chartPane = new LookThroughChartPane(sash, getStylingEngine(), this::selectCompany);
+        chartPane.setKind(chartKind());
 
         var tableContainer = new Composite(sash, SWT.NONE);
 
@@ -361,6 +375,10 @@ public class LookThroughView extends AbstractFinanceView
 
         viewer.getTree().setHeaderVisible(true);
         viewer.getTree().setLinesVisible(true);
+        sash.setWeights(loadWeights());
+        sash.addDisposeListener(e -> saveWeights(sash.getWeights()));
+
+        viewer.addSelectionChangedListener(event -> showSelectionInChart());
         viewer.setComparer(new RowKeyComparer());
         viewer.setContentProvider(new RowContentProvider());
         viewer.setInput(List.of());
@@ -514,7 +532,7 @@ public class LookThroughView extends AbstractFinanceView
 
     private void applyResult()
     {
-        if (viewer == null || viewer.getControl().isDisposed())
+        if (viewer == null || viewer.getControl().isDisposed() || chartPane == null)
             return;
 
         if (result == null)
@@ -522,6 +540,7 @@ public class LookThroughView extends AbstractFinanceView
             currencyCode = ""; //$NON-NLS-1$
             presented = null;
             header.setSummary(null, Optional.empty());
+            chartPane.setModel(new ChartModel(List.of()), currencyCode);
             setRows(List.of());
             updateStatus();
             return;
@@ -531,6 +550,7 @@ public class LookThroughView extends AbstractFinanceView
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
+        chartPane.setModel(model.chart(), currencyCode);
         setRows(model.rows());
         updateStatus();
     }
@@ -555,6 +575,15 @@ public class LookThroughView extends AbstractFinanceView
 
             var byKey = new HashMap<RowKey, Row>();
             index(rows, byKey);
+            rowsByKey = byKey;
+            var owners = new HashMap<RowKey, RowKey>();
+            for (var row : rows)
+                if (row instanceof CompanyRow company)
+                {
+                    owners.put(company.key(), company.key());
+                    company.contributions().forEach(contribution -> owners.put(contribution.key(), company.key()));
+                }
+            companyKeys = owners;
             viewer.setExpandedElements(expanded.stream().map(byKey::get).filter(Objects::nonNull).toArray());
             viewer.setSelection(new StructuredSelection(
                             selected.stream().map(byKey::get).filter(Objects::nonNull).toList()));
@@ -567,6 +596,82 @@ public class LookThroughView extends AbstractFinanceView
         {
             tree.setRedraw(true);
         }
+        showSelectionInChart();
+    }
+
+    /** A click in a chart selects and reveals the company row in the table. */
+    private void selectCompany(RowKey key)
+    {
+        var row = rowsByKey.get(key);
+        if (row != null)
+            viewer.setSelection(new StructuredSelection(row), true);
+    }
+
+    /**
+     * Highlights the company of the selected row in the chart. The chart does
+     * not report this back, so the two selections cannot trigger each other.
+     */
+    private void showSelectionInChart()
+    {
+        if (chartPane == null)
+            return;
+        var selected = viewer.getStructuredSelection().getFirstElement();
+        chartPane.setSelected(selected instanceof Row row ? companyKeys.get(row.key()) : null);
+    }
+
+    private Kind chartKind()
+    {
+        if (chartKind == null)
+        {
+            chartKind = Kind.TREEMAP;
+            try
+            {
+                chartKind = Kind.valueOf(getPreferenceStore().getString(CHART_KEY));
+            }
+            catch (IllegalArgumentException | NullPointerException e)
+            {
+                // keep the default
+            }
+        }
+        return chartKind;
+    }
+
+    private void selectChart(Kind kind)
+    {
+        chartKind = kind;
+        getPreferenceStore().setValue(CHART_KEY, kind.name());
+        if (chartDropDown != null)
+        {
+            chartDropDown.setLabel(kind.label());
+            chartDropDown.setToolTip(kind.label());
+        }
+        if (chartPane != null)
+            chartPane.setKind(kind);
+    }
+
+    private int[] loadWeights()
+    {
+        try
+        {
+            var parts = getPreferenceStore().getString(SASH_KEY).split(","); //$NON-NLS-1$
+            if (parts.length == 2)
+            {
+                var weights = new int[] { Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim()) };
+                if (weights[0] > 0 && weights[1] > 0)
+                    return weights;
+            }
+        }
+        catch (NumberFormatException | NullPointerException e)
+        {
+            // keep the default
+        }
+        return DEFAULT_WEIGHTS.clone();
+    }
+
+    private void saveWeights(int[] weights)
+    {
+        if (weights.length == 2 && weights[0] > 0 && weights[1] > 0)
+            getPreferenceStore().setValue(SASH_KEY, weights[0] + "," + weights[1]); //$NON-NLS-1$
     }
 
     private static List<RowKey> keysOf(List<?> elements)
@@ -687,6 +792,11 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected void addViewButtons(ToolBarManager toolBarManager)
     {
+        chartDropDown = new DropDown(chartKind().label());
+        chartDropDown.setToolTip(chartKind().label());
+        chartDropDown.setMenuListener(this::chartMenuAboutToShow);
+        toolBarManager.add(chartDropDown);
+
         refreshAction = new SimpleAction(Messages.LookThroughRefreshAction, a -> {
             var model = statusModel;
             if (model == null)
@@ -696,6 +806,16 @@ public class LookThroughView extends AbstractFinanceView
         });
         refreshAction.setEnabled(canRefresh());
         toolBarManager.add(refreshAction);
+    }
+
+    private void chartMenuAboutToShow(IMenuManager manager)
+    {
+        for (var kind : Kind.values())
+        {
+            var action = new SimpleAction(kind.label(), a -> selectChart(kind));
+            action.setChecked(chartKind() == kind);
+            manager.add(action);
+        }
     }
 
     @Override
