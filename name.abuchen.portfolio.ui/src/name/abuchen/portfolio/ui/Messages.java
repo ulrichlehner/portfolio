@@ -1444,8 +1444,6 @@ public class Messages extends NLS
     public static String PrefEulerpoolDeletionFailed;
     public static String PrefEulerpoolDescription;
     public static String PrefEulerpoolInvalidKey;
-    public static String PrefEulerpoolKeyNotDisplayed;
-    public static String PrefEulerpoolPersistence;
     public static String PrefEulerpoolPersistenceModePersistent;
     public static String PrefEulerpoolPersistenceModeSessionOnly;
     public static String PrefEulerpoolPersistenceReasonPolicyProhibited;
@@ -1453,12 +1451,12 @@ public class Messages extends NLS
     public static String PrefEulerpoolPersistenceReasonUserOptOut;
     public static String PrefEulerpoolPersistenceRetain;
     public static String PrefEulerpoolRemove;
-    public static String PrefEulerpoolSaveSecure;
     public static String PrefEulerpoolSecure;
     public static String PrefEulerpoolSession;
+    public static String PrefEulerpoolSessionHint;
+    public static String PrefEulerpoolSessionOnly;
     public static String PrefEulerpoolUnavailable;
     public static String PrefEulerpoolUnconfigured;
-    public static String PrefEulerpoolUseSession;
     public static String PrefSiftingAPIKey;
     public static String PrefTitleFinnhub;
     public static String PrefTitleFormatting;
