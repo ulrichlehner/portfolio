@@ -1,6 +1,8 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Function;
 
 import org.eclipse.jface.layout.GridDataFactory;
@@ -8,6 +10,8 @@ import org.eclipse.jface.layout.GridLayoutFactory;
 import org.eclipse.jface.viewers.ArrayContentProvider;
 import org.eclipse.jface.viewers.ColumnLabelProvider;
 import org.eclipse.jface.viewers.ColumnViewerToolTipSupport;
+import org.eclipse.jface.viewers.IElementComparer;
+import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.viewers.TableViewer;
 import org.eclipse.jface.viewers.TableViewerColumn;
 import org.eclipse.swt.SWT;
@@ -21,6 +25,7 @@ import org.eclipse.swt.widgets.TableColumn;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundStatus;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Model;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
 
 /**
@@ -32,7 +37,8 @@ import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
  * persistence access itself, and a recalculation request does not change that:
  * {@link #onRecalculationNeeded()} intentionally does nothing, so a redraw can
  * never cause provider traffic. The owning view pushes a new model whenever the
- * status changed.
+ * status changed. An equal model is not rendered again, and a new model
+ * keeps the selected rows and the top row by fund reference.
  */
 public class LookThroughDataStatusPane implements InformationPanePage
 {
@@ -44,6 +50,8 @@ public class LookThroughDataStatusPane implements InformationPanePage
     private Label limitationLabel;
     private Label emptyLabel;
     private TableViewer viewer;
+    private Model rendered;
+    private boolean hasRendered;
 
     @Override
     public String getLabel()
@@ -70,6 +78,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         ColumnViewerToolTipSupport.enableFor(viewer);
         viewer.getTable().setHeaderVisible(true);
         viewer.getTable().setLinesVisible(true);
+        viewer.setComparer(new FundComparer());
         viewer.setContentProvider(ArrayContentProvider.getInstance());
 
         addColumns();
@@ -150,8 +159,12 @@ public class LookThroughDataStatusPane implements InformationPanePage
         if (viewer == null || viewer.getControl().isDisposed())
             return;
 
-        viewer.setInput(status != null ? status.funds() : List.of());
-        viewer.refresh();
+        if (hasRendered && Objects.equals(status, rendered))
+            return;
+        hasRendered = true;
+        rendered = status;
+
+        setRows(status != null ? status.funds() : List.of());
 
         setText(modeLabel, status != null ? status.modeText() : ""); //$NON-NLS-1$
         setText(reasonLabel, status != null ? status.reasonText().orElse("") : ""); //$NON-NLS-1$
@@ -161,12 +174,55 @@ public class LookThroughDataStatusPane implements InformationPanePage
         container.layout(true);
     }
 
+    private void setRows(List<FundStatus> funds)
+    {
+        var table = viewer.getTable();
+        var selected = new ArrayList<FundRef>();
+        for (var element : viewer.getStructuredSelection().toList())
+            if (element instanceof FundStatus status)
+                selected.add(status.reference());
+        var top = table.getTopIndex();
+
+        table.setRedraw(false);
+        try
+        {
+            viewer.setInput(funds);
+            // Funds that are gone are dropped from the selection silently.
+            viewer.setSelection(new StructuredSelection(
+                            funds.stream().filter(status -> selected.contains(status.reference())).toList()));
+            if (top > 0 && top < table.getItemCount())
+                table.setTopIndex(top);
+        }
+        finally
+        {
+            table.setRedraw(true);
+        }
+    }
+
     private void setText(Label label, String text)
     {
         label.setText(text);
         boolean visible = !text.isEmpty();
         label.setVisible(visible);
         ((GridData) label.getLayoutData()).exclude = !visible;
+    }
+
+    /** Matches fund rows by fund reference, other elements by equality. */
+    private static final class FundComparer implements IElementComparer
+    {
+        @Override
+        public boolean equals(Object a, Object b)
+        {
+            if (a instanceof FundStatus first && b instanceof FundStatus second)
+                return first.reference().equals(second.reference());
+            return Objects.equals(a, b);
+        }
+
+        @Override
+        public int hashCode(Object element)
+        {
+            return element instanceof FundStatus status ? status.reference().hashCode() : Objects.hashCode(element);
+        }
     }
 
     @Override

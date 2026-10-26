@@ -320,4 +320,56 @@ public class LookThroughStatusModelTest
         assertEquals(List.of(true, true, false), notifications);
         assertFalse(notifications.get(notifications.size() - 1));
     }
+
+    @Test
+    public void testIdleAutomaticCheckDoesNotNotify()
+    {
+        var gateway = new RecordingGateway();
+        var model = model(gateway, new SourceStub());
+        var notifications = new ArrayList<Boolean>();
+        model.setChangeListener(() -> notifications.add(model.isRefreshing()));
+        var cadence = new CompositionRefreshCoordinator.Refresh(CompositionRefreshCoordinator.Disposition.CADENCE,
+                        snapshot(Optional.empty(), Optional.empty()), Optional.of(NOW.plus(Duration.ofHours(22))));
+
+        // A waiting automatic pass is quiet; its first outcome records the
+        // cadence entry and therefore notifies once.
+        assertEquals(1, model.refreshAutomatically());
+        assertTrue(notifications.isEmpty());
+        assertFalse(model.isProgressVisible());
+        gateway.complete(FUND_A, cadence);
+        assertEquals(List.of(false), notifications);
+        assertFalse(model.isRefreshing());
+
+        // Later passes that change nothing stay silent.
+        for (var i = 0; i < 3; i++)
+        {
+            assertEquals(1, model.refreshAutomatically());
+            gateway.complete(FUND_A, new CompositionRefreshCoordinator.Refresh(
+                            CompositionRefreshCoordinator.Disposition.CADENCE,
+                            snapshot(Optional.empty(), Optional.empty()), Optional.of(NOW.plus(Duration.ofHours(22)))));
+        }
+
+        assertEquals(4, gateway.refreshCalls());
+        assertEquals(List.of(false), notifications);
+        assertFalse(model.isRefreshing());
+    }
+
+    @Test
+    public void testAutomaticCheckWithNewDataNotifies()
+    {
+        var gateway = new RecordingGateway();
+        var model = model(gateway, new SourceStub());
+        var notifications = new ArrayList<Boolean>();
+        model.setChangeListener(() -> notifications.add(model.isRefreshing()));
+
+        assertEquals(1, model.refreshAutomatically());
+        var retained = Optional.of(composition(FUND_A, NOW.minus(Duration.ofMinutes(5))));
+        gateway.complete(FUND_A, new CompositionRefreshCoordinator.Refresh(
+                        CompositionRefreshCoordinator.Disposition.COMPLETED,
+                        snapshot(retained, Optional.of(CompositionResult.Status.RECEIVED)), Optional.empty()));
+
+        assertEquals(List.of(false), notifications);
+        assertEquals(Optional.of(CompositionResult.Status.RECEIVED),
+                        first(model.status().orElseThrow()).latestAttempt());
+    }
 }

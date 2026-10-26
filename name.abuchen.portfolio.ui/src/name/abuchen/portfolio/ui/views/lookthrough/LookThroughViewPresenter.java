@@ -6,7 +6,9 @@ import java.text.MessageFormat;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -58,15 +60,58 @@ public final class LookThroughViewPresenter
         COMPANY, CONTRIBUTION, CATEGORY, DETAIL, EXCLUDED
     }
 
+    /**
+     * Stable identity of a row across recalculations. Equal results produce
+     * equal keys, and the key of a nested row starts with the key of its
+     * parent, so the view can keep selection and expansion when it replaces
+     * the immutable rows.
+     */
+    public record RowKey(List<Object> parts)
+    {
+        public RowKey
+        {
+            parts = List.copyOf(parts);
+        }
+
+        static RowKey of(Object... parts)
+        {
+            return new RowKey(List.of(parts));
+        }
+
+        RowKey child(Object... more)
+        {
+            var combined = new ArrayList<Object>(parts);
+            combined.addAll(List.of(more));
+            return new RowKey(combined);
+        }
+    }
+
+    /**
+     * Hands out keys within one presentation. A repeated key gets an
+     * occurrence number, so identical rows still have distinct keys.
+     */
+    private static final class Keys
+    {
+        private final Map<RowKey, Integer> occurrences = new HashMap<>();
+
+        private RowKey unique(RowKey key)
+        {
+            int occurrence = occurrences.merge(key, 1, Integer::sum);
+            return occurrence == 1 ? key : key.child(occurrence);
+        }
+    }
+
     public sealed interface Row permits CompanyRow, ContributionRow, CategoryRow, DetailRow, ExcludedRow
     {
+        RowKey key();
+
         RowKind kind();
 
         String label();
     }
 
     /** Aggregated verified exposure of one company identity. */
-    public record CompanyRow(String label, BigDecimal direct, BigDecimal indirect, BigDecimal total,
+    public record CompanyRow(RowKey key, String label, BigDecimal direct, BigDecimal indirect, BigDecimal total,
                     Optional<BigDecimal> share, Optional<String> shareText, List<ContributionRow> contributions)
                     implements Row
     {
@@ -83,7 +128,7 @@ public final class LookThroughViewPresenter
     }
 
     /** One traceable source of a company row: direct holding or fund path. */
-    public record ContributionRow(String label, String origin, String path, String sourceText, boolean direct,
+    public record ContributionRow(RowKey key, String label, String origin, String path, String sourceText, boolean direct,
                     BigDecimal value, Optional<BigDecimal> share, Optional<String> shareText) implements Row
     {
         @Override
@@ -97,7 +142,7 @@ public final class LookThroughViewPresenter
      * One position inside a non-company coverage category. The note states why
      * the position is not verified company exposure.
      */
-    public record DetailRow(String label, String sourceText, String note, boolean direct, BigDecimal value,
+    public record DetailRow(RowKey key, String label, String sourceText, String note, boolean direct, BigDecimal value,
                     Optional<BigDecimal> share, Optional<String> shareText) implements Row
     {
         @Override
@@ -108,7 +153,7 @@ public final class LookThroughViewPresenter
     }
 
     /** Always-present aggregate for a non-company coverage category. */
-    public record CategoryRow(Category category, String label, BigDecimal value, Optional<BigDecimal> share,
+    public record CategoryRow(RowKey key, Category category, String label, BigDecimal value, Optional<BigDecimal> share,
                     Optional<String> shareText, List<DetailRow> details) implements Row
     {
         public CategoryRow
@@ -124,7 +169,7 @@ public final class LookThroughViewPresenter
     }
 
     /** A selected position that the valuation excluded and therefore never valued. */
-    public record ExcludedRow(String label, SecuritiesValuation.Reason exclusion, String reasonText) implements Row
+    public record ExcludedRow(RowKey key, String label, SecuritiesValuation.Reason exclusion, String reasonText) implements Row
     {
         @Override
         public RowKind kind()
@@ -152,9 +197,10 @@ public final class LookThroughViewPresenter
         var valuation = result.valuation();
         var empty = valuation.positions().isEmpty() && valuation.diagnostics().isEmpty();
 
+        var keys = new Keys();
         var rows = new ArrayList<Row>();
         result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER)
-                        .forEach(company -> rows.add(companyRow(company, denominatorAmount)));
+                        .forEach(company -> rows.add(companyRow(keys, company, denominatorAmount)));
 
         // The coverage categories are rendered even when zero: their absence
         // would look like complete coverage of everything that was not resolved.
@@ -163,14 +209,17 @@ public final class LookThroughViewPresenter
         // portfolio shows the explicit empty state instead of zero rows.
         if (!empty)
         {
-            rows.add(categoryRow(result, Category.UNGROUPED_EQUITY, denominatorAmount));
-            rows.add(categoryRow(result, Category.CASH_OR_OTHER, denominatorAmount));
-            rows.add(categoryRow(result, Category.UNRESOLVED, denominatorAmount));
+            rows.add(categoryRow(keys, result, Category.UNGROUPED_EQUITY, denominatorAmount));
+            rows.add(categoryRow(keys, result, Category.CASH_OR_OTHER, denominatorAmount));
+            rows.add(categoryRow(keys, result, Category.UNRESOLVED, denominatorAmount));
         }
 
         for (var diagnostic : valuation.diagnostics())
-            rows.add(new ExcludedRow(Objects.toString(diagnostic.security().getName(), ""), //$NON-NLS-1$
+        {
+            var label = Objects.toString(diagnostic.security().getName(), ""); //$NON-NLS-1$
+            rows.add(new ExcludedRow(keys.unique(RowKey.of(RowKind.EXCLUDED, label, diagnostic.reason())), label,
                             diagnostic.reason(), exclusionText(diagnostic.reason())));
+        }
 
         var completeness = completeness(result, denominator);
 
@@ -208,10 +257,11 @@ public final class LookThroughViewPresenter
         return Values.Money.format(Money.of(currencyCode, minorUnits));
     }
 
-    private CompanyRow companyRow(Company company, Optional<BigDecimal> denominator)
+    private CompanyRow companyRow(Keys keys, Company company, Optional<BigDecimal> denominator)
     {
+        var key = keys.unique(RowKey.of(RowKind.COMPANY, company.identity()));
         var contributions = company.contributions().stream() //
-                        .map(contribution -> contributionRow(contribution, denominator)) //
+                        .map(contribution -> contributionRow(keys, key, contribution, denominator)) //
                         .toList();
         var share = share(company.total(), denominator);
         // The company group is keyed by issuer identifier; the issuer label is
@@ -219,11 +269,12 @@ public final class LookThroughViewPresenter
         var label = company.contributions().stream() //
                         .map(contribution -> contribution.instrument().label()) //
                         .filter(value -> !value.isBlank()).findFirst().orElse(company.identity().value());
-        return new CompanyRow(label, company.direct(), company.indirect(), company.total(), share, shareText(share),
+        return new CompanyRow(key, label, company.direct(), company.indirect(), company.total(), share, shareText(share),
                         contributions);
     }
 
-    private ContributionRow contributionRow(LookThroughContribution contribution, Optional<BigDecimal> denominator)
+    private ContributionRow contributionRow(Keys keys, RowKey parent, LookThroughContribution contribution,
+                    Optional<BigDecimal> denominator)
     {
         var path = pathText(contribution);
         var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
@@ -232,28 +283,33 @@ public final class LookThroughViewPresenter
                         : MessageFormat.format(Messages.LookThroughSourceIndirect, path, origin);
 
         var share = share(contribution.value(), denominator);
-        return new ContributionRow(Objects.toString(contribution.instrument().label(), ""), origin, path, sourceText, //$NON-NLS-1$
+        return new ContributionRow(keys.unique(sourceKey(parent, contribution)),
+                        Objects.toString(contribution.instrument().label(), ""), origin, path, sourceText, //$NON-NLS-1$
                         contribution.isDirect(), contribution.value(), share, shareText(share));
     }
 
-    private CategoryRow categoryRow(LookThroughResult result, Category category, Optional<BigDecimal> denominator)
+    private CategoryRow categoryRow(Keys keys, LookThroughResult result, Category category,
+                    Optional<BigDecimal> denominator)
     {
+        var key = keys.unique(RowKey.of(RowKind.CATEGORY, category));
         var value = result.value(category);
         var share = share(value, denominator);
-        return new CategoryRow(category, categoryText(category), value, share, shareText(share),
-                        details(result, category, denominator));
+        return new CategoryRow(key, category, categoryText(category), value, share, shareText(share),
+                        details(keys, key, result, category, denominator));
     }
 
-    private List<DetailRow> details(LookThroughResult result, Category category, Optional<BigDecimal> denominator)
+    private List<DetailRow> details(Keys keys, RowKey parent, LookThroughResult result, Category category,
+                    Optional<BigDecimal> denominator)
     {
         return result.contributions().stream() //
                         .filter(contribution -> contribution.category() == category) //
-                        .map(contribution -> detailRow(contribution, denominator)) //
+                        .map(contribution -> detailRow(keys, parent, contribution, denominator)) //
                         .sorted(BY_DETAIL_VALUE) //
                         .toList();
     }
 
-    private DetailRow detailRow(LookThroughContribution contribution, Optional<BigDecimal> denominator)
+    private DetailRow detailRow(Keys keys, RowKey parent, LookThroughContribution contribution,
+                    Optional<BigDecimal> denominator)
     {
         var path = pathText(contribution);
         var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
@@ -261,8 +317,23 @@ public final class LookThroughViewPresenter
                         ? MessageFormat.format(Messages.LookThroughSourceDirect, origin)
                         : MessageFormat.format(Messages.LookThroughSourceIndirect, path, origin);
         var share = share(contribution.value(), denominator);
-        return new DetailRow(Objects.toString(contribution.instrument().label(), ""), sourceText, //$NON-NLS-1$
+        return new DetailRow(keys.unique(sourceKey(parent, contribution)),
+                        Objects.toString(contribution.instrument().label(), ""), sourceText, //$NON-NLS-1$
                         note(contribution), contribution.isDirect(), contribution.value(), share, shareText(share));
+    }
+
+    /**
+     * Identifies one source below its parent row: the owned security, every
+     * fund on the path with the occurrence index of the row in its
+     * composition, and the instrument identifiers.
+     */
+    private RowKey sourceKey(RowKey parent, LookThroughContribution contribution)
+    {
+        var path = contribution.path().stream() //
+                        .map(edge -> (Object) List.of(edge.provenance().fund().identifiers(), edge.sourceIndex())) //
+                        .toList();
+        return parent.child(Objects.toString(contribution.origin().security().getUUID(), ""), path, //$NON-NLS-1$
+                        contribution.instrument().identifiers());
     }
 
     private String pathText(LookThroughContribution contribution)

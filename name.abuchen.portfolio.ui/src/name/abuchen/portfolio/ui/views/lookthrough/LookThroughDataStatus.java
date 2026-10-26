@@ -21,6 +21,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.Messages;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 
 /**
  * SWT-free status model for the look-through data status. It converts provided
@@ -111,17 +112,21 @@ public final class LookThroughDataStatus
         }
     }
 
-    /** One fund row: facts plus all display texts, ready for the view. */
+    /**
+     * One fund row: facts plus all display texts, ready for the view. The
+     * fund reference is the stable key of the row across updates.
+     */
     public record FundStatus(String fundLabel, String providerAccountText, Optional<Instant> retrieval,
                     Optional<String> retrievalText, Optional<Instant> providerRefreshedAt,
                     Optional<String> providerRefreshedText, Optional<LocalDate> holdingsEffectiveDate,
                     Optional<String> holdingsText, Optional<Freshness> freshness, Optional<Duration> age,
                     Optional<String> freshnessText, Optional<String> sourceDataText, Optional<String> denominatorText,
                     Optional<CompositionResult.Status> latestAttempt, String attemptText, Optional<Instant> retryAfter,
-                    Optional<String> retryText, boolean refreshPending)
+                    Optional<String> retryText, boolean refreshPending, FundRef reference)
     {
         public FundStatus
         {
+            Objects.requireNonNull(reference);
             Objects.requireNonNull(fundLabel);
             Objects.requireNonNull(providerAccountText);
             Objects.requireNonNull(retrieval);
@@ -312,7 +317,7 @@ public final class LookThroughDataStatus
         return new FundStatus(facts.fund().label(), providerAccountText, retrieval, retrievalText, providerRefreshedAt,
                         providerRefreshedText, holdingsEffectiveDate, holdingsText, freshness, age, freshnessText,
                         sourceDataText, denominatorText, latestAttempt, attemptText, facts.retryAfter(), retryText,
-                        facts.refreshPending());
+                        facts.refreshPending(), new FundRef(facts.account(), facts.fund()));
     }
 
     /**

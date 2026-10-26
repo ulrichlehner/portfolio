@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.math.BigDecimal;
@@ -8,6 +9,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -51,6 +53,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Comp
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Model;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
 
 /**
  * Synthetic-only tests of the SWT-free presenter. The look-through result is
@@ -76,11 +79,16 @@ public class LookThroughViewPresenterTest
 
     private CompositionInstrument instrument(String id, AssetType type, String company)
     {
+        return instrument(id, "Synthetic " + id, type, company);
+    }
+
+    private CompositionInstrument instrument(String id, String label, AssetType type, String company)
+    {
         var existing = instruments.get(id);
         if (existing != null)
             return existing;
 
-        var instrument = new CompositionInstrument("Synthetic " + id, Map.of("synthetic:instrument", id));
+        var instrument = new CompositionInstrument(label, Map.of("synthetic:instrument", id));
         var provenance = new Provenance(SOURCE, "record-" + id, RETRIEVED);
         var evidence = new InstrumentEvidence(instrument.identifiers(),
                         new Assertion<>(new Identifier("synthetic:instrument", id), provenance),
@@ -195,6 +203,20 @@ public class LookThroughViewPresenterTest
                 total = total.add(categoryRow.share().orElseThrow());
         }
         return total;
+    }
+
+    private List<RowKey> keys(List<? extends Row> rows)
+    {
+        var keys = new ArrayList<RowKey>();
+        for (var row : rows)
+        {
+            keys.add(row.key());
+            if (row instanceof CompanyRow companyRow)
+                keys.addAll(keys(companyRow.contributions()));
+            else if (row instanceof CategoryRow categoryRow)
+                keys.addAll(keys(categoryRow.details()));
+        }
+        return keys;
     }
 
     private void amount(String expected, BigDecimal actual)
@@ -494,5 +516,50 @@ public class LookThroughViewPresenterTest
                         new CompositionProvenance(SOURCE, fund, RETRIEVED, Optional.empty(), Optional.empty()),
                         Denominator.UNKNOWN, ExposureBasis.UNKNOWN, Completeness.COMPLETE, List.of(row(issuer, "1"))));
         assertEquals(LookThroughViewPresenter.Completeness.PARTIAL, model(result()).completeness());
+    }
+
+    @Test
+    public void testEqualResultsProduceEqualAndUniqueKeys()
+    {
+        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-CO", 3, 10);
+        hold("first-fund", "Synthetic first fund holding", AssetType.FUND, null, 1, 100);
+        hold("second-fund", "Synthetic second fund holding", AssetType.FUND, null, 1, 100);
+
+        var company = instrument("company", AssetType.EQUITY, "SYNTH-CO");
+        var cash = instrument("cash", AssetType.CASH, null);
+        var missing = new CompositionInstrument("Synthetic missing constituent",
+                        Map.of("synthetic:instrument", "missing"));
+
+        composition(instruments.get("first-fund"), row(company, "0.4"), row(company, "0.3"), row(cash, "0.3"));
+        composition(instruments.get("second-fund"), row(company, "0.5"), row(missing, "0.5"));
+
+        var result = result();
+        var first = keys(model(result).rows());
+        var second = keys(model(result).rows());
+
+        assertEquals(first, second);
+        assertEquals(first.size(), new HashSet<>(first).size());
+
+        // The same company held twice through one fund keeps two sources.
+        var companyRow = company(model(result), "Synthetic company");
+        assertEquals(4, companyRow.contributions().size());
+        companyRow.contributions().forEach(contribution -> assertEquals(companyRow.key(),
+                        new RowKey(contribution.key().parts().subList(0, companyRow.key().parts().size()))));
+    }
+
+    @Test
+    public void testDistinctCompaniesWithTheSameLabelKeepDistinctKeys()
+    {
+        instrument("first-company", "Synthetic same name", AssetType.EQUITY, "SYNTH-FIRST");
+        instrument("second-company", "Synthetic same name", AssetType.EQUITY, "SYNTH-SECOND");
+        hold("first-company", "Synthetic first holding", AssetType.EQUITY, "SYNTH-FIRST", 1, 10);
+        hold("second-company", "Synthetic second holding", AssetType.EQUITY, "SYNTH-SECOND", 2, 10);
+
+        var companies = model(result()).rows().stream().filter(CompanyRow.class::isInstance)
+                        .map(CompanyRow.class::cast).toList();
+
+        assertEquals(2, companies.size());
+        assertEquals(companies.get(0).label(), companies.get(1).label());
+        assertNotEquals(companies.get(0).key(), companies.get(1).key());
     }
 }

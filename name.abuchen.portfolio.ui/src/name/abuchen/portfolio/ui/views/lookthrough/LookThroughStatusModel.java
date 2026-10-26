@@ -40,6 +40,12 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  * which is the user interface thread in production. Outcome callbacks arrive on
  * that same executor, and the change listener is invoked on it as well, never on
  * a provider completion thread and never while refreshing is being started.
+ * <p>
+ * The listener is notified only when the observable state changed: the
+ * refreshing flag and fund set, the outstanding count or the last refresh
+ * entries. An automatic eligibility pass stays quiet until one of its outcomes
+ * changes an entry, so a periodic check that retrieves nothing never causes a
+ * notification.
  */
 public final class LookThroughStatusModel
 {
@@ -77,6 +83,8 @@ public final class LookThroughStatusModel
     private Object dispatchingToken;
     private final List<Result> earlyResults = new ArrayList<>();
     private volatile int outstanding;
+    private boolean quiet;
+    private State notifiedState;
     private Runnable changeListener = () -> {
     };
 
@@ -87,6 +95,16 @@ public final class LookThroughStatusModel
         this.executor = Objects.requireNonNull(executor);
         this.source = Objects.requireNonNull(source);
         this.controller = new LookThroughRefreshController(gateway, executor);
+        this.notifiedState = observableState();
+    }
+
+    /**
+     * The state that a notification reports. A quiet automatic pass is not
+     * part of it until it changed an entry.
+     */
+    private record State(boolean refreshing, Set<FundRef> refreshingFunds, int outstanding,
+                    Map<FundRef, CompositionRefreshCoordinator.Refresh> lastRefreshes)
+    {
     }
 
     /** Registers the listener notified on the executor after every change. */
@@ -105,6 +123,17 @@ public final class LookThroughStatusModel
     public int outstanding()
     {
         return outstanding;
+    }
+
+    /**
+     * True while a refresh is running that the user should see: a manual
+     * refresh, or an automatic pass after one of its outcomes changed an
+     * entry. A quiet automatic pass that has not retrieved anything is not
+     * shown as progress.
+     */
+    public boolean isProgressVisible()
+    {
+        return callToken != null && !quiet;
     }
 
     /** Number of funds in the running refresh call. */
@@ -141,6 +170,7 @@ public final class LookThroughStatusModel
 
         var token = new Object();
         callToken = token;
+        quiet = !manual;
         refreshingFunds = Set.copyOf(new HashSet<>(funds));
 
         int expected;
@@ -174,6 +204,7 @@ public final class LookThroughStatusModel
         if (callToken == null)
             return;
         callToken = null;
+        quiet = false;
         refreshingFunds = Set.of();
         outstanding = 0;
         notifyChanged();
@@ -190,7 +221,7 @@ public final class LookThroughStatusModel
             return Optional.empty();
 
         var snapshot = current.orElseThrow();
-        var refreshing = isRefreshing();
+        var refreshing = isProgressVisible();
         var facts = new ArrayList<FundFacts>(snapshot.funds().size());
         for (var fund : snapshot.funds())
         {
@@ -226,19 +257,38 @@ public final class LookThroughStatusModel
 
         var refresh = result.refresh();
         if (result.outcome() == Outcome.COMPLETED && refresh.isPresent())
-            lastRefreshes.put(result.fund(), refresh.orElseThrow());
+        {
+            var previous = lastRefreshes.put(result.fund(), refresh.orElseThrow());
+            // An automatic pass becomes visible once it changed an entry.
+            if (!refresh.orElseThrow().equals(previous))
+                quiet = false;
+        }
 
         outstanding = Math.max(0, outstanding - 1);
         if (outstanding == 0)
         {
             callToken = null;
+            quiet = false;
             refreshingFunds = Set.of();
         }
         notifyChanged();
     }
 
+    private State observableState()
+    {
+        if (callToken == null || quiet)
+            return new State(false, Set.of(), 0, Map.copyOf(lastRefreshes));
+        return new State(true, refreshingFunds, outstanding, Map.copyOf(lastRefreshes));
+    }
+
+    /** Notifies the listener unless the observable state is unchanged. */
     private void notifyChanged()
     {
+        var state = observableState();
+        if (state.equals(notifiedState))
+            return;
+        notifiedState = state;
+
         try
         {
             executor.execute(changeListener);

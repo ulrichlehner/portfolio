@@ -4,8 +4,15 @@ import java.math.BigDecimal;
 import java.text.MessageFormat;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import jakarta.inject.Inject;
 
@@ -15,7 +22,9 @@ import org.eclipse.jface.layout.GridLayoutFactory;
 import org.eclipse.jface.layout.TreeColumnLayout;
 import org.eclipse.jface.viewers.ColumnLabelProvider;
 import org.eclipse.jface.viewers.ColumnViewerToolTipSupport;
+import org.eclipse.jface.viewers.IElementComparer;
 import org.eclipse.jface.viewers.ITreeContentProvider;
+import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.viewers.TreeViewer;
 import org.eclipse.jface.window.ToolTip;
 import org.eclipse.swt.SWT;
@@ -23,12 +32,17 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.TreeItem;
 
+import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.money.CurrencyConverterImpl;
 import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
 import name.abuchen.portfolio.snapshot.ClientSnapshot;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Messages;
+import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.editor.AbstractFinanceView;
 import name.abuchen.portfolio.ui.util.SimpleAction;
 import name.abuchen.portfolio.ui.util.viewers.Column;
@@ -39,12 +53,19 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Comp
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.DetailRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
 
 /**
  * Read-only presentation of the look-through result. The view performs no
  * retrieval during rendering, holds no credentials and persists no analysis
  * data. Initial/timed eligibility passes are independent of redraws.
+ * <p>
+ * Status changes take a cheap path that only updates the progress text, the
+ * actions and the status pane. The calculation runs in the background and
+ * only when its inputs changed: the retained compositions, the
+ * classifications, the funds or the client model.
  */
 public class LookThroughView extends AbstractFinanceView
 {
@@ -61,6 +82,16 @@ public class LookThroughView extends AbstractFinanceView
 
     private final Runnable automaticRefresh = this::automaticRefresh;
     private volatile boolean disposed;
+
+    /** Memory-only inputs of the calculation, compared to skip recalculation. */
+    private record Inputs(List<FundRef> funds, List<CompositionRefreshCoordinator.Snapshot> retained,
+                    List<InstrumentEvidence> classifications)
+    {
+    }
+
+    private ExecutorService calculationExecutor;
+    private LookThroughRecalculation<LookThroughResult> recalculation;
+    private Inputs calculatedInputs;
 
     @Inject
     private ExchangeRateProviderFactory rates;
@@ -108,6 +139,7 @@ public class LookThroughView extends AbstractFinanceView
         if (statusModel != null)
             statusModel.cancel();
         this.compositionSource = source;
+        this.calculatedInputs = null;
 
         if (source == null)
         {
@@ -138,19 +170,40 @@ public class LookThroughView extends AbstractFinanceView
     /** Called on the user interface thread after every status change. */
     private void onStatusChanged()
     {
-        recalculate();
+        updateStatus();
+        recalculate(false);
     }
 
-    private void recalculate()
+    /**
+     * Requests a background calculation. Unless forced, nothing happens when
+     * the memory-only inputs equal those of the last request.
+     */
+    private void recalculate(boolean force)
     {
-        if (disposed || compositionSource == null || rates == null || getClient() == null)
+        var source = compositionSource;
+        var client = getClient();
+        var exchangeRates = rates;
+        if (disposed || recalculation == null || source == null || exchangeRates == null || client == null)
             return;
-        var converter = new CurrencyConverterImpl(rates, getClient().getBaseCurrency());
-        var snapshot = ClientSnapshot.create(getClient(), converter, LocalDate.now());
-        var retained = compositionSource.funds().stream()
-                        .map(fund -> compositionSource.gateway().read(fund.account(), fund.fund())).toList();
-        setResult(new LookThroughAnalysis().calculate(snapshot, rates, compositionSource.securities(), retained,
-                        compositionSource.classifications()));
+
+        var funds = source.funds();
+        var retained = funds.stream().map(fund -> source.gateway().read(fund.account(), fund.fund())).toList();
+        var inputs = new Inputs(funds, retained, source.classifications());
+        if (!force && inputs.equals(calculatedInputs))
+            return;
+        calculatedInputs = inputs;
+
+        // The calculation reads the client but never modifies it.
+        recalculation.request(() -> calculate(client, exchangeRates, source, inputs));
+    }
+
+    private static LookThroughResult calculate(Client client, ExchangeRateProviderFactory rates,
+                    LookThroughCompositionSource source, Inputs inputs)
+    {
+        var converter = new CurrencyConverterImpl(rates, client.getBaseCurrency());
+        var snapshot = ClientSnapshot.create(client, converter, LocalDate.now());
+        return new LookThroughAnalysis().calculate(snapshot, rates, source.securities(), inputs.retained(),
+                        inputs.classifications());
     }
 
     private void automaticRefresh()
@@ -169,12 +222,30 @@ public class LookThroughView extends AbstractFinanceView
         Display.getDefault().timerExec(-1, automaticRefresh);
         if (statusModel != null)
             statusModel.cancel();
+        if (recalculation != null)
+            recalculation.cancel();
+        if (calculationExecutor != null)
+            calculationExecutor.shutdownNow();
         super.dispose();
     }
 
     @Override
     protected Control createBody(Composite parent)
     {
+        var display = parent.getDisplay();
+        calculationExecutor = Executors.newSingleThreadExecutor(runnable -> {
+            var thread = new Thread(runnable, "lookthrough-calculation"); //$NON-NLS-1$
+            thread.setDaemon(true);
+            return thread;
+        });
+        recalculation = new LookThroughRecalculation<>(calculationExecutor, runnable -> {
+            if (!disposed && !display.isDisposed())
+                display.asyncExec(() -> {
+                    if (!disposed)
+                        runnable.run();
+                });
+        }, this::setResult, PortfolioPlugin::log);
+
         var container = new Composite(parent, SWT.NONE);
         GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).applyTo(container);
 
@@ -209,6 +280,7 @@ public class LookThroughView extends AbstractFinanceView
 
         viewer.getTree().setHeaderVisible(true);
         viewer.getTree().setLinesVisible(true);
+        viewer.setComparer(new RowKeyComparer());
         viewer.setContentProvider(new RowContentProvider());
         viewer.setInput(List.of());
 
@@ -368,7 +440,7 @@ public class LookThroughView extends AbstractFinanceView
             denominatorLabel.setText(Messages.LookThroughLabelNoResult);
             completenessLabel.setText(""); //$NON-NLS-1$
             noticeLabel.setText(""); //$NON-NLS-1$
-            viewer.setInput(List.of());
+            setRows(List.of());
             updateStatus();
             return;
         }
@@ -380,8 +452,79 @@ public class LookThroughView extends AbstractFinanceView
                         : model.denominatorText().orElse(Messages.LookThroughLabelNoDenominator));
         completenessLabel.setText(model.empty() ? "" : model.completenessText()); //$NON-NLS-1$
         noticeLabel.setText(model.unverifiedNotice().orElse("")); //$NON-NLS-1$
-        viewer.setInput(model.rows());
+        setRows(model.rows());
         updateStatus();
+    }
+
+    /**
+     * Replaces the rows and keeps the selection, the expanded rows and the
+     * top row by their stable keys. Keys that no longer exist are dropped
+     * silently.
+     */
+    private void setRows(List<Row> rows)
+    {
+        var tree = viewer.getTree();
+        var selected = keysOf(viewer.getStructuredSelection().toList());
+        var expanded = keysOf(Arrays.asList(viewer.getExpandedElements()));
+        var topItem = tree.getTopItem();
+        var top = topItem != null && topItem.getData() instanceof Row row ? row.key() : null;
+
+        tree.setRedraw(false);
+        try
+        {
+            viewer.setInput(rows);
+
+            var byKey = new HashMap<RowKey, Row>();
+            index(rows, byKey);
+            viewer.setExpandedElements(expanded.stream().map(byKey::get).filter(Objects::nonNull).toArray());
+            viewer.setSelection(new StructuredSelection(
+                            selected.stream().map(byKey::get).filter(Objects::nonNull).toList()));
+
+            var item = top != null ? findItem(tree.getItems(), top) : null;
+            if (item != null)
+                tree.setTopItem(item);
+        }
+        finally
+        {
+            tree.setRedraw(true);
+        }
+    }
+
+    private static List<RowKey> keysOf(List<?> elements)
+    {
+        var keys = new ArrayList<RowKey>();
+        for (var element : elements)
+            if (element instanceof Row row)
+                keys.add(row.key());
+        return keys;
+    }
+
+    private static void index(List<? extends Row> rows, Map<RowKey, Row> byKey)
+    {
+        for (var row : rows)
+        {
+            byKey.put(row.key(), row);
+            if (row instanceof CompanyRow company)
+                index(company.contributions(), byKey);
+            else if (row instanceof CategoryRow category)
+                index(category.details(), byKey);
+        }
+    }
+
+    private static TreeItem findItem(TreeItem[] items, RowKey key)
+    {
+        for (var item : items)
+        {
+            if (item.getData() instanceof Row row && row.key().equals(key))
+                return item;
+            if (item.getExpanded())
+            {
+                var child = findItem(item.getItems(), key);
+                if (child != null)
+                    return child;
+            }
+        }
+        return null;
     }
 
     /**
@@ -409,7 +552,7 @@ public class LookThroughView extends AbstractFinanceView
         if (loadingLabel == null || loadingLabel.isDisposed())
             return;
         var model = statusModel;
-        if (model != null && model.isRefreshing() && model.total() > 0)
+        if (model != null && model.isProgressVisible() && model.total() > 0)
             loadingLabel.setText(MessageFormat.format(Messages.LookThroughLabelLoading,
                             model.total() - model.outstanding(), model.total()));
         else
@@ -433,13 +576,17 @@ public class LookThroughView extends AbstractFinanceView
     {
         var source = compositionSource;
         var model = statusModel;
-        return source != null && model != null && !source.funds().isEmpty() && !model.isRefreshing();
+        return source != null && model != null && !source.funds().isEmpty() && !model.isProgressVisible();
     }
 
+    /**
+     * A quiet automatic pass is not shown as refreshing: a manual refresh
+     * supersedes it, so the actions stay as they were before the pass.
+     */
     private boolean isRefreshing()
     {
         var model = statusModel;
-        return model != null && model.isRefreshing();
+        return model != null && model.isProgressVisible();
     }
 
     @Override
@@ -476,7 +623,7 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     public void notifyModelUpdated()
     {
-        recalculate();
+        recalculate(true);
     }
 
     /**
@@ -487,8 +634,27 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected void notifyViewCreationCompleted()
     {
-        recalculate();
+        updateStatus();
+        recalculate(true);
         automaticRefresh();
+    }
+
+    /** Matches presenter rows by their stable key, other elements by equality. */
+    private static final class RowKeyComparer implements IElementComparer
+    {
+        @Override
+        public boolean equals(Object a, Object b)
+        {
+            if (a instanceof Row first && b instanceof Row second)
+                return first.key().equals(second.key());
+            return Objects.equals(a, b);
+        }
+
+        @Override
+        public int hashCode(Object element)
+        {
+            return element instanceof Row row ? row.key().hashCode() : Objects.hashCode(element);
+        }
     }
 
     private static final class RowContentProvider implements ITreeContentProvider
