@@ -33,6 +33,7 @@ public class EulerpoolPreferencePage extends PreferencePage
     private final CompositionPersistencePreferences persistencePreferences;
     private final CompositionPersistencePolicy persistencePolicy;
     private Text key;
+    private Label message;
     private Label status;
     private Button persistence;
     private Label persistenceStatus;
@@ -99,6 +100,11 @@ public class EulerpoolPreferencePage extends PreferencePage
         button(area, Messages.PrefEulerpoolUseSession, () -> update(credentials.replaceSession(ACCOUNT, key.getText())));
         button(area, Messages.PrefEulerpoolRemove, () -> update(credentials.remove(ACCOUNT)));
 
+        // The dialog header clips a wrapped message to one visible line, so
+        // action results are shown here where the full text fits.
+        message = new Label(area, SWT.WRAP);
+        GridDataFactory.fillDefaults().grab(true, false).hint(450, SWT.DEFAULT).applyTo(message);
+
         status = new Label(area, SWT.WRAP);
         GridDataFactory.fillDefaults().grab(true, false).hint(450, SWT.DEFAULT).applyTo(status);
         updateStatus();
@@ -130,13 +136,15 @@ public class EulerpoolPreferencePage extends PreferencePage
 
     private void update(Result result)
     {
-        setErrorMessage(switch (result)
+        var text = switch (result)
         {
             case INVALID_KEY -> Messages.PrefEulerpoolInvalidKey;
             case STORAGE_UNAVAILABLE -> Messages.PrefEulerpoolUnavailable;
             case DELETION_FAILED -> Messages.PrefEulerpoolDeletionFailed;
-            default -> null;
-        });
+            default -> ""; //$NON-NLS-1$
+        };
+        message.setText(text);
+        message.getParent().layout(true, true);
         if (result == Result.STORED || result == Result.SESSION_ONLY || result == Result.REMOVED
                         || credentials.state(ACCOUNT).mode() == CompositionCredentials.Mode.SESSION_ONLY)
             key.setText(""); //$NON-NLS-1$
