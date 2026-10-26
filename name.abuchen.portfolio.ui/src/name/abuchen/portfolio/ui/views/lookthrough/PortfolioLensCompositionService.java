@@ -48,10 +48,12 @@ public final class PortfolioLensCompositionService
             thread.setDaemon(true);
             return thread;
         });
+        private static final CompositionCredentials CREDENTIALS = DevelopmentCredentials
+                        .install(CompositionCredentials.local(), EulerpoolPreferencePage.ACCOUNT);
         private static final EulerpoolFundCompositionProvider PROVIDER = new EulerpoolFundCompositionProvider(
-                        account -> CompositionCredentials.local().getBearerToken(account));
+                        account -> CREDENTIALS.getBearerToken(account));
         private static final PortfolioLensSession SESSION = new PortfolioLensSession(PROVIDER, PROVIDER,
-                        CompositionCredentials.local(), Clock.systemUTC(), EXECUTOR);
+                        CREDENTIALS, Clock.systemUTC(), EXECUTOR);
     }
 
     private final CompositionPersistencePreferences preferences = new EclipseCompositionPersistencePreferences();
