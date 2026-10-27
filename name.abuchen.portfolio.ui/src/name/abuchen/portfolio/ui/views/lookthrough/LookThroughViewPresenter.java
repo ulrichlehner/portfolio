@@ -610,7 +610,13 @@ public final class LookThroughViewPresenter
             }
             else
             {
-                unknown.add(row);
+                // no revenue data: the headquarters country stands in for it
+                var country = headquarters(attributes, identity);
+                if (country.isPresent())
+                    regular.computeIfAbsent(new RevenueSplit.Member(RevenueSplit.Kind.COUNTRY, country.get()),
+                                    member -> new ArrayList<>()).add(fallback(keys, row, country.get(), denominator));
+                else
+                    unknown.add(row);
             }
         });
 
@@ -637,9 +643,35 @@ public final class LookThroughViewPresenter
     private CompanyRow allocated(Keys keys, CompanyRow row, RevenueSplit split, RevenueSplit.Share share,
                     Optional<BigDecimal> denominator)
     {
-        // the percentages add up to exactly 100, so the parts add up to the exact amount
-        var fraction = share.percent().movePointLeft(2);
-        var key = keys.unique(row.key().child("revenue", share.member().key())); //$NON-NLS-1$
+        var percent = Values.Percent2.format(share.percent().movePointLeft(2).doubleValue());
+        var period = Values.Date.format(split.period());
+        var detail = split.incomplete()
+                        ? MessageFormat.format(Messages.LookThroughDetailRevenueScaled, percent, period,
+                                        Values.Percent2.format(split.reportedSum().movePointLeft(2).doubleValue()))
+                        : MessageFormat.format(Messages.LookThroughDetailRevenue, percent, period);
+        return allocated(keys, row, share.member(), share.percent().movePointLeft(2), detail, denominator);
+    }
+
+    /** A company without revenue data, allocated completely to its headquarters country. */
+    private CompanyRow fallback(Keys keys, CompanyRow row, String country, Optional<BigDecimal> denominator)
+    {
+        var detail = MessageFormat.format(Messages.LookThroughDetailRevenueFallback,
+                        Values.Percent2.format(1d));
+        return allocated(keys, row, new RevenueSplit.Member(RevenueSplit.Kind.COUNTRY, country), BigDecimal.ONE,
+                        detail, denominator);
+    }
+
+    private static Optional<String> headquarters(CompanyEnrichmentService.Snapshot attributes, Identifier identity)
+    {
+        var known = attributes.attributes().get(identity);
+        return known == null ? Optional.empty() : known.country().map(CompanyAttributes.Attribute::value);
+    }
+
+    private CompanyRow allocated(Keys keys, CompanyRow row, RevenueSplit.Member member, BigDecimal fraction,
+                    String detail, Optional<BigDecimal> denominator)
+    {
+        // the fractions of a company add up to exactly 1, so the parts add up to the exact amount
+        var key = keys.unique(row.key().child("revenue", member.key())); //$NON-NLS-1$
         var direct = row.direct().multiply(fraction);
         var indirect = row.indirect().multiply(fraction);
         var total = direct.add(indirect);
@@ -653,12 +685,6 @@ public final class LookThroughViewPresenter
                             contribution.direct(), value, contributionShare, shareText(contributionShare));
         }).toList();
         var companyShare = share(total, denominator);
-        var percent = Values.Percent2.format(share.percent().movePointLeft(2).doubleValue());
-        var period = Values.Date.format(split.period());
-        var detail = split.incomplete()
-                        ? MessageFormat.format(Messages.LookThroughDetailRevenueScaled, percent, period,
-                                        Values.Percent2.format(split.reportedSum().movePointLeft(2).doubleValue()))
-                        : MessageFormat.format(Messages.LookThroughDetailRevenue, percent, period);
         return new CompanyRow(key, row.label(), direct, indirect, total, companyShare, shareText(companyShare),
                         contributions, Optional.of(detail));
     }
@@ -671,6 +697,7 @@ public final class LookThroughViewPresenter
     {
         var all = BigDecimal.ZERO;
         var covered = BigDecimal.ZERO;
+        var fallback = BigDecimal.ZERO;
         var splits = new ArrayList<RevenueSplit>();
         for (var entry : companies.entrySet())
         {
@@ -681,20 +708,31 @@ public final class LookThroughViewPresenter
                 covered = covered.add(entry.getValue().total());
                 splits.add(split);
             }
+            else if (!attributes.revenueWaiting().contains(entry.getKey())
+                            && headquarters(attributes, entry.getKey()).isPresent())
+            {
+                fallback = fallback.add(entry.getValue().total());
+            }
         }
-        if (splits.isEmpty() || all.signum() <= 0)
+        if (splits.isEmpty() && fallback.signum() <= 0 || all.signum() <= 0)
             return Messages.LookThroughRevenueCoverageNone;
 
-        var first = splits.stream().map(RevenueSplit::period).min(Comparator.naturalOrder()).orElseThrow();
-        var last = splits.stream().map(RevenueSplit::period).max(Comparator.naturalOrder()).orElseThrow();
-        var periods = first.equals(last) ? Values.Date.format(first)
-                        : Values.Date.format(first) + " \u2013 " + Values.Date.format(last); //$NON-NLS-1$
-        var text = MessageFormat.format(Messages.LookThroughRevenueCoverage,
-                        Values.Percent2.format(covered.divide(all, SHARE_SCALE, RoundingMode.HALF_UP).doubleValue()),
-                        periods);
+        var rest = all.subtract(covered).subtract(fallback);
+        var first = splits.stream().map(RevenueSplit::period).min(Comparator.naturalOrder()).orElse(null);
+        var last = splits.stream().map(RevenueSplit::period).max(Comparator.naturalOrder()).orElse(null);
+        var periods = first == null ? "\u2013" //$NON-NLS-1$
+                        : first.equals(last) ? Values.Date.format(first)
+                                        : Values.Date.format(first) + " \u2013 " + Values.Date.format(last); //$NON-NLS-1$
+        var text = MessageFormat.format(Messages.LookThroughRevenueCoverage, percentOf(covered, all),
+                        percentOf(fallback, all), percentOf(rest, all), periods);
         var incomplete = splits.stream().filter(RevenueSplit::incomplete).count();
         return incomplete == 0 ? text
                         : text + " " + MessageFormat.format(Messages.LookThroughRevenueIncomplete, incomplete); //$NON-NLS-1$
+    }
+
+    private static String percentOf(BigDecimal part, BigDecimal all)
+    {
+        return Values.Percent2.format(part.divide(all, SHARE_SCALE, RoundingMode.HALF_UP).doubleValue());
     }
 
     private GroupRow groupRow(Keys keys, Grouping grouping, GroupKind kind, String code, String label,

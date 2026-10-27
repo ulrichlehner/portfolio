@@ -1062,6 +1062,49 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
+    public void testRevenueRegionFallsBackToTheHeadquartersCountry()
+    {
+        var result = groupingResult();
+        var splits = new java.util.LinkedHashMap<Identifier, RevenueSplit>();
+        splits.put(company("CO-A"), split("CO-A", "2025-03-31", entry("United States", "country_US", "100")));
+        // CO-B and CO-C have no revenue data but a country, CO-D neither, CO-E is still waiting
+        var snapshot = new CompanyEnrichmentService.Snapshot(
+                        snapshot(Set.of(), attributes("CO-B", "DE", null, null, null),
+                                        attributes("CO-C", "US", null, null, null))
+                                                        .attributes(),
+                        0, Set.of(), splits, Set.of(company("CO-E")));
+
+        var model = new LookThroughViewPresenter().present(result, Grouping.REVENUE_REGION, snapshot);
+        var groups = groups(model);
+        assertEquals(4, groups.size());
+
+        // DE holds the whole company CO-B, US the revenue part of CO-A and the fallback of CO-C
+        var de = groups.get(0);
+        assertEquals(RowKey.of("group:revenue_region:DE"), de.key());
+        amount("30000", de.total());
+        assertTrue(de.companies().get(0).detail().orElseThrow()
+                        .contains(MessageFormat.format(Messages.LookThroughDetailRevenueFallback,
+                                        Values.Percent2.format(1d))));
+        var us = groups.get(1);
+        amount("15000", us.total());
+        assertEquals(2, us.companies().size());
+        var fallbackText = MessageFormat.format(Messages.LookThroughDetailRevenueFallback, Values.Percent2.format(1d));
+        assertEquals(1, us.companies().stream().filter(row -> row.detail().orElseThrow().equals(fallbackText)).count());
+        assertEquals(GroupKind.UNKNOWN, groups.get(2).groupKind());
+        amount("2000", groups.get(2).total());
+        assertEquals(GroupKind.PENDING, groups.get(3).groupKind());
+
+        var sum = groups.stream().map(GroupRow::total).reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, sum.compareTo(result.value(Category.COMPANY)));
+
+        // the notice splits the company exposure into revenue, fallback and no data
+        var notice = model.summary().indicatorText();
+        assertTrue(notice.contains(MessageFormat.format(Messages.LookThroughRevenueCoverage,
+                        Values.Percent2.format(10000d / 48000), Values.Percent2.format(35000d / 48000),
+                        Values.Percent2.format(3000d / 48000), Values.Date.format(LocalDate.parse("2025-03-31")))));
+    }
+
+    @Test
     public void testRevenueRegionWithoutAnyDataKeepsAllCompaniesUnallocated()
     {
         var result = groupingResult();

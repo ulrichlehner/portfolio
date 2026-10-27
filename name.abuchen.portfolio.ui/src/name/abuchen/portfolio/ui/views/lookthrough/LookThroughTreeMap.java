@@ -487,9 +487,17 @@ class LookThroughTreeMap
                 int available = width - 2 * PADDING;
                 if (available >= MINIMUM_LABEL_WIDTH)
                 {
-                    var text = group.label() + group.shareText().map(share -> "  " + share).orElse(""); //$NON-NLS-1$ //$NON-NLS-2$
+                    // the share is always visible: reserve its width first and
+                    // shorten only the label
+                    var share = group.shareText().orElse(""); //$NON-NLS-1$
+                    int shareWidth = share.isEmpty() ? 0 : gc.textExtent(share).x;
+                    int gap = share.isEmpty() ? 0 : 2 * PADDING;
                     gc.setForeground(Colors.WHITE);
-                    gc.drawText(shorten(gc, text, available), x + PADDING, y + 2, true);
+                    if (shareWidth > 0 && shareWidth <= available)
+                        gc.drawText(share, x + width - PADDING - shareWidth, y + 2, true);
+                    int labelWidth = available - (shareWidth > 0 ? shareWidth + gap : 0);
+                    if (labelWidth >= MINIMUM_LABEL_WIDTH)
+                        gc.drawText(shorten(gc, group.label(), labelWidth), x + PADDING, y + 2, true);
                 }
             }
 

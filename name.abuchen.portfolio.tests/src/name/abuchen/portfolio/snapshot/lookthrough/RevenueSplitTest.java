@@ -61,6 +61,80 @@ public class RevenueSplitTest
         assertEquals(0, new BigDecimal("20").compareTo(split.percentOf(Member.OTHER)));
     }
 
+    private static Member memberOfLabel(String label)
+    {
+        return RevenueSplit.memberOf("", label);
+    }
+
+    @Test
+    public void testGreaterChinaVariantsFormARegionOfTheirOwn()
+    {
+        var greaterChina = new Member(Kind.REGION, RevenueSplit.GREATER_CHINA);
+        for (var label : List.of("Greater China", "GREATER CHINA", "  greater china ", "Greater China Region",
+                        "China including Hong Kong and Taiwan", "China, Hong Kong and Taiwan",
+                        "China (including Hong Kong)"))
+            assertEquals(label, greaterChina, memberOfLabel(label));
+        // the plain country stays a country
+        assertEquals(new Member(Kind.COUNTRY, "CN"), memberOfLabel("China"));
+        assertEquals(new Member(Kind.COUNTRY, "CN"), memberOfLabel("Mainland China"));
+    }
+
+    @Test
+    public void testRemainderLabelsStayOtherOrUnspecified()
+    {
+        for (var label : List.of("International", "Foreign", "Non-US", "Non-U.S.", "Outside United States",
+                        "Outside the U.S.", "Rest of World", "Rest-of-the-World", "All other countries",
+                        "Other countries", "Other"))
+            assertEquals(label, Member.OTHER, memberOfLabel(label));
+    }
+
+    @Test
+    public void testAmericasVariants()
+    {
+        var americas = new Member(Kind.REGION, "R20");
+        for (var label : List.of("Americas", "Other Americas", "Americas excluding US",
+                        "Americas, excluding United States", "Americas ex-US", "Rest of Americas"))
+            assertEquals(label, americas, memberOfLabel(label));
+    }
+
+    @Test
+    public void testEmeaVariants()
+    {
+        var emea = new Member(Kind.REGION, RevenueSplit.EMEA);
+        for (var label : List.of("EMEA", "Europe, Middle East and Africa", "Europe, Middle East, and Africa",
+                        "Europe Middle East Africa", "European, Middle East and Africa", "EMEIA",
+                        "EMEA Region"))
+            assertEquals(label, emea, memberOfLabel(label));
+    }
+
+    @Test
+    public void testAsiaPacificVariants()
+    {
+        var apac = new Member(Kind.REGION, RevenueSplit.APAC);
+        for (var label : List.of("APAC", "Asia-Pacific", "Asia Pacific", "Asia Pacific and Japan",
+                        "Asia Pacific excluding Japan", "Asia/Pacific", "APAC Region", "AsiaPac"))
+            assertEquals(label, apac, memberOfLabel(label));
+    }
+
+    @Test
+    public void testCountryNamesAreMatchedTolerantly()
+    {
+        assertEquals(new Member(Kind.COUNTRY, "JP"), memberOfLabel("Japan"));
+        assertEquals(new Member(Kind.COUNTRY, "KR"), memberOfLabel("South Korea"));
+        assertEquals(new Member(Kind.COUNTRY, "KR"), memberOfLabel("Korea, Republic of"));
+        assertEquals(new Member(Kind.COUNTRY, "KR"), memberOfLabel("Republic of Korea"));
+        assertEquals(new Member(Kind.COUNTRY, "TW"), memberOfLabel("Taiwan"));
+        assertEquals(new Member(Kind.COUNTRY, "IN"), memberOfLabel("INDIA"));
+        assertEquals(new Member(Kind.COUNTRY, "DE"), memberOfLabel("  germany "));
+        assertEquals(new Member(Kind.COUNTRY, "GB"), memberOfLabel("United Kingdom"));
+        assertEquals(new Member(Kind.COUNTRY, "GB"), memberOfLabel("U.K."));
+        assertEquals(new Member(Kind.COUNTRY, "US"), memberOfLabel("U.S."));
+        assertEquals(new Member(Kind.COUNTRY, "US"), memberOfLabel("United States"));
+        assertEquals(new Member(Kind.COUNTRY, "US"), memberOfLabel("United-States"));
+        assertEquals(new Member(Kind.COUNTRY, "HK"), memberOfLabel("Hong Kong"));
+        assertEquals(Member.OTHER, memberOfLabel("Invented Land"));
+    }
+
     @Test
     public void testIncompleteSplitIsScaledAndKeepsReportedSum()
     {

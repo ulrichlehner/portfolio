@@ -122,6 +122,7 @@ public final class LookThroughGrouping
                 case RevenueSplit.EMEA -> Messages.LookThroughRegionEmea;
                 case RevenueSplit.APAC -> Messages.LookThroughRegionApac;
                 case RevenueSplit.LATAM -> Messages.LookThroughRegionLatam;
+                case RevenueSplit.GREATER_CHINA -> Messages.LookThroughRegionGreaterChina;
                 default -> maps.regionNames().getOrDefault(code, code);
             });
             case OTHER -> new Group(member.key(), Messages.LookThroughRegionOther);

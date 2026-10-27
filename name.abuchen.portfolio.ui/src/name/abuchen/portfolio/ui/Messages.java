@@ -1044,6 +1044,7 @@ public class Messages extends NLS
     public static String LookThroughCoverageUnavailable;
     public static String LookThroughDetailCountry;
     public static String LookThroughDetailRevenue;
+    public static String LookThroughDetailRevenueFallback;
     public static String LookThroughDetailRevenueScaled;
     public static String LookThroughDetailUnnamedInstrument;
     public static String LookThroughGroupCompanies;
@@ -1091,6 +1092,7 @@ public class Messages extends NLS
     public static String LookThroughRefreshAction;
     public static String LookThroughRegionApac;
     public static String LookThroughRegionEmea;
+    public static String LookThroughRegionGreaterChina;
     public static String LookThroughRegionLatam;
     public static String LookThroughRegionOther;
     public static String LookThroughRevenueCoverage;

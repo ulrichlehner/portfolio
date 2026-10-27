@@ -101,7 +101,7 @@ public class LookThroughView extends AbstractFinanceView
     private static final String CHART_KEY = LookThroughView.class.getSimpleName() + "-chart"; //$NON-NLS-1$
     private static final String GROUPING_KEY = LookThroughView.class.getSimpleName() + "-grouping"; //$NON-NLS-1$
     private static final String SASH_KEY = LookThroughView.class.getSimpleName() + "-sash"; //$NON-NLS-1$
-    private static final int[] DEFAULT_WEIGHTS = { 40, 60 };
+    private static final int[] DEFAULT_WEIGHTS = { 2, 1 };
     /** Enrichment notifications are presented at most this often. */
     private static final Duration ENRICHMENT_UPDATE_INTERVAL = Duration.ofMillis(1500);
 
@@ -606,7 +606,7 @@ public class LookThroughView extends AbstractFinanceView
 
     private void addColumns(ShowHideColumnHelper support)
     {
-        var column = new Column("instrument", Messages.LookThroughColumnCompany, SWT.NONE, 320); //$NON-NLS-1$
+        var column = new Column("instrument", Messages.LookThroughColumnCompany, SWT.NONE, 200); //$NON-NLS-1$
         column.setLabelProvider(new ColumnLabelProvider()
         {
             @Override
@@ -633,7 +633,7 @@ public class LookThroughView extends AbstractFinanceView
                 if (element instanceof GroupRow group)
                     return MessageFormat.format(Messages.LookThroughGroupCompanies, group.count());
                 if (element instanceof DetailRow detail)
-                    return detail.note();
+                    return detail.note() == null || detail.note().isBlank() ? null : detail.note();
                 if (element instanceof CompanyRow company)
                     return company.detail().orElse(null);
                 return null;
@@ -642,22 +642,7 @@ public class LookThroughView extends AbstractFinanceView
         column.setRemovable(false);
         support.addColumn(column);
 
-        column = new Column("note", Messages.ColumnNote, SWT.NONE, 300); //$NON-NLS-1$
-        column.setLabelProvider(new ColumnLabelProvider()
-        {
-            @Override
-            public String getText(Object element)
-            {
-                if (element instanceof DetailRow detail)
-                    return detail.note();
-                if (element instanceof ExcludedRow excluded)
-                    return excluded.reasonText();
-                return null;
-            }
-        });
-        support.addColumn(column);
-
-        column = new Column("direct", Messages.LookThroughColumnDirect, SWT.RIGHT, 110); //$NON-NLS-1$
+        column = new Column("direct", Messages.LookThroughColumnDirect, SWT.RIGHT, 95); //$NON-NLS-1$
         column.setLabelProvider(new ColumnLabelProvider()
         {
             @Override
@@ -676,7 +661,7 @@ public class LookThroughView extends AbstractFinanceView
         });
         support.addColumn(column);
 
-        column = new Column("indirect", Messages.LookThroughColumnIndirect, SWT.RIGHT, 110); //$NON-NLS-1$
+        column = new Column("indirect", Messages.LookThroughColumnIndirect, SWT.RIGHT, 95); //$NON-NLS-1$
         column.setLabelProvider(new ColumnLabelProvider()
         {
             @Override
@@ -695,7 +680,7 @@ public class LookThroughView extends AbstractFinanceView
         });
         support.addColumn(column);
 
-        column = new Column("total", Messages.LookThroughColumnTotal, SWT.RIGHT, 110); //$NON-NLS-1$
+        column = new Column("total", Messages.LookThroughColumnTotal, SWT.RIGHT, 95); //$NON-NLS-1$
         column.setLabelProvider(new ColumnLabelProvider()
         {
             @Override
@@ -716,7 +701,7 @@ public class LookThroughView extends AbstractFinanceView
         });
         support.addColumn(column);
 
-        column = new Column("share", Messages.LookThroughColumnShare, SWT.RIGHT, 150); //$NON-NLS-1$
+        column = new Column("share", Messages.LookThroughColumnShare, SWT.RIGHT, 75); //$NON-NLS-1$
         column.setLabelProvider(new ColumnLabelProvider()
         {
             @Override

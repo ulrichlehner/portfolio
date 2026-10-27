@@ -44,6 +44,8 @@ public record CompanyAttributes(Identifier identity, Optional<Attribute<String>>
 
     private static final Set<String> COUNTRIES = Set.of(Locale.getISOCountries());
     private static final Map<String, String> COUNTRY_NAMES = countryNames();
+    /** The same names with letters and digits only, so that punctuation does not matter. */
+    private static final Map<String, String> COUNTRY_NAMES_SIMPLE = simplifiedNames();
 
     public CompanyAttributes
     {
@@ -81,7 +83,24 @@ public record CompanyAttributes(Identifier identity, Optional<Attribute<String>>
         names.put("the netherlands", "NL"); //$NON-NLS-1$ //$NON-NLS-2$
         names.put("viet nam", "VN"); //$NON-NLS-1$ //$NON-NLS-2$
         names.put("turkiye", "TR"); //$NON-NLS-1$ //$NON-NLS-2$
+        names.put("republic of korea", "KR"); //$NON-NLS-1$ //$NON-NLS-2$
+        names.put("mainland china", "CN"); //$NON-NLS-1$ //$NON-NLS-2$
+        names.put("people's republic of china", "CN"); //$NON-NLS-1$ //$NON-NLS-2$
+        names.put("us", "US"); //$NON-NLS-1$ //$NON-NLS-2$
+        names.put("united kingdom of great britain and northern ireland", "GB"); //$NON-NLS-1$ //$NON-NLS-2$
         return Map.copyOf(names);
+    }
+
+    private static Map<String, String> simplifiedNames()
+    {
+        var names = new HashMap<String, String>();
+        COUNTRY_NAMES.forEach((name, code) -> names.putIfAbsent(simplify(name), code));
+        return Map.copyOf(names);
+    }
+
+    private static String simplify(String name)
+    {
+        return name.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", ""); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static String normalize(String name)
@@ -98,7 +117,13 @@ public record CompanyAttributes(Identifier identity, Optional<Attribute<String>>
     {
         if (name == null || name.isBlank())
             return Optional.empty();
-        return Optional.ofNullable(COUNTRY_NAMES.get(normalize(name)));
+        var code = COUNTRY_NAMES.get(normalize(name));
+        if (code == null)
+        {
+            var simple = simplify(name);
+            code = simple.isEmpty() ? null : COUNTRY_NAMES_SIMPLE.get(simple);
+        }
+        return Optional.ofNullable(code);
     }
 
     /** Whether the value is an assigned ISO 3166 alpha-2 country code. */

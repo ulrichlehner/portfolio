@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The latest reported revenue of a company by geography, normalized to
@@ -90,6 +91,11 @@ public record RevenueSplit(String isin, LocalDate period, List<Share> shares, Bi
     public static final String EMEA = "EMEA"; //$NON-NLS-1$
     public static final String APAC = "APAC"; //$NON-NLS-1$
     public static final String LATAM = "LATAM"; //$NON-NLS-1$
+    /**
+     * China including Hong Kong and Taiwan as reported by some filers. It is no
+     * country and cannot be split over the three, so it is a region of its own.
+     */
+    public static final String GREATER_CHINA = "GREATER_CHINA"; //$NON-NLS-1$
 
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
     private static final int SCALE = 8;
@@ -116,7 +122,40 @@ public record RevenueSplit(String isin, LocalDate period, List<Share> shares, Bi
                     Map.entry("europemiddleeastafrica", EMEA), //$NON-NLS-1$
                     Map.entry("asiapacific", APAC), //$NON-NLS-1$
                     Map.entry("apac", APAC), //$NON-NLS-1$
-                    Map.entry("asiapacificregion", APAC)); //$NON-NLS-1$
+                    Map.entry("asiapacificregion", APAC), //$NON-NLS-1$
+                    Map.entry("europeanmiddleeastandafrica", EMEA), //$NON-NLS-1$
+                    Map.entry("europemiddleeastindiaandafrica", EMEA), //$NON-NLS-1$
+                    Map.entry("emeia", EMEA), //$NON-NLS-1$
+                    Map.entry("emearegion", EMEA), //$NON-NLS-1$
+                    Map.entry("apacregion", APAC), //$NON-NLS-1$
+                    Map.entry("asiapac", APAC), //$NON-NLS-1$
+                    Map.entry("asiapacificandjapan", APAC), //$NON-NLS-1$
+                    Map.entry("asiapacificincludingjapan", APAC), //$NON-NLS-1$
+                    Map.entry("asiapacificexcludingjapan", APAC), //$NON-NLS-1$
+                    Map.entry("asiapacificexjapan", APAC), //$NON-NLS-1$
+                    Map.entry("otheramericas", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("restofamericas", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("americasexcludingus", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("americasexcludingunitedstates", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("americasexus", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("americasexcludingtheus", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("americasexcludingtheunitedstates", "R20"), //$NON-NLS-1$ //$NON-NLS-2$
+                    Map.entry("greaterchina", GREATER_CHINA), //$NON-NLS-1$
+                    Map.entry("greaterchinaregion", GREATER_CHINA), //$NON-NLS-1$
+                    Map.entry("chinaincludinghongkongandtaiwan", GREATER_CHINA), //$NON-NLS-1$
+                    Map.entry("chinahongkongandtaiwan", GREATER_CHINA), //$NON-NLS-1$
+                    Map.entry("chinaincludinghongkong", GREATER_CHINA), //$NON-NLS-1$
+                    Map.entry("chinaincludinghongkongtaiwan", GREATER_CHINA)); //$NON-NLS-1$
+
+    /**
+     * Labels that name the remainder explicitly. They stay in "other or
+     * unspecified"; the set exists so that none of them is mistaken for a
+     * country or region.
+     */
+    private static final Set<String> REMAINDER = Set.of("international", "foreign", "nonus", "outsideus", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    "outsideunitedstates", "outsidetheus", "outsidetheunitedstates", "restofworld", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                    "restoftheworld", "allothercountries", "othercountries", "allother", "other", "others", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                    "nonusa", "nonunitedstates", "foreigncountries", "internationalmarkets"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
 
     public RevenueSplit
     {
@@ -187,8 +226,9 @@ public record RevenueSplit(String isin, LocalDate period, List<Share> shares, Bi
 
     /**
      * Country members map to their ISO code, known region members and labels to
-     * a region key, country names to their code; everything else, including
-     * the explicit rest of the world, is the remainder.
+     * a region key, country names to their code (case, spacing and punctuation
+     * do not matter); everything else, including the explicit rest of the
+     * world, is the remainder.
      */
     static Member memberOf(String member, String label)
     {
@@ -203,6 +243,8 @@ public record RevenueSplit(String isin, LocalDate period, List<Share> shares, Bi
             var key = simplify(text);
             if (key.isEmpty())
                 continue;
+            if (REMAINDER.contains(key))
+                return Member.OTHER;
             var region = REGIONS.get(key);
             if (region != null)
                 return new Member(Kind.REGION, region);
