@@ -32,6 +32,10 @@ import name.abuchen.portfolio.money.ExchangeRateTimeSeries;
 import name.abuchen.portfolio.money.Money;
 import name.abuchen.portfolio.money.Values;
 import name.abuchen.portfolio.snapshot.ClientSnapshot;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes.Attribute;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes.Source;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionProvenance;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
@@ -54,9 +58,12 @@ import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuation;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuationAdapter;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Grouping;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContentState;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupKind;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Model;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
@@ -219,7 +226,9 @@ public class LookThroughViewPresenterTest
         for (var row : rows)
         {
             keys.add(row.key());
-            if (row instanceof CompanyRow companyRow)
+            if (row instanceof GroupRow groupRow)
+                keys.addAll(keys(groupRow.companies()));
+            else if (row instanceof CompanyRow companyRow)
                 keys.addAll(keys(companyRow.contributions()));
             else if (row instanceof CategoryRow categoryRow)
                 keys.addAll(keys(categoryRow.details()));
@@ -802,5 +811,170 @@ public class LookThroughViewPresenterTest
         assertTrue(model.summary().fundsText().isEmpty());
         assertTrue(model.summary().resolvedText().isEmpty());
         assertTrue(model.decomposedShares().isEmpty());
+    }
+
+    private static Identifier company(String id)
+    {
+        return new Identifier("synthetic:company", id);
+    }
+
+    private static CompanyAttributes attributes(String id, String country, String currency, String sector,
+                    String industry)
+    {
+        return new CompanyAttributes(company(id),
+                        Optional.ofNullable(country).map(v -> new Attribute<>(v, Source.REGISTER, RETRIEVED)),
+                        Optional.ofNullable(currency).map(v -> new Attribute<>(v, Source.PROVIDER, RETRIEVED)),
+                        Optional.ofNullable(sector).map(v -> new Attribute<>(v, Source.PROVIDER, RETRIEVED)),
+                        Optional.ofNullable(industry).map(v -> new Attribute<>(v, Source.PROVIDER, RETRIEVED)),
+                        Optional.empty());
+    }
+
+    private static CompanyEnrichmentService.Snapshot snapshot(Set<Identifier> waiting, CompanyAttributes... all)
+    {
+        var map = new java.util.LinkedHashMap<Identifier, CompanyAttributes>();
+        for (var attributes : all)
+            map.put(attributes.identity(), attributes);
+        return new CompanyEnrichmentService.Snapshot(map, waiting.size(), waiting);
+    }
+
+    private LookThroughResult groupingResult()
+    {
+        hold("a", "Synthetic a", AssetType.EQUITY, "CO-A", 1, 100);
+        hold("b", "Synthetic b", AssetType.EQUITY, "CO-B", 1, 300);
+        hold("c", "Synthetic c", AssetType.EQUITY, "CO-C", 1, 50);
+        hold("d", "Synthetic d", AssetType.EQUITY, "CO-D", 1, 20);
+        hold("e", "Synthetic e", AssetType.EQUITY, "CO-E", 1, 10);
+        return result();
+    }
+
+    private GroupRow group(Model model, String label)
+    {
+        return model.rows().stream().filter(GroupRow.class::isInstance).map(GroupRow.class::cast)
+                        .filter(row -> row.label().equals(label)).findFirst().orElseThrow();
+    }
+
+    private List<GroupRow> groups(Model model)
+    {
+        return model.rows().stream().filter(GroupRow.class::isInstance).map(GroupRow.class::cast).toList();
+    }
+
+    @Test
+    public void testCountryGroupsSumToTheCompanyExposureWithUnknownAndPending()
+    {
+        var result = groupingResult();
+        var snapshot = snapshot(Set.of(company("CO-D")), //
+                        attributes("CO-A", "US", null, null, null), attributes("CO-B", "US", null, null, null),
+                        attributes("CO-C", "DE", null, null, null), attributes("CO-D", null, null, null, null),
+                        attributes("CO-E", null, null, null, null));
+
+        var model = new LookThroughViewPresenter().present(result, Grouping.COUNTRY, snapshot);
+        var groups = groups(model);
+
+        assertEquals(4, groups.size());
+        assertEquals(RowKey.of("group:country:US"), groups.get(0).key());
+        amount("40000", groups.get(0).total());
+        assertEquals(2, groups.get(0).companies().size());
+        assertEquals(RowKey.of("group:country:DE"), groups.get(1).key());
+        assertEquals(GroupKind.UNKNOWN, groups.get(2).groupKind());
+        assertEquals(MessageFormat.format(Messages.LookThroughGroupUnknown, 1), groups.get(2).label());
+        assertEquals(GroupKind.PENDING, groups.get(3).groupKind());
+        assertEquals(MessageFormat.format(Messages.LookThroughGroupPending, 1), groups.get(3).label());
+
+        var sum = groups.stream().map(GroupRow::total).reduce(BigDecimal.ZERO, BigDecimal::add);
+        amount("48000", sum);
+        assertEquals(0, sum.compareTo(result.value(Category.COMPANY)));
+        // the country tooltip names the source
+        var detail = groups.get(0).companies().get(0).detail().orElseThrow();
+        assertTrue(detail.contains(Messages.LookThroughAttributeSourceRegister));
+
+        // the charts show the groups with their companies nested inside
+        var chart = model.chart();
+        assertTrue(chart.isGrouped());
+        assertEquals(4, chart.top().size());
+        assertEquals(5, chart.companies().size());
+    }
+
+    @Test
+    public void testCompanyGroupingKeepsFlatRows()
+    {
+        var result = groupingResult();
+        var model = new LookThroughViewPresenter().present(result, Grouping.COMPANY, snapshot(Set.of()));
+        assertTrue(groups(model).isEmpty());
+        assertFalse(model.chart().isGrouped());
+        assertEquals(keys(model(result).rows()), keys(model.rows()));
+    }
+
+    @Test
+    public void testRegionAndMarketClassificationUseTheTemplates()
+    {
+        var result = groupingResult();
+        var snapshot = snapshot(Set.of(), //
+                        attributes("CO-A", "US", null, null, null), attributes("CO-B", "DE", null, null, null),
+                        attributes("CO-C", "BR", null, null, null), attributes("CO-D", "ZZ", null, null, null),
+                        attributes("CO-E", null, null, null, null));
+
+        var regions = groups(new LookThroughViewPresenter().present(result, Grouping.REGION, snapshot));
+        // US and BR are both America, DE is Europe
+        amount("15000", regions.stream().filter(row -> row.key().equals(RowKey.of("group:region:R20"))).findFirst()
+                        .orElseThrow().total());
+        assertTrue(regions.stream().anyMatch(row -> row.key().equals(RowKey.of("group:region:R10"))));
+        // a country that the template does not list is unknown, as is a missing country
+        var unknown = regions.stream().filter(row -> row.groupKind() == GroupKind.UNKNOWN).findFirst().orElseThrow();
+        assertEquals(2, unknown.count());
+
+        var markets = groups(new LookThroughViewPresenter().present(result, Grouping.MARKET_CLASSIFICATION, snapshot));
+        assertTrue(markets.stream().anyMatch(row -> row.key().equals(RowKey.of("group:market_classification:RW"))));
+        assertTrue(markets.stream().anyMatch(row -> row.key().equals(RowKey.of("group:market_classification:REM"))));
+    }
+
+    @Test
+    public void testSectorsMapToGicsByNameAndKeepUnmatchedNames()
+    {
+        var result = groupingResult();
+        var snapshot = snapshot(Set.of(), //
+                        attributes("CO-A", null, null, "Information Technology", null),
+                        attributes("CO-B", null, null, "information technology", null),
+                        attributes("CO-C", null, null, "Technology", null),
+                        attributes("CO-D", null, null, "Invented sector", "Invented industry"),
+                        attributes("CO-E", null, null, null, "Invented industry"));
+
+        var model = new LookThroughViewPresenter().present(result, Grouping.SECTOR, snapshot);
+        var technology = groups(model).stream().filter(row -> row.key().equals(RowKey.of("group:sector:45")))
+                        .findFirst().orElseThrow();
+        assertEquals(3, technology.count());
+        amount("45000", technology.total());
+        var invented = group(model, "Invented sector");
+        assertEquals(RowKey.of("group:sector:name:invented sector"), invented.key());
+        assertEquals(GroupKind.UNKNOWN, groups(model).get(groups(model).size() - 1).groupKind());
+
+        var industries = groups(new LookThroughViewPresenter().present(result, Grouping.INDUSTRY, snapshot));
+        assertTrue(industries.stream().anyMatch(row -> row.label().equals("Invented industry") && row.count() == 2));
+    }
+
+    @Test
+    public void testCurrencyGroupsAndStableKeysWhenEnrichmentMovesACompany()
+    {
+        var result = groupingResult();
+        var presenter = new LookThroughViewPresenter();
+        var before = presenter.present(result, Grouping.CURRENCY, snapshot(Set.of(company("CO-A")), //
+                        attributes("CO-A", null, null, null, null), attributes("CO-B", null, "USD", null, null),
+                        attributes("CO-C", null, "USD", null, null), attributes("CO-D", null, "EUR", null, null),
+                        attributes("CO-E", null, "EUR", null, null)));
+        var pending = groups(before).stream().filter(row -> row.groupKind() == GroupKind.PENDING).findFirst()
+                        .orElseThrow();
+        var companyKey = pending.companies().get(0).key();
+
+        var after = presenter.present(result, Grouping.CURRENCY, snapshot(Set.of(), //
+                        attributes("CO-A", null, "USD", null, null), attributes("CO-B", null, "USD", null, null),
+                        attributes("CO-C", null, "USD", null, null), attributes("CO-D", null, "EUR", null, null),
+                        attributes("CO-E", null, "EUR", null, null)));
+        assertTrue(groups(after).stream().noneMatch(row -> row.groupKind() != GroupKind.REGULAR));
+        var usd = groups(after).stream().filter(row -> row.key().equals(RowKey.of("group:currency:USD")))
+                        .findFirst().orElseThrow();
+        assertTrue(usd.companies().stream().anyMatch(row -> row.key().equals(companyKey)));
+        // the key of the moved company, its contributions and the group stay equal
+        assertTrue(keys(after.rows()).contains(companyKey));
+        assertTrue(keys(before.rows()).contains(RowKey.of("group:currency:EUR")));
+        assertTrue(keys(after.rows()).contains(RowKey.of("group:currency:EUR")));
     }
 }

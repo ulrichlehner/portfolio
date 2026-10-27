@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
+import java.text.MessageFormat;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -14,6 +15,8 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 import jakarta.inject.Inject;
 
@@ -51,6 +54,7 @@ import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.money.CurrencyConverterImpl;
 import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
 import name.abuchen.portfolio.snapshot.ClientSnapshot;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
@@ -71,7 +75,9 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Comp
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContentState;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.DetailRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Grouping;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
@@ -90,6 +96,7 @@ public class LookThroughView extends AbstractFinanceView
 {
     private static final int ELIGIBILITY_INTERVAL = 60_000;
     private static final String CHART_KEY = LookThroughView.class.getSimpleName() + "-chart"; //$NON-NLS-1$
+    private static final String GROUPING_KEY = LookThroughView.class.getSimpleName() + "-grouping"; //$NON-NLS-1$
     private static final String SASH_KEY = LookThroughView.class.getSimpleName() + "-sash"; //$NON-NLS-1$
     private static final int[] DEFAULT_WEIGHTS = { 40, 60 };
 
@@ -103,9 +110,16 @@ public class LookThroughView extends AbstractFinanceView
     private Composite tableContainer;
     private Composite tableMessage;
     private DropDown chartDropDown;
+    private DropDown groupingDropDown;
     private Kind chartKind;
+    private Grouping grouping;
+    private Runnable enrichmentRegistration = () -> {
+    };
+    private final AtomicBoolean enrichmentUpdateQueued = new AtomicBoolean();
     private Map<RowKey, Row> rowsByKey = Map.of();
     private Map<RowKey, RowKey> companyKeys = Map.of();
+    private Map<RowKey, RowKey> groupKeys = Map.of();
+    private Map<RowKey, RowKey> parentKeys = Map.of();
     private LookThroughViewPresenter.Model presented;
 
     /** Empty until the credential state was read off the UI thread. */
@@ -191,6 +205,9 @@ public class LookThroughView extends AbstractFinanceView
             this.result = null;
             this.presented = null;
         }
+        enrichmentRegistration.run();
+        enrichmentRegistration = () -> {
+        };
         this.compositionSource = source;
         this.calculatedInputs = null;
         this.keyConfigured = Optional.empty();
@@ -219,6 +236,7 @@ public class LookThroughView extends AbstractFinanceView
                                             current.funds()));
                         });
         this.statusModel.setChangeListener(this::onStatusChanged);
+        enrichmentRegistration = source.addEnrichmentListener(this::onEnrichmentChanged);
 
         updateStatus();
         if (reset)
@@ -226,6 +244,26 @@ public class LookThroughView extends AbstractFinanceView
             applyResult();
             recalculate(true);
         }
+    }
+
+    /**
+     * Called on a background thread whenever company attributes changed.
+     * Notifications arriving before the user interface handled the last one
+     * are merged. Only a grouped view depends on the attributes, and it is
+     * presented again from the current result: no recalculation, no request.
+     */
+    private void onEnrichmentChanged()
+    {
+        if (disposed || !enrichmentUpdateQueued.compareAndSet(false, true))
+            return;
+        var display = Display.getDefault();
+        if (display.isDisposed())
+            return;
+        display.asyncExec(() -> {
+            enrichmentUpdateQueued.set(false);
+            if (!disposed && result != null && grouping() != Grouping.COMPANY)
+                applyResult();
+        });
     }
 
     /** Called on the user interface thread after every status change. */
@@ -347,6 +385,7 @@ public class LookThroughView extends AbstractFinanceView
     public void dispose()
     {
         disposed = true;
+        enrichmentRegistration.run();
         if (shell != null && !shell.isDisposed())
             shell.removeListener(SWT.Activate, shellActivation);
         Display.getDefault().timerExec(-1, automaticRefresh);
@@ -434,7 +473,7 @@ public class LookThroughView extends AbstractFinanceView
 
         viewer.addSelectionChangedListener(event -> showSelectionInChart());
         viewer.setComparer(new RowKeyComparer());
-        viewer.setContentProvider(new RowContentProvider());
+        viewer.setContentProvider(new RowContentProvider(this::parentOf));
         viewer.setInput(List.of());
 
         // A source injected by the platform wins; otherwise the view uses the
@@ -484,6 +523,8 @@ public class LookThroughView extends AbstractFinanceView
                     return excluded.reasonText();
                 if (element instanceof DetailRow detail)
                     return detail.note();
+                if (element instanceof CompanyRow company)
+                    return company.detail().orElse(null);
                 return null;
             }
         });
@@ -500,6 +541,8 @@ public class LookThroughView extends AbstractFinanceView
                     return contribution.sourceText();
                 if (element instanceof DetailRow detail)
                     return detail.sourceText();
+                if (element instanceof GroupRow group)
+                    return MessageFormat.format(Messages.LookThroughGroupCompanies, group.count());
                 return null;
             }
         });
@@ -526,6 +569,8 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
+                if (element instanceof GroupRow group)
+                    return formatAmount(group.direct());
                 if (element instanceof CompanyRow company)
                     return formatAmount(company.direct());
                 if (element instanceof ContributionRow contribution && contribution.direct())
@@ -543,6 +588,8 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
+                if (element instanceof GroupRow group)
+                    return formatAmount(group.indirect());
                 if (element instanceof CompanyRow company)
                     return formatAmount(company.indirect());
                 if (element instanceof ContributionRow contribution && !contribution.direct())
@@ -560,6 +607,8 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
+                if (element instanceof GroupRow group)
+                    return formatAmount(group.total());
                 if (element instanceof CompanyRow company)
                     return formatAmount(company.total());
                 if (element instanceof ContributionRow contribution)
@@ -579,6 +628,8 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
+                if (element instanceof GroupRow group)
+                    return group.shareText().orElse(null);
                 if (element instanceof CompanyRow company)
                     return company.shareText().orElse(null);
                 if (element instanceof ContributionRow contribution)
@@ -620,7 +671,10 @@ public class LookThroughView extends AbstractFinanceView
             return;
         }
 
-        var model = presenter.present(result);
+        var source = compositionSource;
+        var attributes = source != null ? source.companyAttributes()
+                        : CompanyEnrichmentService.Snapshot.empty();
+        var model = presenter.present(result, grouping(), attributes);
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
@@ -658,16 +712,26 @@ public class LookThroughView extends AbstractFinanceView
             viewer.setInput(rows);
 
             var byKey = new HashMap<RowKey, Row>();
-            index(rows, byKey);
+            var parents = new HashMap<RowKey, RowKey>();
+            index(rows, null, byKey, parents);
             rowsByKey = byKey;
+            parentKeys = parents;
             var owners = new HashMap<RowKey, RowKey>();
+            var groups = new HashMap<RowKey, RowKey>();
             for (var row : rows)
-                if (row instanceof CompanyRow company)
+            {
+                if (row instanceof GroupRow group)
                 {
-                    owners.put(company.key(), company.key());
-                    company.contributions().forEach(contribution -> owners.put(contribution.key(), company.key()));
+                    owners.put(group.key(), group.key());
+                    group.companies().forEach(company -> indexOwners(company, group.key(), owners, groups));
                 }
+                else if (row instanceof CompanyRow company)
+                {
+                    indexOwners(company, null, owners, groups);
+                }
+            }
             companyKeys = owners;
+            groupKeys = groups;
             viewer.setExpandedElements(expanded.stream().map(byKey::get).filter(Objects::nonNull).toArray());
             viewer.setSelection(new StructuredSelection(
                             selected.stream().map(byKey::get).filter(Objects::nonNull).toList()));
@@ -683,12 +747,25 @@ public class LookThroughView extends AbstractFinanceView
         showSelectionInChart();
     }
 
-    /** A click in a chart selects and reveals the company row in the table. */
+    private static void indexOwners(CompanyRow company, RowKey group, Map<RowKey, RowKey> owners,
+                    Map<RowKey, RowKey> groups)
+    {
+        owners.put(company.key(), company.key());
+        company.contributions().forEach(contribution -> owners.put(contribution.key(), company.key()));
+        if (group != null)
+            groups.put(company.key(), group);
+    }
+
+    /** A click in a chart selects and reveals the company or group row in the table. */
     private void selectCompany(RowKey key)
     {
         var row = rowsByKey.get(key);
         if (row == null)
             return;
+        // a company of a collapsed group is only reachable through the group
+        var parent = rowsByKey.get(parentKeys.get(key));
+        if (parent != null)
+            viewer.setExpandedState(parent, true);
         viewer.setSelection(new StructuredSelection(row), true);
         viewer.setExpandedState(row, true);
         viewer.reveal(row);
@@ -703,7 +780,8 @@ public class LookThroughView extends AbstractFinanceView
         if (chartPane == null)
             return;
         var selected = viewer.getStructuredSelection().getFirstElement();
-        chartPane.setSelected(selected instanceof Row row ? companyKeys.get(row.key()) : null);
+        var owner = selected instanceof Row row ? companyKeys.get(row.key()) : null;
+        chartPane.setSelected(owner, owner != null ? groupKeys.get(owner) : null);
     }
 
     private Kind chartKind()
@@ -721,6 +799,43 @@ public class LookThroughView extends AbstractFinanceView
             }
         }
         return chartKind;
+    }
+
+    private Grouping grouping()
+    {
+        if (grouping == null)
+        {
+            grouping = Grouping.COMPANY;
+            try
+            {
+                grouping = Grouping.valueOf(getPreferenceStore().getString(GROUPING_KEY));
+            }
+            catch (IllegalArgumentException | NullPointerException e)
+            {
+                // keep the default
+            }
+        }
+        return grouping;
+    }
+
+    private String groupingLabel()
+    {
+        return Messages.LookThroughBreakdownBy + ": " + grouping().label(); //$NON-NLS-1$
+    }
+
+    /** Groups the current result again from stored attributes; neither calculates nor requests. */
+    private void selectGrouping(Grouping selected)
+    {
+        if (grouping() == selected)
+            return;
+        grouping = selected;
+        getPreferenceStore().setValue(GROUPING_KEY, selected.name());
+        if (groupingDropDown != null)
+        {
+            groupingDropDown.setLabel(groupingLabel());
+            groupingDropDown.setToolTip(Messages.LookThroughBreakdownBy);
+        }
+        applyResult();
     }
 
     private void selectChart(Kind kind)
@@ -770,15 +885,20 @@ public class LookThroughView extends AbstractFinanceView
         return keys;
     }
 
-    private static void index(List<? extends Row> rows, Map<RowKey, Row> byKey)
+    private static void index(List<? extends Row> rows, RowKey parent, Map<RowKey, Row> byKey,
+                    Map<RowKey, RowKey> parents)
     {
         for (var row : rows)
         {
             byKey.put(row.key(), row);
-            if (row instanceof CompanyRow company)
-                index(company.contributions(), byKey);
+            if (parent != null)
+                parents.put(row.key(), parent);
+            if (row instanceof GroupRow group)
+                index(group.companies(), group.key(), byKey, parents);
+            else if (row instanceof CompanyRow company)
+                index(company.contributions(), company.key(), byKey, parents);
             else if (row instanceof CategoryRow category)
-                index(category.details(), byKey);
+                index(category.details(), category.key(), byKey, parents);
         }
     }
 
@@ -890,6 +1010,11 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected void addViewButtons(ToolBarManager toolBarManager)
     {
+        groupingDropDown = new DropDown(groupingLabel());
+        groupingDropDown.setToolTip(Messages.LookThroughBreakdownBy);
+        groupingDropDown.setMenuListener(this::groupingMenuAboutToShow);
+        toolBarManager.add(groupingDropDown);
+
         chartDropDown = new DropDown(chartKind().label());
         chartDropDown.setToolTip(chartKind().label());
         chartDropDown.setMenuListener(this::chartMenuAboutToShow);
@@ -904,6 +1029,16 @@ public class LookThroughView extends AbstractFinanceView
         });
         refreshAction.setEnabled(canRefresh());
         toolBarManager.add(refreshAction);
+    }
+
+    private void groupingMenuAboutToShow(IMenuManager manager)
+    {
+        for (var option : Grouping.values())
+        {
+            var action = new SimpleAction(option.label(), a -> selectGrouping(option));
+            action.setChecked(grouping() == option);
+            manager.add(action);
+        }
     }
 
     private void chartMenuAboutToShow(IMenuManager manager)
@@ -961,9 +1096,22 @@ public class LookThroughView extends AbstractFinanceView
         }
     }
 
+    /** The row that contains the given row, or null. */
+    private Row parentOf(Row row)
+    {
+        return rowsByKey.get(parentKeys.get(row.key()));
+    }
+
     private static final class RowContentProvider implements ITreeContentProvider
     {
         private static final Object[] NO_CHILDREN = new Object[0];
+
+        private final Function<Row, Row> parents;
+
+        private RowContentProvider(Function<Row, Row> parents)
+        {
+            this.parents = parents;
+        }
 
         @Override
         public Object[] getElements(Object inputElement)
@@ -974,6 +1122,8 @@ public class LookThroughView extends AbstractFinanceView
         @Override
         public Object[] getChildren(Object parentElement)
         {
+            if (parentElement instanceof GroupRow group)
+                return group.companies().toArray();
             if (parentElement instanceof CompanyRow company)
                 return company.contributions().toArray();
             if (parentElement instanceof CategoryRow category)
@@ -984,12 +1134,14 @@ public class LookThroughView extends AbstractFinanceView
         @Override
         public Object getParent(Object element)
         {
-            return null;
+            return element instanceof Row row ? parents.apply(row) : null;
         }
 
         @Override
         public boolean hasChildren(Object element)
         {
+            if (element instanceof GroupRow group)
+                return !group.companies().isEmpty();
             if (element instanceof CompanyRow company)
                 return !company.contributions().isEmpty();
             if (element instanceof CategoryRow category)

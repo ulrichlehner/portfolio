@@ -507,10 +507,10 @@ public class LookThroughSessionTest
         var companies = List.of(new LookThroughResult.Company(identity, java.math.BigDecimal.TEN,
                         java.math.BigDecimal.ZERO, List.of()));
 
-        // Without a key nothing is requested and the company stays pending.
+        // Without a key nothing is requested, and the company is not left pending.
         session.enrich(companies);
         assertTrue(requested.isEmpty());
-        assertEquals(1, session.companyAttributes().pending());
+        assertEquals(0, session.companyAttributes().pending());
 
         configure();
         session.enrich(companies);

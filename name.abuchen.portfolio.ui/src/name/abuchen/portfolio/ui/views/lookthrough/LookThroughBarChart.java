@@ -47,6 +47,7 @@ class LookThroughBarChart
     private ChartModel model;
     private String currencyCode = ""; //$NON-NLS-1$
     private RowKey selectedKey;
+    private RowKey selectedGroupKey;
     private double maximum;
 
     LookThroughBarChart(Composite parent, Consumer<RowKey> onSelect)
@@ -198,11 +199,12 @@ class LookThroughBarChart
     }
 
     /** Highlights the bar of the company without notifying anybody. */
-    void setSelected(RowKey key)
+    void setSelected(RowKey key, RowKey groupKey)
     {
-        if (Objects.equals(selectedKey, key))
+        if (Objects.equals(selectedKey, key) && Objects.equals(selectedGroupKey, groupKey))
             return;
         selectedKey = key;
+        selectedGroupKey = groupKey;
         chart.getPlotArea().getControl().redraw();
     }
 
@@ -274,7 +276,7 @@ class LookThroughBarChart
 
     private void paintSelection(GC gc)
     {
-        if (selectedKey == null)
+        if (selectedKey == null && selectedGroupKey == null)
             return;
         var series = (IBarSeries<?>) chart.getSeriesSet().getSeries(DIRECT);
         if (series == null)
@@ -285,7 +287,8 @@ class LookThroughBarChart
 
         for (int ii = 0; ii < displayed.size(); ii++)
         {
-            if (!displayed.get(ii).key().equals(selectedKey) || bounds[ii] == null)
+            var key = displayed.get(ii).key();
+            if (!(key.equals(selectedKey) || key.equals(selectedGroupKey)) || bounds[ii] == null)
                 continue;
 
             int width = chart.getPlotArea().getControl().getBounds().width;

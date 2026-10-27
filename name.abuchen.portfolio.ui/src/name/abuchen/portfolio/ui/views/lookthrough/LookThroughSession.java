@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -83,6 +84,7 @@ final class LookThroughSession implements RefreshGateway
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
     private volatile CompanyEnrichmentService enrichment;
+    private final List<Runnable> enrichmentListeners = new CopyOnWriteArrayList<>();
 
     LookThroughSession(FundCompositionProvider provider, InstrumentClassifier classifier,
                     CompositionCredentials credentials, Clock clock, Executor executor)
@@ -460,8 +462,25 @@ final class LookThroughSession implements RefreshGateway
             var mode = credentials.state(account).mode();
             return mode == Mode.SECURE || mode == Mode.SESSION_ONLY;
         }, register, registerEnabled, cache, budget, clock, enrichmentExecutor);
+        service.addListener(this::notifyEnrichmentListeners);
         enrichment = service;
         return service;
+    }
+
+    /**
+     * Calls the listener on a background thread whenever company attributes
+     * changed. Returns the action that removes the listener.
+     */
+    Runnable addEnrichmentListener(Runnable listener)
+    {
+        enrichmentListeners.add(listener);
+        return () -> enrichmentListeners.remove(listener);
+    }
+
+    private void notifyEnrichmentListeners()
+    {
+        for (var listener : enrichmentListeners)
+            listener.run();
     }
 
     /**

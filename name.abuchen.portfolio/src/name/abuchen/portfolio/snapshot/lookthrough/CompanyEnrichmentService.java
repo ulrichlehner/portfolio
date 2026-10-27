@@ -7,11 +7,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
@@ -78,12 +80,21 @@ public final class CompanyEnrichmentService implements AutoCloseable
         }
     }
 
-    /** Attributes of the scheduled companies and the number still waiting for an answer. */
-    public record Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending)
+    /**
+     * Attributes of the scheduled companies, the number still waiting for an
+     * answer and those companies.
+     */
+    public record Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending, Set<Identifier> waiting)
     {
         public Snapshot
         {
             attributes = Collections.unmodifiableMap(new LinkedHashMap<>(attributes));
+            waiting = Set.copyOf(waiting);
+        }
+
+        public Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending)
+        {
+            this(attributes, pending, Set.of());
         }
 
         public static Snapshot empty()
@@ -340,7 +351,8 @@ public final class CompanyEnrichmentService implements AutoCloseable
     /**
      * Attributes of the latest scheduled companies; reads only the cache and
      * the register switch. A company with an ISIN is pending until the
-     * provider (and the register, if switched on) answered for it.
+     * provider (while profiles can be requested) and the register (if switched
+     * on) answered for it; without profile access it is not pending forever.
      */
     public Snapshot snapshot()
     {
@@ -350,8 +362,10 @@ public final class CompanyEnrichmentService implements AutoCloseable
             current = companies;
         }
         boolean withRegister = registerEnabled.getAsBoolean();
+        boolean withProfiles = profilesEnabled.getAsBoolean();
         var now = clock.instant();
         var attributes = new LinkedHashMap<Identifier, CompanyAttributes>();
+        var waiting = new HashSet<Identifier>();
         int pending = 0;
         for (var identity : current)
         {
@@ -359,13 +373,16 @@ public final class CompanyEnrichmentService implements AutoCloseable
             var profile = isin.flatMap(value -> cache.profile(account, value));
             var record = withRegister ? isin.flatMap(cache::register)
                             : Optional.<CompanyEnrichmentCache.Cached<RegisterRecord>>empty();
-            if (isin.isPresent() && (profile.isEmpty() || withRegister && record.isEmpty()))
+            if (isin.isPresent() && (withProfiles && profile.isEmpty() || withRegister && record.isEmpty()))
+            {
                 pending++;
+                waiting.add(identity);
+            }
             attributes.put(identity, CompanyAttributes.resolve(identity,
                             profile.flatMap(CompanyEnrichmentCache.Cached::value),
                             record.flatMap(CompanyEnrichmentCache.Cached::value), now));
         }
-        return new Snapshot(attributes, pending);
+        return new Snapshot(attributes, pending, waiting);
     }
 
     /** Stops scheduling; a running pass ends after its current request. */

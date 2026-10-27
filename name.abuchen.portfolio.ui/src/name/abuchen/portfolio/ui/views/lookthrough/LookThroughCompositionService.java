@@ -227,6 +227,12 @@ public final class LookThroughCompositionService
         }
 
         @Override
+        public Runnable addEnrichmentListener(Runnable listener)
+        {
+            return Backend.SESSION.addEnrichmentListener(listener);
+        }
+
+        @Override
         public Optional<Boolean> keyConfigured()
         {
             var mode = Backend.CREDENTIALS.state(EulerpoolPreferencePage.ACCOUNT).mode();

@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -19,7 +20,11 @@ import java.util.stream.Collectors;
 import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.money.Money;
 import name.abuchen.portfolio.money.Values;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes.Source;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
@@ -27,6 +32,8 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult.Company;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuation;
 import name.abuchen.portfolio.ui.Messages;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Group;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Grouping;
 
 /**
  * Converts the exact look-through result into rows for display. The presenter is
@@ -62,7 +69,13 @@ public final class LookThroughViewPresenter
 
     public enum RowKind
     {
-        COMPANY, CONTRIBUTION, CATEGORY, DETAIL, EXCLUDED
+        COMPANY, CONTRIBUTION, CATEGORY, DETAIL, EXCLUDED, GROUP
+    }
+
+    /** Whether a group collects regular values, unknown values or companies that still wait for enrichment. */
+    public enum GroupKind
+    {
+        REGULAR, UNKNOWN, PENDING
     }
 
     /**
@@ -106,7 +119,7 @@ public final class LookThroughViewPresenter
         }
     }
 
-    public sealed interface Row permits CompanyRow, ContributionRow, CategoryRow, DetailRow, ExcludedRow
+    public sealed interface Row permits CompanyRow, ContributionRow, CategoryRow, DetailRow, ExcludedRow, GroupRow
     {
         RowKey key();
 
@@ -117,8 +130,8 @@ public final class LookThroughViewPresenter
 
     /** Aggregated verified exposure of one company identity. */
     public record CompanyRow(RowKey key, String label, BigDecimal direct, BigDecimal indirect, BigDecimal total,
-                    Optional<BigDecimal> share, Optional<String> shareText, List<ContributionRow> contributions)
-                    implements Row
+                    Optional<BigDecimal> share, Optional<String> shareText, List<ContributionRow> contributions,
+                    Optional<String> detail) implements Row
     {
         public CompanyRow
         {
@@ -129,6 +142,27 @@ public final class LookThroughViewPresenter
         public RowKind kind()
         {
             return RowKind.COMPANY;
+        }
+    }
+
+    /**
+     * The companies of one group of a grouping, with their summed values. The
+     * key is stable for the group, so selection and expansion survive when
+     * enrichment moves companies between groups.
+     */
+    public record GroupRow(RowKey key, Grouping grouping, GroupKind groupKind, String label, int count,
+                    BigDecimal direct, BigDecimal indirect, BigDecimal total, Optional<BigDecimal> share,
+                    Optional<String> shareText, List<CompanyRow> companies) implements Row
+    {
+        public GroupRow
+        {
+            companies = List.copyOf(companies);
+        }
+
+        @Override
+        public RowKind kind()
+        {
+            return RowKind.GROUP;
         }
     }
 
@@ -274,7 +308,7 @@ public final class LookThroughViewPresenter
                     Optional<String> denominatorText, Completeness completeness, String completenessText,
                     Optional<String> unverifiedNotice, boolean empty, List<Row> rows, Summary summary,
                     Optional<Coverage> coverage, Map<Map<String, String>, String> decomposedShares,
-                    Set<Map<String, String>> directlyClassified)
+                    Set<Map<String, String>> directlyClassified, Grouping grouping)
     {
         public Model
         {
@@ -295,7 +329,7 @@ public final class LookThroughViewPresenter
      * the key of the company row, so a chart element selects that row.
      */
     public record ChartCompany(RowKey key, String label, BigDecimal direct, BigDecimal indirect, BigDecimal total,
-                    Optional<String> shareText)
+                    Optional<String> shareText, Optional<String> detail)
     {
         /** Part of the company exposure that is held directly, from 0 to 1. */
         public double directFraction()
@@ -306,11 +340,20 @@ public final class LookThroughViewPresenter
         }
     }
 
+    /** One group of the charts with its companies, largest first. */
+    public record ChartGroup(ChartCompany group, List<ChartCompany> companies)
+    {
+        public ChartGroup
+        {
+            companies = List.copyOf(companies);
+        }
+    }
+
     /**
      * Companies for the charts, largest first. Coverage categories, unresolved
      * value and excluded positions are not part of the charts.
      */
-    public record ChartModel(List<ChartCompany> companies)
+    public record ChartModel(List<ChartCompany> companies, List<ChartGroup> groups)
     {
         /** Number of companies in the bar chart. */
         public static final int TOP_COMPANIES = 20;
@@ -318,17 +361,53 @@ public final class LookThroughViewPresenter
         public ChartModel
         {
             companies = List.copyOf(companies);
+            groups = List.copyOf(groups);
+        }
+
+        public ChartModel(List<ChartCompany> companies)
+        {
+            this(companies, List.of());
+        }
+
+        /** Whether the charts show groups with their companies nested inside. */
+        public boolean isGrouped()
+        {
+            return !groups.isEmpty();
         }
 
         static ChartModel of(List<Row> rows)
         {
-            return new ChartModel(rows.stream() //
-                            .filter(CompanyRow.class::isInstance).map(CompanyRow.class::cast) //
-                            .filter(company -> company.total().signum() > 0) //
-                            .sorted(Comparator.comparing(CompanyRow::total).reversed()) //
-                            .map(company -> new ChartCompany(company.key(), company.label(), company.direct(),
-                                            company.indirect(), company.total(), percentText(company.share()))) //
-                            .toList());
+            var groupRows = rows.stream().filter(GroupRow.class::isInstance).map(GroupRow.class::cast)
+                            .filter(group -> group.total().signum() > 0).toList();
+            if (!groupRows.isEmpty())
+            {
+                var groups = groupRows.stream().sorted(Comparator.comparing(GroupRow::total).reversed())
+                                .map(group -> new ChartGroup(chartOf(group.key(), group.label(), group.direct(),
+                                                group.indirect(), group.total(), group.shareText(), Optional.empty()),
+                                                companiesOf(group.companies())))
+                                .toList();
+                var all = groups.stream().flatMap(group -> group.companies().stream())
+                                .sorted(Comparator.comparing(ChartCompany::total).reversed()).toList();
+                return new ChartModel(all, groups);
+            }
+            return new ChartModel(companiesOf(rows.stream().filter(CompanyRow.class::isInstance)
+                            .map(CompanyRow.class::cast).toList()));
+        }
+
+        private static ChartCompany chartOf(RowKey key, String label, BigDecimal direct, BigDecimal indirect,
+                        BigDecimal total, Optional<String> shareText, Optional<String> detail)
+        {
+            return new ChartCompany(key, label, direct, indirect, total, shareText, detail);
+        }
+
+        private static List<ChartCompany> companiesOf(List<CompanyRow> companies)
+        {
+            return companies.stream().filter(company -> company.total().signum() > 0)
+                            .sorted(Comparator.comparing(CompanyRow::total).reversed())
+                            .map(company -> chartOf(company.key(), company.label(), company.direct(),
+                                            company.indirect(), company.total(), percentText(company.share()),
+                                            company.detail()))
+                            .toList();
         }
 
         public boolean isEmpty()
@@ -336,16 +415,31 @@ public final class LookThroughViewPresenter
             return companies.isEmpty();
         }
 
-        /** The largest companies for the bar chart. */
+        /** The largest companies, or the largest groups, for the bar chart. */
         public List<ChartCompany> top()
         {
-            return companies.subList(0, Math.min(TOP_COMPANIES, companies.size()));
+            var shown = isGrouped() ? groups.stream().map(ChartGroup::group).toList() : companies;
+            return shown.subList(0, Math.min(TOP_COMPANIES, shown.size()));
         }
     }
 
     public Model present(LookThroughResult result)
     {
+        return present(result, Grouping.COMPANY, CompanyEnrichmentService.Snapshot.empty());
+    }
+
+    /**
+     * Presents the result grouped by an attribute of its companies. The
+     * attributes are the memory-only snapshot of the enrichment; companies
+     * without the attribute form the unknown group and companies that still
+     * wait for enrichment the pending group. Company grouping lists the
+     * companies without groups.
+     */
+    public Model present(LookThroughResult result, Grouping grouping, CompanyEnrichmentService.Snapshot attributes)
+    {
         Objects.requireNonNull(result);
+        Objects.requireNonNull(grouping);
+        Objects.requireNonNull(attributes);
 
         var denominator = result.denominator();
         var denominatorAmount = denominator.map(value -> BigDecimal.valueOf(value.getAmount()));
@@ -354,8 +448,15 @@ public final class LookThroughViewPresenter
 
         var keys = new Keys();
         var rows = new ArrayList<Row>();
-        result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER)
-                        .forEach(company -> rows.add(companyRow(keys, company, denominatorAmount)));
+        var classifier = new LookThroughGrouping();
+        var companyRows = new LinkedHashMap<Identifier, CompanyRow>();
+        result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER).forEach(company -> companyRows.put(
+                        company.identity(), companyRow(keys, company, denominatorAmount,
+                                        detail(classifier, grouping, attributes.attributes().get(company.identity())))));
+        if (grouping == Grouping.COMPANY)
+            rows.addAll(companyRows.values());
+        else
+            rows.addAll(groupRows(keys, classifier, grouping, companyRows, attributes, denominatorAmount));
 
         // The coverage categories are rendered even when zero: their absence
         // would look like complete coverage of everything that was not resolved.
@@ -412,7 +513,82 @@ public final class LookThroughViewPresenter
         return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(), scopeText, denominator,
                         denominatorText, completeness, completenessText, unverifiedNotice, empty, rows, summary,
                         empty ? Optional.empty() : coverage(result, denominatorAmount), funds.shares(),
-                        directlyClassified(result));
+                        directlyClassified(result), grouping);
+    }
+
+    private List<GroupRow> groupRows(Keys keys, LookThroughGrouping classifier, Grouping grouping,
+                    Map<Identifier, CompanyRow> companies, CompanyEnrichmentService.Snapshot attributes,
+                    Optional<BigDecimal> denominator)
+    {
+        var regular = new LinkedHashMap<String, List<CompanyRow>>();
+        var groups = new HashMap<String, Group>();
+        var unknown = new ArrayList<CompanyRow>();
+        var pending = new ArrayList<CompanyRow>();
+        companies.forEach((identity, row) -> {
+            var known = attributes.attributes().get(identity);
+            var group = known == null ? Optional.<Group>empty() : classifier.groupOf(grouping, known);
+            if (group.isPresent())
+            {
+                groups.putIfAbsent(group.get().code(), group.get());
+                regular.computeIfAbsent(group.get().code(), code -> new ArrayList<>()).add(row);
+            }
+            else if (attributes.waiting().contains(identity))
+            {
+                pending.add(row);
+            }
+            else
+            {
+                unknown.add(row);
+            }
+        });
+
+        var rows = new ArrayList<GroupRow>();
+        regular.forEach((code, members) -> rows.add(groupRow(keys, grouping, GroupKind.REGULAR, code,
+                        groups.get(code).label(), members, denominator)));
+        rows.sort(Comparator.comparing(GroupRow::total).reversed().thenComparing(GroupRow::label));
+        if (!unknown.isEmpty())
+            rows.add(groupRow(keys, grouping, GroupKind.UNKNOWN, "~unknown", //$NON-NLS-1$
+                            MessageFormat.format(Messages.LookThroughGroupUnknown, unknown.size()), unknown,
+                            denominator));
+        if (!pending.isEmpty())
+            rows.add(groupRow(keys, grouping, GroupKind.PENDING, "~pending", //$NON-NLS-1$
+                            MessageFormat.format(Messages.LookThroughGroupPending, pending.size()), pending,
+                            denominator));
+        return rows;
+    }
+
+    private GroupRow groupRow(Keys keys, Grouping grouping, GroupKind kind, String code, String label,
+                    List<CompanyRow> members, Optional<BigDecimal> denominator)
+    {
+        var direct = members.stream().map(CompanyRow::direct).reduce(BigDecimal.ZERO, BigDecimal::add);
+        var indirect = members.stream().map(CompanyRow::indirect).reduce(BigDecimal.ZERO, BigDecimal::add);
+        var total = direct.add(indirect);
+        var share = share(total, denominator);
+        var key = keys.unique(RowKey.of("group:" + grouping.name().toLowerCase(Locale.ROOT) + ":" + code)); //$NON-NLS-1$ //$NON-NLS-2$
+        return new GroupRow(key, grouping, kind, label, members.size(), direct, indirect, total, share,
+                        shareText(share), members);
+    }
+
+    /** The country with its source, for the groupings that derive from the country. */
+    private Optional<String> detail(LookThroughGrouping classifier, Grouping grouping, CompanyAttributes attributes)
+    {
+        if (attributes == null || attributes.country().isEmpty()
+                        || (grouping != Grouping.COUNTRY && grouping != Grouping.REGION
+                                        && grouping != Grouping.MARKET_CLASSIFICATION))
+            return Optional.empty();
+        var country = attributes.country().get();
+        return Optional.of(MessageFormat.format(Messages.LookThroughDetailCountry,
+                        classifier.country(country.value()).label(), sourceText(country.source())));
+    }
+
+    private static String sourceText(Source source)
+    {
+        return switch (source)
+        {
+            case REGISTER -> Messages.LookThroughAttributeSourceRegister;
+            case PROVIDER -> Messages.LookThroughAttributeSourceProvider;
+            case ISIN_PREFIX -> Messages.LookThroughAttributeSourceIsinPrefix;
+        };
     }
 
     /**
@@ -633,7 +809,8 @@ public final class LookThroughViewPresenter
         return Values.Money.format(Money.of(currencyCode, minorUnits));
     }
 
-    private CompanyRow companyRow(Keys keys, Company company, Optional<BigDecimal> denominator)
+    private CompanyRow companyRow(Keys keys, Company company, Optional<BigDecimal> denominator,
+                    Optional<String> detail)
     {
         var key = keys.unique(RowKey.of(RowKind.COMPANY, company.identity()));
         var contributions = company.contributions().stream() //
@@ -646,7 +823,7 @@ public final class LookThroughViewPresenter
                         .map(contribution -> contribution.instrument().label()) //
                         .filter(value -> !value.isBlank()).findFirst().orElse(company.identity().value());
         return new CompanyRow(key, label, company.direct(), company.indirect(), company.total(), share, shareText(share),
-                        contributions);
+                        contributions, detail);
     }
 
     private ContributionRow contributionRow(Keys keys, RowKey parent, LookThroughContribution contribution,

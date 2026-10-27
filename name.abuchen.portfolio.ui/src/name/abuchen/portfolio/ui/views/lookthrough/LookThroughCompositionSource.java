@@ -74,6 +74,16 @@ public interface LookThroughCompositionSource
     }
 
     /**
+     * Registers a listener that is called, on a background thread, whenever
+     * company attributes changed. Returns the action that removes it.
+     */
+    default Runnable addEnrichmentListener(Runnable listener)
+    {
+        return () -> {
+        };
+    }
+
+    /**
      * Whether an API key is configured, for the onboarding banner. Empty when
      * the source has no credentials. Unlike the other methods this may read
      * the secure storage, so callers must not invoke it on the user interface

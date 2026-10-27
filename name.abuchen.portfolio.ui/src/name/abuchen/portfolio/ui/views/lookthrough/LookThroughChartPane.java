@@ -1,5 +1,6 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -126,11 +127,15 @@ class LookThroughChartPane
         update();
     }
 
-    /** Highlights the company in the charts. The selection is not reported back. */
-    void setSelected(RowKey key)
+    /**
+     * Highlights the company or group in the charts. The bar chart of a
+     * grouping shows groups, so it falls back to the group of the company.
+     * The selection is not reported back.
+     */
+    void setSelected(RowKey key, RowKey groupKey)
     {
         treeMap.setSelected(key);
-        barChart.setSelected(key);
+        barChart.setSelected(key, groupKey);
     }
 
     private void update()
@@ -273,12 +278,15 @@ class LookThroughChartPane
     {
         var total = LookThroughViewPresenter.formatAmount(company.total(), currencyCode)
                         + company.shareText().map(share -> " (" + share + ")").orElse(""); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        return String.join("\n", //$NON-NLS-1$
-                        Objects.toString(company.label(), ""), //$NON-NLS-1$
+        var lines = new ArrayList<String>();
+        lines.add(Objects.toString(company.label(), "")); //$NON-NLS-1$
+        company.detail().ifPresent(lines::add);
+        lines.addAll(List.of(//
                         Messages.LookThroughColumnTotal + ": " + total, //$NON-NLS-1$
                         Messages.LookThroughColumnDirect + ": " //$NON-NLS-1$
                                         + LookThroughViewPresenter.formatAmount(company.direct(), currencyCode),
                         Messages.LookThroughColumnIndirect + ": " //$NON-NLS-1$
-                                        + LookThroughViewPresenter.formatAmount(company.indirect(), currencyCode));
+                                        + LookThroughViewPresenter.formatAmount(company.indirect(), currencyCode)));
+        return String.join("\n", lines); //$NON-NLS-1$
     }
 }

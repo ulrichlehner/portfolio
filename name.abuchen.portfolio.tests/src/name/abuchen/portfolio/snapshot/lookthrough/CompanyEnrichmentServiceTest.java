@@ -16,6 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -68,6 +69,7 @@ public class CompanyEnrichmentServiceTest
     private final List<List<String>> registerCalls = new ArrayList<>();
     private final Map<String, IOException> profileFailures = new HashMap<>();
     private boolean registerEnabled;
+    private boolean profilesEnabled = true;
 
     private static Company company(String isin, String value)
     {
@@ -90,7 +92,7 @@ public class CompanyEnrichmentServiceTest
                 return Optional.empty();
             return Optional.of(new CompanyProfile(isin, Optional.of("US"), Optional.of("USD"),
                             Optional.of("Invented sector"), Optional.empty(), Optional.empty(), clock.instant()));
-        }, () -> true, isins -> {
+        }, () -> profilesEnabled, isins -> {
             registerCalls.add(isins);
             var result = new HashMap<String, Optional<RegisterRecord>>();
             for (var isin : isins)
@@ -125,6 +127,7 @@ public class CompanyEnrichmentServiceTest
         assertEquals(List.of(LARGE, MEDIUM), profileCalls);
         var snapshot = service.snapshot();
         assertEquals(1, snapshot.pending());
+        assertEquals(Set.of(new Identifier(InstrumentEvidence.ISIN, SMALL)), snapshot.waiting());
         var small = snapshot.attributes().get(new Identifier(InstrumentEvidence.ISIN, SMALL));
         assertTrue(small.sector().isEmpty());
         assertEquals(Source.ISIN_PREFIX, small.country().orElseThrow().source());
@@ -179,6 +182,17 @@ public class CompanyEnrichmentServiceTest
         assertEquals(1, registerCalls.size());
         large = service.snapshot().attributes().get(new Identifier(InstrumentEvidence.ISIN, LARGE));
         assertEquals(Source.PROVIDER, large.country().orElseThrow().source());
+    }
+
+    @Test
+    public void testCompaniesAreNotPendingWithoutProfileAccess()
+    {
+        profilesEnabled = false;
+        var service = service(memory(), budget(100));
+        service.schedule(COMPANIES);
+        assertTrue(profileCalls.isEmpty());
+        assertEquals(0, service.snapshot().pending());
+        assertTrue(service.snapshot().waiting().isEmpty());
     }
 
     @Test
