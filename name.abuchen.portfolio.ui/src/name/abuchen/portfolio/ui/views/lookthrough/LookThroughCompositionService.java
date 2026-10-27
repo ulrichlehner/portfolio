@@ -1,5 +1,6 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -19,10 +20,13 @@ import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.StorageMode;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePreferences;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.HeldSecurities;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
+import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.preferences.EclipseCompositionPersistencePreferences;
 import name.abuchen.portfolio.ui.preferences.EulerpoolPreferencePage;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.GlobalFacts;
@@ -36,7 +40,8 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.
  * no prior selection step. Only held identifiers are sent; holding does not
  * assert fund or equity classification. Unverified evidence stays unverified in
  * the calculation and never becomes validated coverage. Real provider data stays
- * in memory while persistence permission is unverified.
+ * in memory unless the user confirmed local storage for the account and kept
+ * the persistence preference on; it is then stored in PP's workspace state area.
  */
 @Creatable
 @Singleton
@@ -51,13 +56,42 @@ public final class LookThroughCompositionService
         });
         private static final CompositionCredentials CREDENTIALS = DevelopmentCredentials
                         .install(CompositionCredentials.local(), EulerpoolPreferencePage.ACCOUNT);
+        private static final CompositionPersistencePreferences PREFERENCES = new EclipseCompositionPersistencePreferences();
         private static final EulerpoolFundCompositionProvider PROVIDER = new EulerpoolFundCompositionProvider(
-                        account -> CREDENTIALS.getBearerToken(account));
+                        account -> CREDENTIALS.getBearerToken(account), PREFERENCES::isLocalStorageConfirmed);
         private static final LookThroughSession SESSION = new LookThroughSession(PROVIDER, PROVIDER,
-                        CREDENTIALS, Clock.systemUTC(), EXECUTOR);
+                        CREDENTIALS, Clock.systemUTC(), EXECUTOR, LookThroughSession.storeIn(stateDirectory(),
+                                        Clock.systemUTC()));
+
+        static
+        {
+            // Changed settings apply at once; withdrawn data is deleted without
+            // waiting for the Breakdown view. Keys are known to the preferences
+            // only after a first read.
+            PREFERENCES.addListener(Backend::apply);
+            apply(EulerpoolPreferencePage.ACCOUNT);
+        }
+
+        private static Path stateDirectory()
+        {
+            var plugin = PortfolioPlugin.getDefault();
+            return plugin == null ? null : plugin.getStateLocation().toFile().toPath().resolve(CACHE_FOLDER);
+        }
+
+        private static void apply(ProviderAccount account)
+        {
+            if (EulerpoolPreferencePage.ACCOUNT.equals(account))
+                SESSION.configure(PROVIDER.getPersistencePolicy(account), PREFERENCES.get(account));
+        }
     }
 
-    private final CompositionPersistencePreferences preferences = new EclipseCompositionPersistencePreferences();
+    private static final String CACHE_FOLDER = "lookthrough-cache"; //$NON-NLS-1$
+
+    /** Applies the stored provider settings to the shared session, deleting data of withdrawn storage. */
+    public static void reconfigure()
+    {
+        Backend.apply(EulerpoolPreferencePage.ACCOUNT);
+    }
 
     public LookThroughCompositionSource sourceFor(Client client)
     {
@@ -103,9 +137,11 @@ public final class LookThroughCompositionService
         public GlobalFacts globalFacts()
         {
             var policy = Backend.PROVIDER.getPersistencePolicy(EulerpoolPreferencePage.ACCOUNT);
-            var preference = preferences.get(EulerpoolPreferencePage.ACCOUNT);
+            var preference = Backend.PREFERENCES.get(EulerpoolPreferencePage.ACCOUNT);
             Backend.SESSION.configure(policy, preference);
-            return new GlobalFacts(CompositionStore.State.SESSION_ONLY, policy.effectiveModeDetail(preference));
+            var effective = policy.effectiveModeDetail(preference);
+            return new GlobalFacts(effective.mode() == StorageMode.PERSISTENT ? CompositionStore.State.PERSISTENT
+                            : CompositionStore.State.SESSION_ONLY, effective);
         }
 
         @Override

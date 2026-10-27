@@ -14,6 +14,8 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 
@@ -23,8 +25,23 @@ final class CompositionCacheCodec
     static final int MAX_BYTES = 8 * 1024 * 1024;
     private static final int SCHEMA_VERSION = 1;
     private static final int VALIDATION_VERSION = 1;
+    private static final int EVIDENCE_SCHEMA_VERSION = 1;
+    private static final int ABSENCE_SCHEMA_VERSION = 1;
+    private static final int MAX_EVIDENCE = 8;
     private static final int MAX_ROWS = 10000;
     private static final int MAX_TEXT_BYTES = 4096;
+
+    /** Classification answer for one identifier key; an empty list is a stored "no answer". */
+    record StoredEvidence(ProviderAccount account, Map<String, String> key, Instant storedAt,
+                    List<InstrumentEvidence> evidence)
+    {
+    }
+
+    /** A provider answer without composition (unavailable or unsupported) for one fund identifier map. */
+    record StoredAbsence(ProviderAccount account, Map<String, String> key, Instant storedAt,
+                    CompositionResult.Status status)
+    {
+    }
 
     private CompositionCacheCodec()
     {
@@ -143,9 +160,14 @@ final class CompositionCacheCodec
     private static void instrument(DataOutputStream out, CompositionInstrument instrument) throws IOException
     {
         text(out, instrument.label());
-        count(instrument.identifiers().size(), 32);
-        out.writeInt(instrument.identifiers().size());
-        for (var identifier : new TreeMap<>(instrument.identifiers()).entrySet())
+        identifiers(out, instrument.identifiers());
+    }
+
+    private static void identifiers(DataOutputStream out, Map<String, String> values) throws IOException
+    {
+        count(values.size(), 32);
+        out.writeInt(values.size());
+        for (var identifier : new TreeMap<>(values).entrySet())
         {
             text(out, identifier.getKey());
             text(out, identifier.getValue());
@@ -155,6 +177,11 @@ final class CompositionCacheCodec
     private static CompositionInstrument instrument(DataInputStream in) throws IOException
     {
         var label = text(in);
+        return new CompositionInstrument(label, identifiers(in));
+    }
+
+    private static Map<String, String> identifiers(DataInputStream in) throws IOException
+    {
         int size = count(in.readInt(), 32);
         var identifiers = new HashMap<String, String>();
         for (int index = 0; index < size; index++)
@@ -162,7 +189,155 @@ final class CompositionCacheCodec
             if (identifiers.put(text(in), text(in)) != null)
                 throw new IOException();
         }
-        return new CompositionInstrument(label, identifiers);
+        return identifiers;
+    }
+
+    static byte[] encodeEvidence(StoredEvidence stored) throws IOException
+    {
+        var bytes = new ByteArrayOutputStream();
+        try (var out = new DataOutputStream(bytes))
+        {
+            out.writeInt(EVIDENCE_SCHEMA_VERSION);
+            text(out, stored.account().providerId());
+            text(out, stored.account().accountId());
+            identifiers(out, stored.key());
+            text(out, stored.storedAt().toString());
+            count(stored.evidence().size(), MAX_EVIDENCE);
+            out.writeInt(stored.evidence().size());
+            for (var item : stored.evidence())
+            {
+                identifiers(out, item.identifiers());
+                identifier(out, item.identity().value());
+                provenance(out, item.identity().provenance());
+                out.writeBoolean(item.classification().isPresent());
+                if (item.classification().isPresent())
+                {
+                    text(out, item.classification().orElseThrow().value().name());
+                    provenance(out, item.classification().orElseThrow().provenance());
+                }
+                out.writeBoolean(item.company().isPresent());
+                if (item.company().isPresent())
+                {
+                    identifier(out, item.company().orElseThrow().value());
+                    provenance(out, item.company().orElseThrow().provenance());
+                }
+            }
+        }
+        var body = bytes.toByteArray();
+        bytes.write(digest(body));
+        if (bytes.size() > MAX_BYTES)
+            throw new IOException();
+        return bytes.toByteArray();
+    }
+
+    static StoredEvidence decodeEvidence(byte[] bytes) throws IOException
+    {
+        if (bytes.length < 40 || bytes.length > MAX_BYTES)
+            throw new IOException();
+        var body = Arrays.copyOf(bytes, bytes.length - 32);
+        if (!MessageDigest.isEqual(digest(body), Arrays.copyOfRange(bytes, body.length, bytes.length)))
+            throw new IOException();
+        try (var in = new DataInputStream(new ByteArrayInputStream(body)))
+        {
+            if (in.readInt() != EVIDENCE_SCHEMA_VERSION)
+                throw new IOException();
+            var account = new ProviderAccount(text(in), text(in));
+            var key = identifiers(in);
+            var storedAt = Instant.parse(text(in));
+            int size = count(in.readInt(), MAX_EVIDENCE);
+            var list = new ArrayList<InstrumentEvidence>();
+            for (int index = 0; index < size; index++)
+            {
+                var identifiers = identifiers(in);
+                var identity = new InstrumentEvidence.Assertion<>(identifier(in), provenance(in));
+                Optional<InstrumentEvidence.Assertion<InstrumentEvidence.AssetType>> classification = Optional.empty();
+                if (in.readBoolean())
+                    classification = Optional.of(new InstrumentEvidence.Assertion<>(
+                                    InstrumentEvidence.AssetType.valueOf(text(in)), provenance(in)));
+                Optional<InstrumentEvidence.Assertion<InstrumentEvidence.Identifier>> company = Optional.empty();
+                if (in.readBoolean())
+                    company = Optional.of(new InstrumentEvidence.Assertion<>(identifier(in), provenance(in)));
+                list.add(new InstrumentEvidence(identifiers, identity, classification, company));
+            }
+            if (in.available() != 0)
+                throw new IOException();
+            return new StoredEvidence(account, key, storedAt, List.copyOf(list));
+        }
+        catch (RuntimeException e)
+        {
+            throw new IOException();
+        }
+    }
+
+    static byte[] encodeAbsence(StoredAbsence stored) throws IOException
+    {
+        if (stored.status() != CompositionResult.Status.UNAVAILABLE
+                        && stored.status() != CompositionResult.Status.UNSUPPORTED)
+            throw new IOException();
+        var bytes = new ByteArrayOutputStream();
+        try (var out = new DataOutputStream(bytes))
+        {
+            out.writeInt(ABSENCE_SCHEMA_VERSION);
+            text(out, stored.account().providerId());
+            text(out, stored.account().accountId());
+            identifiers(out, stored.key());
+            text(out, stored.storedAt().toString());
+            text(out, stored.status().name());
+        }
+        var body = bytes.toByteArray();
+        bytes.write(digest(body));
+        return bytes.toByteArray();
+    }
+
+    static StoredAbsence decodeAbsence(byte[] bytes) throws IOException
+    {
+        if (bytes.length < 40 || bytes.length > MAX_BYTES)
+            throw new IOException();
+        var body = Arrays.copyOf(bytes, bytes.length - 32);
+        if (!MessageDigest.isEqual(digest(body), Arrays.copyOfRange(bytes, body.length, bytes.length)))
+            throw new IOException();
+        try (var in = new DataInputStream(new ByteArrayInputStream(body)))
+        {
+            if (in.readInt() != ABSENCE_SCHEMA_VERSION)
+                throw new IOException();
+            var account = new ProviderAccount(text(in), text(in));
+            var key = identifiers(in);
+            var storedAt = Instant.parse(text(in));
+            var status = CompositionResult.Status.valueOf(text(in));
+            if (in.available() != 0 || (status != CompositionResult.Status.UNAVAILABLE
+                            && status != CompositionResult.Status.UNSUPPORTED))
+                throw new IOException();
+            return new StoredAbsence(account, key, storedAt, status);
+        }
+        catch (RuntimeException e)
+        {
+            throw new IOException();
+        }
+    }
+
+    private static void identifier(DataOutputStream out, InstrumentEvidence.Identifier identifier) throws IOException
+    {
+        text(out, identifier.namespace());
+        text(out, identifier.value());
+    }
+
+    private static InstrumentEvidence.Identifier identifier(DataInputStream in) throws IOException
+    {
+        return new InstrumentEvidence.Identifier(text(in), text(in));
+    }
+
+    private static void provenance(DataOutputStream out, InstrumentEvidence.Provenance provenance) throws IOException
+    {
+        text(out, provenance.source().providerId());
+        text(out, provenance.source().accountId());
+        text(out, provenance.reference());
+        text(out, provenance.retrievedAt().toString());
+    }
+
+    private static InstrumentEvidence.Provenance provenance(DataInputStream in) throws IOException
+    {
+        return new InstrumentEvidence.Provenance(new ProviderAccount(text(in), text(in)), text(in),
+                        Instant.parse(text(in)));
     }
 
     private static int count(int value, int maximum) throws IOException

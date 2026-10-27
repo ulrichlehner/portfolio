@@ -24,6 +24,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.util.DesktopAPI;
 import name.abuchen.portfolio.ui.views.lookthrough.DevelopmentCredentials;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughCompositionService;
 
 /** No field editor: keys must never enter the dialog's ordinary preference store. */
 public class EulerpoolPreferencePage extends PreferencePage
@@ -32,11 +33,12 @@ public class EulerpoolPreferencePage extends PreferencePage
 
     private final CompositionCredentials credentials;
     private final CompositionPersistencePreferences persistencePreferences;
-    private final CompositionPersistencePolicy persistencePolicy;
+    private final Runnable persistenceApplied;
     private Text key;
     private Button remove;
     private Button sessionOnly;
     private Label status;
+    private Button confirmation;
     private Button persistence;
     private Label persistenceStatus;
 
@@ -55,24 +57,34 @@ public class EulerpoolPreferencePage extends PreferencePage
     public EulerpoolPreferencePage(CompositionCredentials credentials,
                     CompositionPersistencePreferences persistencePreferences)
     {
-        this(credentials, persistencePreferences, unverifiedPolicy());
+        this(credentials, persistencePreferences, LookThroughCompositionService::reconfigure);
     }
 
+    /**
+     * @param persistenceApplied
+     *            called after the storage settings changed, so the running
+     *            session applies them and removes withdrawn data at once
+     */
     public EulerpoolPreferencePage(CompositionCredentials credentials,
-                    CompositionPersistencePreferences persistencePreferences,
-                    CompositionPersistencePolicy persistencePolicy)
+                    CompositionPersistencePreferences persistencePreferences, Runnable persistenceApplied)
     {
         this.credentials = Objects.requireNonNull(credentials);
         this.persistencePreferences = Objects.requireNonNull(persistencePreferences);
-        this.persistencePolicy = Objects.requireNonNull(persistencePolicy);
+        this.persistenceApplied = Objects.requireNonNull(persistenceApplied);
         setTitle(Messages.PrefTitleEulerpool);
         noDefaultButton();
     }
 
-    /** Retained storage is unavailable until task 6.3 verifies permission and retention. */
-    private static CompositionPersistencePolicy unverifiedPolicy()
+    /**
+     * The user's confirmation is the only permission available here: it makes
+     * local storage permitted without a maximum age, otherwise it stays
+     * unverified. This is not a verified provider permission.
+     */
+    static CompositionPersistencePolicy policyFor(boolean localStorageConfirmed)
     {
-        return new CompositionPersistencePolicy(ACCOUNT, CompositionPersistencePolicy.Permission.UNVERIFIED,
+        return new CompositionPersistencePolicy(ACCOUNT,
+                        localStorageConfirmed ? CompositionPersistencePolicy.Permission.PERMITTED
+                                        : CompositionPersistencePolicy.Permission.UNVERIFIED,
                         Optional.empty());
     }
 
@@ -120,11 +132,20 @@ public class EulerpoolPreferencePage extends PreferencePage
         var separator = new Label(area, SWT.SEPARATOR | SWT.HORIZONTAL);
         GridDataFactory.fillDefaults().span(3, 1).grab(true, false).indent(0, 10).applyTo(separator);
 
+        confirmation = new Button(area, SWT.CHECK);
+        confirmation.setText(Messages.PrefEulerpoolLocalStorageConfirm);
+        confirmation.setSelection(persistencePreferences.isLocalStorageConfirmed(ACCOUNT));
+        // Stored with OK or Apply, so Cancel leaves the confirmation unchanged.
+        confirmation.addSelectionListener(SelectionListener.widgetSelectedAdapter(event -> {
+            persistence.setEnabled(confirmation.getSelection());
+            updatePersistenceStatus();
+        }));
+        GridDataFactory.fillDefaults().span(3, 1).applyTo(confirmation);
+
         persistence = new Button(area, SWT.CHECK);
         persistence.setText(Messages.PrefEulerpoolPersistenceRetain);
         persistence.setSelection(persistencePreferences.get(ACCOUNT).orElse(true));
-        persistence.setEnabled(persistencePolicy.permission() == CompositionPersistencePolicy.Permission.PERMITTED);
-        // Stored with OK or Apply, so Cancel leaves the preference unchanged.
+        persistence.setEnabled(confirmation.getSelection());
         persistence.addSelectionListener(
                         SelectionListener.widgetSelectedAdapter(event -> updatePersistenceStatus()));
         GridDataFactory.fillDefaults().span(3, 1).applyTo(persistence);
@@ -171,8 +192,7 @@ public class EulerpoolPreferencePage extends PreferencePage
         if (key == null || key.isDisposed())
             return true;
 
-        if (persistence.isEnabled())
-            persistencePreferences.set(ACCOUNT, persistence.getSelection());
+        applyPersistence(confirmation.getSelection(), persistence.getSelection());
 
         var outcome = submit(key.getText(), sessionOnly.getSelection());
         switch (outcome)
@@ -198,6 +218,20 @@ public class EulerpoolPreferencePage extends PreferencePage
         }
     }
 
+    /**
+     * Stores the storage settings. Clearing the confirmation withdraws local
+     * storage: the running session then deletes the account's stored data.
+     */
+    void applyPersistence(boolean confirmed, boolean retain)
+    {
+        // The retention preference only applies while storage is confirmed.
+        if (confirmed)
+            persistencePreferences.set(ACCOUNT, retain);
+        if (persistencePreferences.isLocalStorageConfirmed(ACCOUNT) != confirmed)
+            persistencePreferences.setLocalStorageConfirmed(ACCOUNT, confirmed);
+        persistenceApplied.run();
+    }
+
     private void remove()
     {
         var result = credentials.remove(ACCOUNT);
@@ -219,7 +253,8 @@ public class EulerpoolPreferencePage extends PreferencePage
 
     private void updatePersistenceStatus()
     {
-        var effective = persistencePolicy.effectiveModeDetail(Optional.of(persistence.getSelection()));
+        var effective = policyFor(confirmation.getSelection())
+                        .effectiveModeDetail(Optional.of(persistence.getSelection()));
         var reason = switch (effective.reason())
         {
             case PERMITTED -> Messages.PrefEulerpoolPersistenceModePersistent;

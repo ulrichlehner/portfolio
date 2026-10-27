@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Predicate;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
@@ -100,6 +101,7 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
     private final CredentialAccess credentials;
     private final Transport transport;
     private final Clock clock;
+    private final Predicate<ProviderAccount> localStorageConfirmed;
 
     public EulerpoolFundCompositionProvider()
     {
@@ -111,8 +113,26 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
         this(credentials, EulerpoolFundCompositionProvider::download, Clock.systemUTC());
     }
 
+    public EulerpoolFundCompositionProvider(CredentialAccess credentials,
+                    Predicate<ProviderAccount> localStorageConfirmed)
+    {
+        this(credentials, EulerpoolFundCompositionProvider::download, Clock.systemUTC(), localStorageConfirmed);
+    }
+
     public EulerpoolFundCompositionProvider(CredentialAccess credentials, Transport transport, Clock clock)
     {
+        this(credentials, transport, clock, account -> false);
+    }
+
+    /**
+     * @param localStorageConfirmed
+     *            the user's per-account confirmation that the plan allows local
+     *            storage; without it the persistence permission stays unverified
+     */
+    public EulerpoolFundCompositionProvider(CredentialAccess credentials, Transport transport, Clock clock,
+                    Predicate<ProviderAccount> localStorageConfirmed)
+    {
+        this.localStorageConfirmed = Objects.requireNonNull(localStorageConfirmed);
         this.credentials = Objects.requireNonNull(credentials);
         this.transport = Objects.requireNonNull(transport);
         this.clock = Objects.requireNonNull(clock);
@@ -128,7 +148,10 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
     public CompositionPersistencePolicy getPersistencePolicy(ProviderAccount account)
     {
         checkAccount(account);
-        return new CompositionPersistencePolicy(account, Permission.UNVERIFIED, Optional.empty());
+        // The user's own confirmation; no maximum age is introduced.
+        return new CompositionPersistencePolicy(account,
+                        localStorageConfirmed.test(account) ? Permission.PERMITTED : Permission.UNVERIFIED,
+                        Optional.empty());
     }
 
     @Override

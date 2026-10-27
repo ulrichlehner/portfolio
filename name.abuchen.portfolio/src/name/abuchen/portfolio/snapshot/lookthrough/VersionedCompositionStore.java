@@ -20,6 +20,7 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -40,17 +41,20 @@ import java.util.UUID;
  * private application's directory permissions/ACLs. Atomic publication is required:
  * unsupported atomic moves select DISK_FAILURE without a non-atomic fallback.
  *
- * Records contain only composition models, schema/validation versions and an
- * integrity digest (not authentication against a malicious local user). Account
- * and fund filenames are length-delimited hashes, not identifiers as paths.
+ * Records contain only composition models, instrument classification evidence
+ * or answers without composition, schema/validation versions and an integrity digest (not authentication
+ * against a malicious local user). Account and fund filenames are
+ * length-delimited hashes, not identifiers as paths.
  * Atomic rename publishes complete records. No raw payloads, credentials,
- * enrichment, portfolio objects or derived exposure results are serialized.
+ * portfolio objects or derived exposure results are serialized.
  * Policy changes/deletion and commit share the inherited monitor; tickets from
  * an earlier policy generation cannot repopulate disk even after re-enabling.
  */
 public final class VersionedCompositionStore extends SessionCompositionStore
 {
     private static final String EXTENSION = ".composition"; //$NON-NLS-1$
+    private static final String EVIDENCE_EXTENSION = ".evidence"; //$NON-NLS-1$
+    private static final String ABSENCE_EXTENSION = ".absent"; //$NON-NLS-1$
     private final Path directory;
     private final FileOperations files;
     private final Map<String, CacheStatus> discarded = new HashMap<>();
@@ -147,12 +151,24 @@ public final class VersionedCompositionStore extends SessionCompositionStore
         return prefix(account) + hash(fund.identifiers()) + EXTENSION;
     }
 
+    private static String evidenceFilename(ProviderAccount account, Map<String, String> identifiers)
+    {
+        return prefix(account) + hash(identifiers) + EVIDENCE_EXTENSION;
+    }
+
+    private static String absenceFilename(ProviderAccount account, Map<String, String> identifiers)
+    {
+        return prefix(account) + hash(identifiers) + ABSENCE_EXTENSION;
+    }
+
     private static boolean owned(String name, ProviderAccount account)
     {
         if (!name.startsWith(prefix(account)))
             return false;
         var suffix = name.substring(65);
         return suffix.matches("[a-f0-9]{64}\\.composition") //$NON-NLS-1$
+                        || suffix.matches("[a-f0-9]{64}\\.evidence") //$NON-NLS-1$
+                        || suffix.matches("[a-f0-9]{64}\\.absent") //$NON-NLS-1$
                         || suffix.matches("[a-f0-9-]{36}\\.pending"); //$NON-NLS-1$
     }
 
@@ -219,6 +235,28 @@ public final class VersionedCompositionStore extends SessionCompositionStore
             var status = CacheStatus.DISCARDED;
             try
             {
+                if (name.endsWith(EVIDENCE_EXTENSION))
+                {
+                    var stored = CompositionCacheCodec.decodeEvidence(readBytes(path));
+                    if (!stored.account().equals(policy.account())
+                                    || !evidenceFilename(policy.account(), stored.key()).equals(name))
+                        throw new IOException();
+                    if (!expired(stored.storedAt(), policy))
+                        continue;
+                    deleteFile(path);
+                    continue;
+                }
+                if (name.endsWith(ABSENCE_EXTENSION))
+                {
+                    var stored = CompositionCacheCodec.decodeAbsence(readBytes(path));
+                    if (!stored.account().equals(policy.account())
+                                    || !absenceFilename(policy.account(), stored.key()).equals(name))
+                        throw new IOException();
+                    if (!expired(stored.storedAt(), policy))
+                        continue;
+                    deleteFile(path);
+                    continue;
+                }
                 var source = CompositionCacheCodec.decode(readBytes(path));
                 if (!source.provenance().source().equals(policy.account())
                                 || !filename(policy.account(), source.provenance().fund()).equals(name)
@@ -269,8 +307,93 @@ public final class VersionedCompositionStore extends SessionCompositionStore
     {
         var bytes = CompositionCacheCodec.encode(composition);
         var account = composition.provenance().source();
-        var staging = directory.resolve(prefix(account) + UUID.randomUUID() + ".pending"); //$NON-NLS-1$
         var destination = directory.resolve(filename(account, composition.provenance().fund()));
+        if (publish(bytes, account, destination, !expired(composition, policy)))
+            discarded.remove(destination.getFileName().toString());
+    }
+
+    @Override
+    protected Optional<List<InstrumentEvidence>> readEvidenceDisk(ProviderAccount account,
+                    Map<String, String> identifiers, CompositionPersistencePolicy policy) throws IOException
+    {
+        var path = directory.resolve(evidenceFilename(account, identifiers));
+        try
+        {
+            var stored = CompositionCacheCodec.decodeEvidence(readBytes(path));
+            if (!stored.account().equals(account) || !stored.key().equals(identifiers))
+                throw new IOException();
+            if (expired(stored.storedAt(), policy))
+            {
+                deleteFile(path);
+                return Optional.empty();
+            }
+            return Optional.of(stored.evidence());
+        }
+        catch (NoSuchFileException e)
+        {
+            return Optional.empty();
+        }
+        catch (IOException e)
+        {
+            // Corrupt or incompatible records are dropped and fetched again.
+            deleteFile(path);
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    protected void writeEvidenceDisk(ProviderAccount account, Map<String, String> identifiers,
+                    List<InstrumentEvidence> evidence, CompositionPersistencePolicy policy) throws IOException
+    {
+        var bytes = CompositionCacheCodec
+                        .encodeEvidence(new CompositionCacheCodec.StoredEvidence(account, identifiers, clock.instant(),
+                                        evidence));
+        publish(bytes, account, directory.resolve(evidenceFilename(account, identifiers)), true);
+    }
+
+    @Override
+    protected Optional<NoComposition> readNoCompositionDisk(ProviderAccount account, Map<String, String> identifiers,
+                    CompositionPersistencePolicy policy) throws IOException
+    {
+        var path = directory.resolve(absenceFilename(account, identifiers));
+        try
+        {
+            var stored = CompositionCacheCodec.decodeAbsence(readBytes(path));
+            if (!stored.account().equals(account) || !stored.key().equals(identifiers))
+                throw new IOException();
+            if (expired(stored.storedAt(), policy))
+            {
+                deleteFile(path);
+                return Optional.empty();
+            }
+            return Optional.of(new NoComposition(stored.storedAt(), stored.status()));
+        }
+        catch (NoSuchFileException e)
+        {
+            return Optional.empty();
+        }
+        catch (IOException e)
+        {
+            // Corrupt or incompatible records are dropped and asked again.
+            deleteFile(path);
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    protected void writeNoCompositionDisk(ProviderAccount account, Map<String, String> identifiers,
+                    CompositionResult.Status status, CompositionPersistencePolicy policy) throws IOException
+    {
+        var bytes = CompositionCacheCodec.encodeAbsence(
+                        new CompositionCacheCodec.StoredAbsence(account, identifiers, clock.instant(), status));
+        publish(bytes, account, directory.resolve(absenceFilename(account, identifiers)), true);
+    }
+
+    /** Stages the record privately and publishes it atomically; returns whether it was published. */
+    private boolean publish(byte[] bytes, ProviderAccount account, Path destination, boolean retained)
+                    throws IOException
+    {
+        var staging = directory.resolve(prefix(account) + UUID.randomUUID() + ".pending"); //$NON-NLS-1$
         boolean created = false;
         checkDirectory();
         try
@@ -291,11 +414,10 @@ public final class VersionedCompositionStore extends SessionCompositionStore
             }
             checkDirectory();
             // Retention is rechecked immediately before atomic publication as well.
-            if (!expired(composition, policy))
-            {
-                files.atomicReplace(staging, destination);
-                discarded.remove(destination.getFileName().toString());
-            }
+            if (!retained)
+                return false;
+            files.atomicReplace(staging, destination);
+            return true;
         }
         catch (UnsupportedOperationException e)
         {

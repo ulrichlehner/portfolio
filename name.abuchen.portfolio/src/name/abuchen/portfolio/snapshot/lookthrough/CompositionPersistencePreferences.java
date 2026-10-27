@@ -22,6 +22,15 @@ public interface CompositionPersistencePreferences
 
     void set(ProviderAccount account, boolean enabled);
 
+    /**
+     * The user's explicit confirmation that the provider plan of this account
+     * allows storing its data locally. Absent means not confirmed. This is the
+     * user's own statement, not a verified provider permission.
+     */
+    boolean isLocalStorageConfirmed(ProviderAccount account);
+
+    void setLocalStorageConfirmed(ProviderAccount account, boolean confirmed);
+
     void addListener(Consumer<ProviderAccount> listener);
 
     void removeListener(Consumer<ProviderAccount> listener);
@@ -40,6 +49,7 @@ public interface CompositionPersistencePreferences
     final class InMemory implements CompositionPersistencePreferences
     {
         private final Map<ProviderAccount, Boolean> values = new HashMap<>();
+        private final Map<ProviderAccount, Boolean> confirmations = new HashMap<>();
         private final List<Consumer<ProviderAccount>> listeners = new CopyOnWriteArrayList<>();
 
         @Override
@@ -56,6 +66,26 @@ public interface CompositionPersistencePreferences
             synchronized (this)
             {
                 values.put(account, enabled);
+            }
+            var snapshot = new ArrayList<>(listeners);
+            for (var listener : snapshot)
+                listener.accept(account);
+        }
+
+        @Override
+        public synchronized boolean isLocalStorageConfirmed(ProviderAccount account)
+        {
+            Objects.requireNonNull(account);
+            return confirmations.getOrDefault(account, false);
+        }
+
+        @Override
+        public void setLocalStorageConfirmed(ProviderAccount account, boolean confirmed)
+        {
+            Objects.requireNonNull(account);
+            synchronized (this)
+            {
+                confirmations.put(account, confirmed);
             }
             var snapshot = new ArrayList<>(listeners);
             for (var listener : snapshot)

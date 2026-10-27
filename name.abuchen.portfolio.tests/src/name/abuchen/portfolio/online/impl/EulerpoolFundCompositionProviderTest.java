@@ -333,6 +333,26 @@ public class EulerpoolFundCompositionProviderTest
         assertThrows(IllegalArgumentException.class, () -> provider.getComposition(wrong, FUND));
     }
 
+    @Test
+    public void testPersistencePermittedOnlyForConfirmedAccount()
+    {
+        var other = new ProviderAccount(EulerpoolFundCompositionProvider.ID, "local-two");
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> {
+                            throw new AssertionError("No request expected");
+                        }, CLOCK, ACCOUNT::equals);
+
+        var confirmed = provider.getPersistencePolicy(ACCOUNT);
+        assertEquals(Permission.PERMITTED, confirmed.permission());
+        assertTrue(confirmed.maximumAge().isEmpty());
+        assertEquals(StorageMode.PERSISTENT, confirmed.effectiveMode(Optional.empty()));
+        assertEquals(StorageMode.SESSION_ONLY, confirmed.effectiveMode(Optional.of(false)));
+
+        var unconfirmed = provider.getPersistencePolicy(other);
+        assertEquals(Permission.UNVERIFIED, unconfirmed.permission());
+        assertEquals(StorageMode.SESSION_ONLY, unconfirmed.effectiveMode(Optional.of(true)));
+    }
+
     private Optional<name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence> classify(CompositionInstrument instrument,
                     EulerpoolFundCompositionProvider.Transport transport) throws IOException
     {

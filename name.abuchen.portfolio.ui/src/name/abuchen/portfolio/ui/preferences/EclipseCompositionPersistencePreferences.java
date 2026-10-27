@@ -28,6 +28,7 @@ public final class EclipseCompositionPersistencePreferences implements Compositi
 {
     private static final String NODE = "name.abuchen.portfolio.ui";
     private static final String PREFIX = "lookthrough.persistence.";
+    private static final String CONFIRMED_PREFIX = "lookthrough.localstorage.";
 
     private final IEclipsePreferences node;
     private final Map<String, ProviderAccount> keys = new HashMap<>();
@@ -46,8 +47,13 @@ public final class EclipseCompositionPersistencePreferences implements Compositi
 
     private static String key(ProviderAccount account)
     {
+        return key(PREFIX, account);
+    }
+
+    private static String key(String prefix, ProviderAccount account)
+    {
         var hex = HexFormat.of();
-        return PREFIX + hex.formatHex(account.providerId().getBytes(StandardCharsets.UTF_8)) + "."
+        return prefix + hex.formatHex(account.providerId().getBytes(StandardCharsets.UTF_8)) + "."
                         + hex.formatHex(account.accountId().getBytes(StandardCharsets.UTF_8));
     }
 
@@ -82,6 +88,35 @@ public final class EclipseCompositionPersistencePreferences implements Compositi
         catch (BackingStoreException e)
         {
             // The toggle applied for this process; only its durability failed.
+            PortfolioPlugin.log(e);
+        }
+    }
+
+    @Override
+    public synchronized boolean isLocalStorageConfirmed(ProviderAccount account)
+    {
+        Objects.requireNonNull(account);
+        var k = key(CONFIRMED_PREFIX, account);
+        keys.put(k, account);
+        return "true".equals(node.get(k, null)); //$NON-NLS-1$
+    }
+
+    @Override
+    public void setLocalStorageConfirmed(ProviderAccount account, boolean confirmed)
+    {
+        Objects.requireNonNull(account);
+        var k = key(CONFIRMED_PREFIX, account);
+        synchronized (this)
+        {
+            keys.put(k, account);
+        }
+        node.put(k, Boolean.toString(confirmed));
+        try
+        {
+            node.flush();
+        }
+        catch (BackingStoreException e)
+        {
             PortfolioPlugin.log(e);
         }
     }

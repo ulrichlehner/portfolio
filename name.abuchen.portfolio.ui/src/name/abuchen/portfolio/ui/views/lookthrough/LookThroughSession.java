@@ -1,12 +1,19 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -28,9 +35,15 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionRequestBudget;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidationResult;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentClassifier;
+import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolver;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.snapshot.lookthrough.SessionCompositionStore;
+import name.abuchen.portfolio.snapshot.lookthrough.SessionCompositionStore.NoComposition;
+import name.abuchen.portfolio.snapshot.lookthrough.VersionedCompositionStore;
+import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.RefreshGateway;
 
 /**
@@ -50,6 +63,7 @@ final class LookThroughSession implements RefreshGateway
     }
 
     private final CompositionCredentials credentials;
+    private final Clock clock;
     private final Executor executor;
     private final SessionCompositionStore store;
     private final CompositionRefreshCoordinator coordinator;
@@ -57,6 +71,10 @@ final class LookThroughSession implements RefreshGateway
     private final CompositionRequestBudget budget;
     private final long classificationCost;
     private final Map<Key, CompletableFuture<List<InstrumentEvidence>>> evidenceCache = new HashMap<>();
+    /** Identifiers known to have no stored answer, so reads do not repeat disk lookups. */
+    private final Set<Key> storeMisses = new HashSet<>();
+    /** Stored answers without composition per fund, read from the store once per configuration. */
+    private final Map<Key, Optional<NoComposition>> noCompositions = new HashMap<>();
     private final Map<Key, CompletableFuture<Refresh>> pending = new HashMap<>();
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
@@ -64,10 +82,19 @@ final class LookThroughSession implements RefreshGateway
     LookThroughSession(FundCompositionProvider provider, InstrumentClassifier classifier,
                     CompositionCredentials credentials, Clock clock, Executor executor)
     {
+        this(provider, classifier, credentials, clock, executor, new SessionCompositionStore(clock));
+    }
+
+    /** The store keeps compositions and classifications on disk only while its effective mode is persistent. */
+    LookThroughSession(FundCompositionProvider provider, InstrumentClassifier classifier,
+                    CompositionCredentials credentials, Clock clock, Executor executor,
+                    SessionCompositionStore store)
+    {
         this.credentials = credentials;
+        this.clock = clock;
         this.executor = executor;
         this.classifier = classifier;
-        this.store = new SessionCompositionStore(clock);
+        this.store = store;
         // Conservative application budget, not a statement of plan entitlement.
         // Reserve the adapter's worst-case request count, including fallbacks.
         this.classificationCost = classifier instanceof EulerpoolFundCompositionProvider
@@ -76,6 +103,30 @@ final class LookThroughSession implements RefreshGateway
                         Duration.ofMinutes(15));
         this.coordinator = new CompositionRefreshCoordinator(provider, budget, clock, executor,
                         classificationExecutor(), 1, classificationCost, 5000, 1, this::classifyCached);
+    }
+
+    /**
+     * Versioned store in the given private cache directory; session-only memory
+     * when the directory is missing or cannot be prepared. The store writes
+     * nothing until the account's effective mode is persistent.
+     */
+    static SessionCompositionStore storeIn(Path directory, Clock clock)
+    {
+        if (directory == null)
+            return new SessionCompositionStore(clock);
+        try
+        {
+            Files.createDirectories(directory);
+            if (Files.getFileAttributeView(directory, PosixFileAttributeView.class) != null)
+                Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------")); //$NON-NLS-1$
+            // The store refuses directories reached through links.
+            return new VersionedCompositionStore(directory.toRealPath(), clock);
+        }
+        catch (IOException | RuntimeException e)
+        {
+            PortfolioPlugin.log(e);
+            return new SessionCompositionStore(clock);
+        }
     }
 
     private static Executor classificationExecutor()
@@ -112,7 +163,20 @@ final class LookThroughSession implements RefreshGateway
         {
             try
             {
-                future.complete(classifier.classify(account, instrument).map(List::of).orElseGet(List::of));
+                // Captured before the lookup, so an answer arriving after a
+                // withdrawal of local storage is not written.
+                var generation = store.generation(account);
+                var stored = store.readEvidence(account, key.identifiers());
+                if (stored.isPresent())
+                {
+                    future.complete(stored.get());
+                }
+                else
+                {
+                    var evidence = classifier.classify(account, instrument).map(List::of).orElseGet(List::of);
+                    store.writeEvidence(account, key.identifiers(), evidence, generation);
+                    future.complete(evidence);
+                }
             }
             catch (IOException e)
             {
@@ -157,11 +221,81 @@ final class LookThroughSession implements RefreshGateway
                         : Map.of(InstrumentEvidence.ISIN, isin));
     }
 
+    /** Loads a stored classification answer into the session cache; returns whether one is known. */
+    private boolean restoreEvidence(ProviderAccount account, CompositionInstrument instrument)
+    {
+        var key = classificationKey(account, instrument);
+        synchronized (evidenceCache)
+        {
+            if (evidenceCache.containsKey(key))
+                return true;
+            if (storeMisses.contains(key))
+                return false;
+        }
+        var stored = store.readEvidence(account, key.identifiers());
+        synchronized (evidenceCache)
+        {
+            if (stored.isEmpty())
+            {
+                storeMisses.add(key);
+                return false;
+            }
+            evidenceCache.putIfAbsent(key, CompletableFuture.completedFuture(stored.get()));
+            return true;
+        }
+    }
+
+    /** Resolutions of a stored composition from stored classifications, without any provider request. */
+    private List<InstrumentResolution> storedResolutions(ProviderAccount account, FundComposition composition)
+    {
+        var resolver = new InstrumentResolver();
+        var resolutions = new ArrayList<InstrumentResolution>();
+        for (var row : composition.constituents())
+        {
+            var instrument = row.instrument();
+            restoreEvidence(account, instrument);
+            List<InstrumentEvidence> known = List.of();
+            synchronized (evidenceCache)
+            {
+                var future = evidenceCache.get(classificationKey(account, instrument));
+                if (future != null && future.isDone() && !future.isCompletedExceptionally())
+                    known = future.join();
+            }
+            resolutions.add(resolver.resolve(instrument, known, ignored -> List.of(), () -> false));
+        }
+        return List.copyOf(resolutions);
+    }
+
     synchronized void configure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
     {
         var configuration = new Configuration(policy, preference);
         if (!configuration.equals(configurations.put(policy.account(), configuration)))
+        {
             store.configure(policy, preference);
+            synchronized (evidenceCache)
+            {
+                storeMisses.clear();
+                noCompositions.clear();
+            }
+        }
+    }
+
+    /** The stored provider answer that the fund has no composition, if known. */
+    private Optional<NoComposition> storedNoComposition(ProviderAccount account, CompositionInstrument fund)
+    {
+        var key = new Key(account, fund.identifiers());
+        synchronized (evidenceCache)
+        {
+            var known = noCompositions.get(key);
+            if (known != null)
+                return known;
+        }
+        var stored = store.readNoComposition(account, fund.identifiers());
+        synchronized (evidenceCache)
+        {
+            noCompositions.put(key, stored);
+        }
+        return stored;
     }
 
     @Override
@@ -169,11 +303,30 @@ final class LookThroughSession implements RefreshGateway
     {
         var latest = coordinator.read(account, fund);
         var retained = store.read(account, fund);
+        var resolutions = latest.resolutions();
+        // After a restart a stored composition is shown from stored classifications
+        // until a refresh replaces them.
+        if (resolutions.isEmpty() && latest.latestAttempt().isEmpty() && retained.usableComposition().isPresent())
+        {
+            restoreEvidence(account, fund);
+            resolutions = storedResolutions(account, retained.usableComposition().get().source());
+        }
+        // A stored answer without composition shows as such after a restart.
+        if (latest.latestAttempt().isEmpty() && latest.attemptedAt().isEmpty()
+                        && retained.usableComposition().isEmpty())
+        {
+            var absent = storedNoComposition(account, fund);
+            if (absent.isPresent())
+                return new Snapshot(Optional.of(absent.get().storedAt()),
+                                Optional.of(new CompositionResult(absent.get().status(), Optional.empty(),
+                                                Optional.empty())),
+                                Optional.empty(), latest.unverifiedComposition(), resolutions);
+        }
         // Keep source previews and attempt dates even when validation rejected
         // the payload. Only the store decides whether data is usable/retained.
         return new Snapshot(latest.attemptedAt(), latest.latestAttempt(),
                         retained.usableComposition().map(CompositionValidationResult::source),
-                        latest.unverifiedComposition(), latest.resolutions());
+                        latest.unverifiedComposition(), resolutions);
     }
 
     @Override
@@ -211,37 +364,82 @@ final class LookThroughSession implements RefreshGateway
             return CompletableFuture.completedFuture(new Refresh(Disposition.SUSPENDED, read(account, fund),
                             Optional.empty()));
 
-        var ticket = store.beginRefresh(account, fund);
-        return coordinator.refresh(account, fund, manual).thenApply(refresh -> {
-            // Classify the held instrument itself (fund, stock or bond) so a
-            // direct holding resolves to an issuer, not to an unresolved row.
-            try
+        // A composition stored within the last cadence interval is current
+        // enough: an automatic pass after a restart does not request it again.
+        if (!manual)
+        {
+            var untouched = coordinator.read(account, fund).attemptedAt().isEmpty();
+            var stored = untouched ? store.read(account, fund).usableComposition()
+                            : Optional.<CompositionValidationResult>empty();
+            if (stored.isPresent())
             {
-                if (refresh.disposition() == Disposition.COMPLETED
-                                || refresh.disposition() == Disposition.NO_COMPOSITION)
+                var next = stored.get().source().provenance().retrievedAt().plus(Duration.ofHours(24));
+                if (next.isAfter(clock.instant()))
                 {
-                    boolean cached;
-                    synchronized (evidenceCache)
-                    {
-                        cached = evidenceCache.containsKey(classificationKey(account, fund));
-                    }
-                    if (cached || budget.acquirePermit(account, classificationCost))
-                        classifyCached(account, fund);
+                    restoreEvidence(account, fund);
+                    return CompletableFuture.completedFuture(
+                                    new Refresh(Disposition.CADENCE, read(account, fund), Optional.of(next)));
                 }
             }
-            catch (IOException e)
+            // The same applies to a stored answer without composition, such
+            // as for a directly held share.
+            var absent = untouched && stored.isEmpty() ? storedNoComposition(account, fund)
+                            : Optional.<NoComposition>empty();
+            if (absent.isPresent() && absent.get().storedAt().plus(Duration.ofHours(24)).isAfter(clock.instant()))
             {
-                // A failed classification does not discard the composition or
-                // make the refresh fail; it remains uncached for the next pass.
-                budget.record(account, e instanceof CompositionRefreshCoordinator.EnrichmentFailure failure
-                                ? failure.result() : new CompositionResult(CompositionResult.Status.FAILED,
-                                                Optional.empty(), Optional.empty()));
+                classifyHeld(account, fund);
+                return CompletableFuture.completedFuture(
+                                new Refresh(Disposition.NO_COMPOSITION, read(account, fund), Optional.empty()));
+            }
+        }
+
+        var ticket = store.beginRefresh(account, fund);
+        // Captured before the request, so an answer arriving after a
+        // withdrawal of local storage is not written.
+        var generation = store.generation(account);
+        return coordinator.refresh(account, fund, manual).thenApply(refresh -> {
+            if (refresh.disposition() == Disposition.COMPLETED
+                            || refresh.disposition() == Disposition.NO_COMPOSITION)
+                classifyHeld(account, fund);
+            var status = refresh.snapshot().latestAttempt().map(CompositionResult::status);
+            if (refresh.disposition() == Disposition.COMPLETED && status.isPresent()
+                            && (status.get() == CompositionResult.Status.UNAVAILABLE
+                                            || status.get() == CompositionResult.Status.UNSUPPORTED))
+            {
+                store.writeNoComposition(account, fund.identifiers(), status.get(), generation);
+                synchronized (evidenceCache)
+                {
+                    noCompositions.remove(new Key(account, fund.identifiers()));
+                }
             }
             // Deferred reads are not new attempts and must not rewrite the store.
             if (refresh.disposition() == Disposition.COMPLETED)
                 refresh.snapshot().latestAttempt().ifPresent(attempt -> store.complete(ticket, attempt));
             return new Refresh(refresh.disposition(), read(account, fund), refresh.retryAt());
         });
+    }
+
+    /**
+     * Classifies the held instrument itself (fund, stock or bond) so a direct
+     * holding resolves to an issuer, not to an unresolved row.
+     */
+    private void classifyHeld(ProviderAccount account, CompositionInstrument fund)
+    {
+        try
+        {
+            // A stored answer needs no provider request and no budget.
+            boolean cached = restoreEvidence(account, fund);
+            if (cached || budget.acquirePermit(account, classificationCost))
+                classifyCached(account, fund);
+        }
+        catch (IOException e)
+        {
+            // A failed classification does not discard the composition or
+            // make the refresh fail; it remains uncached for the next pass.
+            budget.record(account, e instanceof CompositionRefreshCoordinator.EnrichmentFailure failure
+                            ? failure.result() : new CompositionResult(CompositionResult.Status.FAILED,
+                                            Optional.empty(), Optional.empty()));
+        }
     }
 
     /** Cached classification of held instruments and constituents, exposed to the analysis. */

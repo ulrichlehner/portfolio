@@ -1480,6 +1480,7 @@ public class Messages extends NLS
     public static String PrefEulerpoolDeletionFailed;
     public static String PrefEulerpoolDescription;
     public static String PrefEulerpoolInvalidKey;
+    public static String PrefEulerpoolLocalStorageConfirm;
     public static String PrefEulerpoolPersistenceModePersistent;
     public static String PrefEulerpoolPersistenceModeSessionOnly;
     public static String PrefEulerpoolPersistenceReasonPolicyProhibited;

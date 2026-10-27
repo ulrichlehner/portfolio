@@ -5,6 +5,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -19,7 +22,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.FundCompositionProvider;
@@ -30,7 +35,10 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.Refresh;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentClassifier;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
+import name.abuchen.portfolio.snapshot.lookthrough.VersionedCompositionStore;
 
 @SuppressWarnings("nls")
 public class LookThroughSessionTest
@@ -332,4 +340,151 @@ public class LookThroughSessionTest
         // One common constituent and one held ISIN, not one per listing label.
         assertEquals(2, classifications.get());
     }
+
+    private static final CompositionPersistencePolicy PERMITTED = new CompositionPersistencePolicy(ACCOUNT,
+                    CompositionPersistencePolicy.Permission.PERMITTED, Optional.empty());
+
+    @Rule
+    public TemporaryFolder temporary = new TemporaryFolder();
+
+    private LookThroughSession persistent(Path directory, InstrumentClassifier classifier,
+                    CompositionPersistencePolicy policy)
+    {
+        var restarted = new LookThroughSession(provider, classifier, credentials, clock, executor,
+                        new VersionedCompositionStore(directory, clock));
+        restarted.configure(policy, Optional.empty());
+        return restarted;
+    }
+
+    private static long files(Path directory) throws IOException
+    {
+        try (var paths = Files.list(directory))
+        {
+            return paths.count();
+        }
+    }
+
+    @Test
+    public void testConfirmedAccountReadsStoredCompositionAfterRestartWithoutProviderCalls() throws IOException
+    {
+        var directory = temporary.newFolder().toPath().toRealPath();
+        credentials.replaceSession(ACCOUNT, "synthetic-valid");
+        var classifications = new AtomicInteger();
+        InstrumentClassifier classifier = (account, instrument) -> {
+            classifications.incrementAndGet();
+            var id = instrument.identifiers().get("synthetic:id");
+            var provenance = new InstrumentEvidence.Provenance(account, "synthetic", clock.instant());
+            return Optional.of(new InstrumentEvidence(instrument.identifiers(),
+                            new InstrumentEvidence.Assertion<>(new InstrumentEvidence.Identifier("synthetic:id", id),
+                                            provenance),
+                            Optional.of(new InstrumentEvidence.Assertion<>(InstrumentEvidence.AssetType.EQUITY,
+                                            provenance)),
+                            Optional.empty()));
+        };
+
+        var first = persistent(directory, classifier, PERMITTED);
+        var initial = first.refresh(ACCOUNT, instrument("fund"), true);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, initial.join().disposition());
+        assertEquals(1, calls.size());
+        // Held fund and its constituent were classified once each.
+        assertEquals(2, classifications.get());
+
+        clock.now = clock.now.plus(Duration.ofHours(1));
+        var second = persistent(directory, classifier, PERMITTED);
+        var read = second.read(ACCOUNT, instrument("fund"));
+        assertTrue(read.usableComposition().isPresent());
+        assertEquals(1, read.resolutions().size());
+        assertEquals(2, second.classifications().size());
+
+        // An automatic pass after the restart neither requests nor classifies again.
+        var automatic = second.refresh(ACCOUNT, instrument("fund"), false);
+        executor.drain();
+        assertEquals(Disposition.CADENCE, automatic.join().disposition());
+        assertTrue(automatic.join().snapshot().usableComposition().isPresent());
+        assertEquals(1, calls.size());
+        assertEquals(2, classifications.get());
+
+        // After the cadence interval the composition is requested again.
+        clock.now = clock.now.plus(Duration.ofHours(24));
+        var due = second.refresh(ACCOUNT, instrument("fund"), false);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, due.join().disposition());
+        assertEquals(2, calls.size());
+    }
+
+    @Test
+    public void testUnverifiedAccountStoresNothingAndWithdrawalRemovesCacheContents() throws IOException
+    {
+        var directory = temporary.newFolder().toPath().toRealPath();
+        credentials.replaceSession(ACCOUNT, "synthetic-valid");
+        InstrumentClassifier classifier = (account, instrument) -> Optional.empty();
+
+        var unverified = persistent(directory, classifier, POLICY);
+        var result = unverified.refresh(ACCOUNT, instrument("fund"), true);
+        executor.drain();
+        result.join();
+        assertEquals(0, files(directory));
+
+        var confirmed = persistent(directory, classifier, PERMITTED);
+        clock.now = clock.now.plus(Duration.ofDays(2));
+        var stored = confirmed.refresh(ACCOUNT, instrument("fund"), true);
+        executor.drain();
+        stored.join();
+        assertTrue(files(directory) > 0);
+
+        confirmed.configure(POLICY, Optional.empty());
+        assertEquals(0, files(directory));
+        // Analysis continues from memory for this session.
+        assertTrue(confirmed.read(ACCOUNT, instrument("fund")).usableComposition().isPresent());
+        assertEquals(0, files(directory));
+
+        var restarted = persistent(directory, classifier, PERMITTED);
+        assertTrue(restarted.read(ACCOUNT, instrument("fund")).usableComposition().isEmpty());
+    }
+
+    @Test
+    public void testStoredAnswerWithoutCompositionNeedsNoRequestAfterRestart() throws IOException
+    {
+        var directory = temporary.newFolder().toPath().toRealPath();
+        credentials.replaceSession(ACCOUNT, "synthetic-valid");
+        InstrumentClassifier classifier = (account, instrument) -> Optional.empty();
+
+        var first = persistent(directory, classifier, PERMITTED);
+        var initial = first.refresh(ACCOUNT, instrument("missing"), false);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, initial.join().disposition());
+        assertEquals(1, calls.size());
+
+        clock.now = clock.now.plus(Duration.ofHours(1));
+        var second = persistent(directory, classifier, PERMITTED);
+        assertEquals(CompositionResult.Status.UNAVAILABLE,
+                        second.read(ACCOUNT, instrument("missing")).latestAttempt().orElseThrow().status());
+        // An automatic pass after the restart makes no provider request.
+        var automatic = second.refresh(ACCOUNT, instrument("missing"), false);
+        executor.drain();
+        assertEquals(Disposition.NO_COMPOSITION, automatic.join().disposition());
+        assertEquals(CompositionResult.Status.UNAVAILABLE,
+                        automatic.join().snapshot().latestAttempt().orElseThrow().status());
+        assertEquals(1, calls.size());
+
+        // After the cadence interval the instrument is asked once again.
+        clock.now = clock.now.plus(Duration.ofHours(24));
+        var third = persistent(directory, classifier, PERMITTED);
+        var due = third.refresh(ACCOUNT, instrument("missing"), false);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, due.join().disposition());
+        assertEquals(2, calls.size());
+
+        // Withdrawal removes the stored answer; the next restart asks again.
+        third.configure(POLICY, Optional.empty());
+        assertEquals(0, files(directory));
+        var fourth = persistent(directory, classifier, PERMITTED);
+        assertTrue(fourth.read(ACCOUNT, instrument("missing")).latestAttempt().isEmpty());
+        var again = fourth.refresh(ACCOUNT, instrument("missing"), false);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, again.join().disposition());
+        assertEquals(3, calls.size());
+    }
+
 }

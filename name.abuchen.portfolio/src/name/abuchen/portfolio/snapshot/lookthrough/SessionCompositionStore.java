@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.nio.file.DirectoryIteratorException;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -22,6 +24,16 @@ public class SessionCompositionStore implements CompositionStore
 {
     private record Key(ProviderAccount account, Map<String, String> identifiers)
     {
+    }
+
+    /** A stored provider answer that the fund has no composition. */
+    public record NoComposition(Instant storedAt, CompositionResult.Status status)
+    {
+        public NoComposition
+        {
+            Objects.requireNonNull(storedAt);
+            Objects.requireNonNull(status);
+        }
     }
 
     private static final class Account
@@ -113,7 +125,11 @@ public class SessionCompositionStore implements CompositionStore
 
     protected final boolean expired(FundComposition composition, CompositionPersistencePolicy policy)
     {
-        var retrieved = composition.provenance().retrievedAt();
+        return expired(composition.provenance().retrievedAt(), policy);
+    }
+
+    protected final boolean expired(Instant retrieved, CompositionPersistencePolicy policy)
+    {
         var now = clock.instant();
         return retrieved.isAfter(now) || policy.maximumAge()
                         .map(age -> Duration.between(retrieved, now).compareTo(age) >= 0).orElse(false);
@@ -226,6 +242,107 @@ public class SessionCompositionStore implements CompositionStore
         return snapshot(key, entry);
     }
 
+    /**
+     * Generation of the account's current storage configuration. Capture it
+     * before an asynchronous lookup and pass it to {@link #writeEvidence}, so an
+     * answer that arrives after a policy change or deletion cannot be stored.
+     */
+    public final synchronized long generation(ProviderAccount account)
+    {
+        var settings = accounts.get(Objects.requireNonNull(account));
+        return settings == null ? -1 : settings.generation;
+    }
+
+    /**
+     * Classification answers stored for the identifiers, if any. Empty means
+     * unknown (never stored, expired, not persistent or discarded); a present
+     * empty list is a stored answer without evidence.
+     */
+    public final synchronized Optional<List<InstrumentEvidence>> readEvidence(ProviderAccount account,
+                    Map<String, String> identifiers)
+    {
+        var settings = accounts.get(Objects.requireNonNull(account));
+        Objects.requireNonNull(identifiers);
+        if (closed || settings == null || !settings.persistent || settings.diskFailure)
+            return Optional.empty();
+        try
+        {
+            return readEvidenceDisk(account, identifiers, settings.policy);
+        }
+        catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
+        {
+            settings.diskFailure = true;
+            return Optional.empty();
+        }
+    }
+
+    /** Stores a classification answer unless the account's configuration changed since the generation. */
+    public final synchronized void writeEvidence(ProviderAccount account, Map<String, String> identifiers,
+                    List<InstrumentEvidence> evidence, long generation)
+    {
+        var settings = accounts.get(Objects.requireNonNull(account));
+        Objects.requireNonNull(identifiers);
+        var copy = List.copyOf(evidence);
+        if (closed || settings == null || !settings.persistent || settings.diskFailure
+                        || settings.generation != generation || identifiers.isEmpty())
+            return;
+        try
+        {
+            writeEvidenceDisk(account, identifiers, copy, settings.policy);
+        }
+        catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
+        {
+            settings.diskFailure = true;
+        }
+    }
+
+    /**
+     * Stored answer that the fund has no composition, if any. Empty means
+     * unknown (never stored, expired, not persistent or discarded).
+     */
+    public final synchronized Optional<NoComposition> readNoComposition(ProviderAccount account,
+                    Map<String, String> identifiers)
+    {
+        var settings = accounts.get(Objects.requireNonNull(account));
+        Objects.requireNonNull(identifiers);
+        if (closed || settings == null || !settings.persistent || settings.diskFailure)
+            return Optional.empty();
+        try
+        {
+            return readNoCompositionDisk(account, identifiers, settings.policy);
+        }
+        catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
+        {
+            settings.diskFailure = true;
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Stores the provider answer that the fund has no composition (status
+     * unavailable or unsupported) unless the account's configuration changed
+     * since the generation.
+     */
+    public final synchronized void writeNoComposition(ProviderAccount account, Map<String, String> identifiers,
+                    CompositionResult.Status status, long generation)
+    {
+        var settings = accounts.get(Objects.requireNonNull(account));
+        Objects.requireNonNull(identifiers);
+        if (status != CompositionResult.Status.UNAVAILABLE && status != CompositionResult.Status.UNSUPPORTED)
+            throw new IllegalArgumentException();
+        if (closed || settings == null || !settings.persistent || settings.diskFailure
+                        || settings.generation != generation || identifiers.isEmpty())
+            return;
+        try
+        {
+            writeNoCompositionDisk(account, identifiers, status, settings.policy);
+        }
+        catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
+        {
+            settings.diskFailure = true;
+        }
+    }
+
     @Override
     public final synchronized void deleteRetained(ProviderAccount account)
     {
@@ -257,6 +374,30 @@ public class SessionCompositionStore implements CompositionStore
     }
 
     protected void writeDisk(FundComposition composition, CompositionPersistencePolicy policy) throws IOException
+    {
+        // Session-only stores never touch the filesystem.
+    }
+
+    protected Optional<List<InstrumentEvidence>> readEvidenceDisk(ProviderAccount account,
+                    Map<String, String> identifiers, CompositionPersistencePolicy policy) throws IOException
+    {
+        return Optional.empty();
+    }
+
+    protected void writeEvidenceDisk(ProviderAccount account, Map<String, String> identifiers,
+                    List<InstrumentEvidence> evidence, CompositionPersistencePolicy policy) throws IOException
+    {
+        // Session-only stores never touch the filesystem.
+    }
+
+    protected Optional<NoComposition> readNoCompositionDisk(ProviderAccount account, Map<String, String> identifiers,
+                    CompositionPersistencePolicy policy) throws IOException
+    {
+        return Optional.empty();
+    }
+
+    protected void writeNoCompositionDisk(ProviderAccount account, Map<String, String> identifiers,
+                    CompositionResult.Status status, CompositionPersistencePolicy policy) throws IOException
     {
         // Session-only stores never touch the filesystem.
     }

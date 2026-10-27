@@ -752,6 +752,192 @@ public class CompositionStoreTest
         assertEquals(new java.math.BigDecimal("0.499999999999999998"), validation.shortfall().orElseThrow());
     }
 
+    private InstrumentEvidence evidence(CompositionInstrument instrument, AssetType type, String company)
+    {
+        var provenance = new Provenance(ACCOUNT, "synthetic-evidence", START);
+        return new InstrumentEvidence(instrument.identifiers(),
+                        new Assertion<>(new Identifier("synthetic:id", instrument.identifiers().get("synthetic:id")),
+                                        provenance),
+                        Optional.of(new Assertion<>(type, provenance)),
+                        Optional.ofNullable(company).map(value -> new Assertion<>(new Identifier("company", value),
+                                        provenance)));
+    }
+
+    private long evidenceFiles(Path directory) throws IOException
+    {
+        try (var paths = Files.list(directory))
+        {
+            return paths.filter(path -> path.toString().endsWith(".evidence")).count();
+        }
+    }
+
+    @Test
+    public void classificationEvidenceSurvivesRestartIncludingEmptyAnswers() throws IOException
+    {
+        var path = directory();
+        var key = EQUITY.identifiers();
+        var other = FUND.identifiers();
+        var full = List.of(evidence(EQUITY, AssetType.EQUITY, "synthetic-company"));
+        try (var disk = new VersionedCompositionStore(path, clock))
+        {
+            disk.configure(permitted(), Optional.empty());
+            assertTrue(disk.readEvidence(ACCOUNT, key).isEmpty());
+            disk.writeEvidence(ACCOUNT, key, full, disk.generation(ACCOUNT));
+            disk.writeEvidence(ACCOUNT, other, List.of(), disk.generation(ACCOUNT));
+            assertEquals(Optional.of(full), disk.readEvidence(ACCOUNT, key));
+        }
+        assertEquals(2, evidenceFiles(path));
+        clock.now = START.plusSeconds(3600);
+        try (var disk = new VersionedCompositionStore(path, clock);
+                        var session = new SessionCompositionStore(clock))
+        {
+            disk.configure(permitted(), Optional.empty());
+            session.configure(permitted(), Optional.empty());
+            assertEquals(Optional.of(full), disk.readEvidence(ACCOUNT, key));
+            assertEquals(Optional.of(List.of()), disk.readEvidence(ACCOUNT, other));
+            assertTrue(session.readEvidence(ACCOUNT, key).isEmpty());
+        }
+    }
+
+    @Test
+    public void classificationEvidenceFollowsPolicyWithdrawalAndGeneration() throws IOException
+    {
+        var path = directory();
+        var key = EQUITY.identifiers();
+        var answer = List.of(evidence(EQUITY, AssetType.EQUITY, null));
+        var otherAccount = new ProviderAccount("synthetic", "local-other");
+        try (var store = new VersionedCompositionStore(path, clock))
+        {
+            store.configure(permitted(), Optional.empty());
+            store.configure(policy(otherAccount, Permission.PERMITTED, null), Optional.empty());
+            put(store, composition(ACCOUNT, FUND, "0.5"));
+            store.writeEvidence(ACCOUNT, key, answer, store.generation(ACCOUNT));
+            store.writeEvidence(otherAccount, key, answer, store.generation(otherAccount));
+            assertEquals(3, files(path));
+
+            // A lookup started before withdrawal cannot store its answer afterwards.
+            var stale = store.generation(ACCOUNT);
+            store.configure(policy(ACCOUNT, Permission.UNVERIFIED, null), Optional.empty());
+            assertEquals(1, files(path));
+            assertTrue(store.readEvidence(ACCOUNT, key).isEmpty());
+            store.configure(permitted(), Optional.empty());
+            store.writeEvidence(ACCOUNT, key, answer, stale);
+            assertEquals(1, files(path));
+            assertEquals(Optional.of(answer), store.readEvidence(otherAccount, key));
+
+            store.writeEvidence(ACCOUNT, key, answer, store.generation(ACCOUNT));
+            assertEquals(2, files(path));
+            // Explicit deletion and opt-out remove only this account's evidence.
+            store.deleteRetained(ACCOUNT);
+            assertEquals(1, files(path));
+            store.configure(permitted(), Optional.empty());
+            store.writeEvidence(ACCOUNT, key, answer, store.generation(ACCOUNT));
+            store.configure(permitted(), Optional.of(false));
+            assertEquals(1, files(path));
+            assertTrue(store.readEvidence(ACCOUNT, key).isEmpty());
+        }
+    }
+
+    @Test
+    public void classificationEvidenceExpiresAndCorruptRecordsAreDropped() throws IOException
+    {
+        var path = directory();
+        var key = EQUITY.identifiers();
+        var answer = List.of(evidence(EQUITY, AssetType.FUND, null));
+        try (var store = new VersionedCompositionStore(path, clock))
+        {
+            store.configure(permitted(), Optional.empty());
+            store.writeEvidence(ACCOUNT, key, answer, store.generation(ACCOUNT));
+            assertEquals(Optional.of(answer), store.readEvidence(ACCOUNT, key));
+            clock.now = START.plus(Duration.ofDays(2));
+            assertTrue(store.readEvidence(ACCOUNT, key).isEmpty());
+            assertEquals(0, evidenceFiles(path));
+
+            clock.now = START;
+            store.configure(permitted(), Optional.empty());
+            store.writeEvidence(ACCOUNT, key, answer, store.generation(ACCOUNT));
+            try (var paths = Files.list(path))
+            {
+                var record = paths.filter(item -> item.toString().endsWith(".evidence")).findFirst().orElseThrow();
+                var bytes = Files.readAllBytes(record);
+                bytes[10] ^= 1;
+                Files.write(record, bytes);
+            }
+            assertTrue(store.readEvidence(ACCOUNT, key).isEmpty());
+            assertEquals(0, evidenceFiles(path));
+        }
+    }
+
+    @Test
+    public void unverifiedAccountNeverStoresClassificationEvidence() throws IOException
+    {
+        var path = directory();
+        var answer = List.of(evidence(EQUITY, AssetType.EQUITY, null));
+        try (var store = new VersionedCompositionStore(path, clock))
+        {
+            store.configure(policy(ACCOUNT, Permission.UNVERIFIED, null), Optional.of(true));
+            store.writeEvidence(ACCOUNT, EQUITY.identifiers(), answer, store.generation(ACCOUNT));
+            assertEquals(0, files(path));
+            assertTrue(store.readEvidence(ACCOUNT, EQUITY.identifiers()).isEmpty());
+        }
+    }
+
+    @Test
+    public void evidenceCodecRoundTripsAllAssertions() throws IOException
+    {
+        var stored = new CompositionCacheCodec.StoredEvidence(ACCOUNT, EQUITY.identifiers(), START,
+                        List.of(evidence(EQUITY, AssetType.DEPOSITARY_RECEIPT, "synthetic-company"),
+                                        evidence(FUND, AssetType.FUND, null)));
+        var bytes = CompositionCacheCodec.encodeEvidence(stored);
+        assertEquals(stored, CompositionCacheCodec.decodeEvidence(bytes));
+        assertThrows(IOException.class, () -> CompositionCacheCodec.decodeEvidence(Arrays.copyOf(bytes, 20)));
+    }
+
+    @Test
+    public void answerWithoutCompositionIsStoredAndFollowsWithdrawalAndExpiry() throws IOException
+    {
+        var path = directory();
+        var key = EQUITY.identifiers();
+        try (var store = new VersionedCompositionStore(path, clock))
+        {
+            store.configure(permitted(), Optional.empty());
+            assertTrue(store.readNoComposition(ACCOUNT, key).isEmpty());
+            var stale = store.generation(ACCOUNT);
+            store.writeNoComposition(ACCOUNT, key, CompositionResult.Status.UNSUPPORTED, stale);
+            assertEquals(1, files(path));
+        }
+        clock.now = START.plusSeconds(3600);
+        try (var store = new VersionedCompositionStore(path, clock);
+                        var session = new SessionCompositionStore(clock))
+        {
+            store.configure(permitted(), Optional.empty());
+            session.configure(permitted(), Optional.empty());
+            assertEquals(Optional.of(new SessionCompositionStore.NoComposition(START,
+                            CompositionResult.Status.UNSUPPORTED)), store.readNoComposition(ACCOUNT, key));
+            session.writeNoComposition(ACCOUNT, key, CompositionResult.Status.UNAVAILABLE,
+                            session.generation(ACCOUNT));
+            assertTrue(session.readNoComposition(ACCOUNT, key).isEmpty());
+
+            // An answer started before withdrawal cannot be stored afterwards.
+            var stale = store.generation(ACCOUNT);
+            store.configure(policy(ACCOUNT, Permission.UNVERIFIED, null), Optional.empty());
+            assertEquals(0, files(path));
+            store.configure(permitted(), Optional.empty());
+            store.writeNoComposition(ACCOUNT, key, CompositionResult.Status.UNAVAILABLE, stale);
+            assertEquals(0, files(path));
+            assertThrows(IllegalArgumentException.class, () -> store.writeNoComposition(ACCOUNT, key,
+                            CompositionResult.Status.FAILED, store.generation(ACCOUNT)));
+
+            // The record expires with the policy's maximum age like compositions.
+            store.configure(policy(ACCOUNT, Permission.PERMITTED, Duration.ofDays(1)), Optional.empty());
+            store.writeNoComposition(ACCOUNT, key, CompositionResult.Status.UNAVAILABLE, store.generation(ACCOUNT));
+            assertEquals(1, files(path));
+            clock.now = clock.now.plus(Duration.ofDays(2));
+            assertTrue(store.readNoComposition(ACCOUNT, key).isEmpty());
+            assertEquals(0, files(path));
+        }
+    }
+
     @Test
     public void sessionCloseDiscardsMemoryAndTicketsBelongToExactlyOneStore()
     {

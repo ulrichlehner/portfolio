@@ -75,6 +75,21 @@ public class CompositionPersistencePreferencesTest
     }
 
     @Test
+    public void localStorageConfirmationDefaultsOffAndIsPerAccount()
+    {
+        var preferences = new CompositionPersistencePreferences.InMemory();
+        var count = new AtomicInteger();
+        preferences.addListener(account -> count.incrementAndGet());
+        assertFalse(preferences.isLocalStorageConfirmed(A));
+        preferences.setLocalStorageConfirmed(A, true);
+        assertTrue(preferences.isLocalStorageConfirmed(A));
+        assertFalse(preferences.isLocalStorageConfirmed(B));
+        preferences.setLocalStorageConfirmed(A, false);
+        assertFalse(preferences.isLocalStorageConfirmed(A));
+        assertEquals(2, count.get());
+    }
+
+    @Test
     public void oneListenerNotificationPerChange()
     {
         var preferences = new CompositionPersistencePreferences.InMemory();
