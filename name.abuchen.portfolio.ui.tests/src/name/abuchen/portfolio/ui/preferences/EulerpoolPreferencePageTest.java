@@ -245,4 +245,23 @@ public class EulerpoolPreferencePageTest
             assertEquals(Permission.UNVERIFIED, provider.getPersistencePolicy(ACCOUNT).permission());
         }
     }
+
+    @Test
+    public void testRegisterLookupIsOnByDefaultAndCanBeSwitchedOff()
+    {
+        var preferences = new CompositionPersistencePreferences.InMemory();
+        var page = new EulerpoolPreferencePage(new CompositionCredentials(new MemoryStore()), preferences, () -> {
+        });
+        assertTrue(preferences.isRegisterLookupEnabled());
+
+        page.applyRegisterLookup(false);
+        assertFalse(preferences.isRegisterLookupEnabled());
+        page.applyRegisterLookup(true);
+        assertTrue(preferences.isRegisterLookupEnabled());
+
+        // An unvisited page leaves the switch unchanged.
+        preferences.setRegisterLookupEnabled(false);
+        assertTrue(page.performOk());
+        assertFalse(preferences.isRegisterLookupEnabled());
+    }
 }

@@ -31,6 +31,14 @@ public interface CompositionPersistencePreferences
 
     void setLocalStorageConfirmed(ProviderAccount account, boolean confirmed);
 
+    /**
+     * Whether company headquarters are looked up in the public legal entity
+     * register. Not account-specific; on by default.
+     */
+    boolean isRegisterLookupEnabled();
+
+    void setRegisterLookupEnabled(boolean enabled);
+
     void addListener(Consumer<ProviderAccount> listener);
 
     void removeListener(Consumer<ProviderAccount> listener);
@@ -50,6 +58,7 @@ public interface CompositionPersistencePreferences
     {
         private final Map<ProviderAccount, Boolean> values = new HashMap<>();
         private final Map<ProviderAccount, Boolean> confirmations = new HashMap<>();
+        private boolean registerLookup = true;
         private final List<Consumer<ProviderAccount>> listeners = new CopyOnWriteArrayList<>();
 
         @Override
@@ -90,6 +99,18 @@ public interface CompositionPersistencePreferences
             var snapshot = new ArrayList<>(listeners);
             for (var listener : snapshot)
                 listener.accept(account);
+        }
+
+        @Override
+        public synchronized boolean isRegisterLookupEnabled()
+        {
+            return registerLookup;
+        }
+
+        @Override
+        public synchronized void setRegisterLookupEnabled(boolean enabled)
+        {
+            registerLookup = enabled;
         }
 
         @Override

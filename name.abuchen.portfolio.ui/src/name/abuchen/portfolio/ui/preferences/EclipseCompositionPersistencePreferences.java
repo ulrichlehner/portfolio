@@ -29,6 +29,7 @@ public final class EclipseCompositionPersistencePreferences implements Compositi
     private static final String NODE = "name.abuchen.portfolio.ui";
     private static final String PREFIX = "lookthrough.persistence.";
     private static final String CONFIRMED_PREFIX = "lookthrough.localstorage.";
+    private static final String REGISTER_LOOKUP = "lookthrough.register.enabled";
 
     private final IEclipsePreferences node;
     private final Map<String, ProviderAccount> keys = new HashMap<>();
@@ -111,6 +112,26 @@ public final class EclipseCompositionPersistencePreferences implements Compositi
             keys.put(k, account);
         }
         node.put(k, Boolean.toString(confirmed));
+        try
+        {
+            node.flush();
+        }
+        catch (BackingStoreException e)
+        {
+            PortfolioPlugin.log(e);
+        }
+    }
+
+    @Override
+    public boolean isRegisterLookupEnabled()
+    {
+        return !"false".equals(node.get(REGISTER_LOOKUP, null)); //$NON-NLS-1$
+    }
+
+    @Override
+    public void setRegisterLookupEnabled(boolean enabled)
+    {
+        node.put(REGISTER_LOOKUP, Boolean.toString(enabled));
         try
         {
             node.flush();

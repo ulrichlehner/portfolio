@@ -526,4 +526,57 @@ public class EulerpoolFundCompositionProviderTest
         assertEquals(CompositionResult.Status.MALFORMED_RESPONSE, result.status());
         assertTrue(result.composition().isEmpty());
     }
+
+    @Test
+    public void testCompanyProfileFieldsAreParsedStrictly() throws IOException
+    {
+        var calls = new ArrayList<URI>();
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN), (uri, authorization) -> {
+            calls.add(uri);
+            return new Response(200, """
+                            {"isin":"XX0000000017","ticker":"SYN","name":"Invented company","logo":null,
+                             "country":"United States","currency":"USD","employees":12.5,"sector":"Invented sector",
+                             "industry":"Invented industry","ipo":"2001-01-01","mcap":1234.5,"shares":10.0,
+                             "website":null,"wkn":null,"description":"Invented"}
+                            """, Optional.empty());
+        }, CLOCK);
+        var profile = provider.profile(ACCOUNT, "XX0000000017").orElseThrow();
+        assertEquals("/api/1/equity/profile/XX0000000017", calls.get(0).getPath());
+        assertEquals(Optional.of("US"), profile.country());
+        assertEquals(Optional.of("USD"), profile.currency());
+        assertEquals(Optional.of("Invented sector"), profile.sector());
+        assertEquals(Optional.of("Invented industry"), profile.industry());
+        assertEquals(Optional.of(new java.math.BigDecimal("1234.5")), profile.marketCapMillions());
+        assertEquals(NOW, profile.retrievedAt());
+    }
+
+    @Test
+    public void testCompanyProfileUnmappedCountryNotFoundAndMalformedAnswers() throws IOException
+    {
+        var unmapped = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(200,
+                                        "{\"isin\":\"XX0000000017\",\"country\":\"Invented Land\",\"mcap\":null}",
+                                        Optional.empty()),
+                        CLOCK).profile(ACCOUNT, "XX0000000017").orElseThrow();
+        assertTrue(unmapped.country().isEmpty());
+        assertTrue(unmapped.marketCapMillions().isEmpty());
+
+        assertTrue(new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(404, null, Optional.empty()), CLOCK)
+                                        .profile(ACCOUNT, "XX0000000017").isEmpty());
+        for (var body : List.of("{\"isin\":\"XX0000000025\",\"sector\":\"Other\"}", "{\"isin\":1}",
+                        "{\"isin\":\"XX0000000017\"} trailing", "[]", ""))
+        {
+            var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                            (uri, authorization) -> new Response(200, body, Optional.empty()), CLOCK);
+            assertThrows(IOException.class, () -> provider.profile(ACCOUNT, "XX0000000017"));
+        }
+        var limited = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(429, null, Optional.of("60")), CLOCK);
+        var failure = assertThrows(
+                        name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.EnrichmentFailure.class,
+                        () -> limited.profile(ACCOUNT, "XX0000000017"));
+        assertEquals(Status.RATE_LIMITED, failure.result().status());
+        assertThrows(IllegalArgumentException.class, () -> limited.profile(ACCOUNT, "XX/../other"));
+    }
 }

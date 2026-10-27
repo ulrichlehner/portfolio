@@ -41,6 +41,7 @@ public class EulerpoolPreferencePage extends PreferencePage
     private Button confirmation;
     private Button persistence;
     private Label persistenceStatus;
+    private Button registerLookup;
 
     public EulerpoolPreferencePage()
     {
@@ -154,6 +155,15 @@ public class EulerpoolPreferencePage extends PreferencePage
         GridDataFactory.fillDefaults().span(3, 1).grab(true, false).hint(450, SWT.DEFAULT).applyTo(persistenceStatus);
 
         updatePersistenceStatus();
+
+        var registerSeparator = new Label(area, SWT.SEPARATOR | SWT.HORIZONTAL);
+        GridDataFactory.fillDefaults().span(3, 1).grab(true, false).indent(0, 10).applyTo(registerSeparator);
+
+        // Stored with OK or Apply like the storage settings.
+        registerLookup = new Button(area, SWT.CHECK);
+        registerLookup.setText(Messages.PrefEulerpoolRegisterLookup);
+        registerLookup.setSelection(persistencePreferences.isRegisterLookupEnabled());
+        GridDataFactory.fillDefaults().span(3, 1).applyTo(registerLookup);
         return area;
     }
 
@@ -193,6 +203,7 @@ public class EulerpoolPreferencePage extends PreferencePage
             return true;
 
         applyPersistence(confirmation.getSelection(), persistence.getSelection());
+        applyRegisterLookup(registerLookup.getSelection());
 
         var outcome = submit(key.getText(), sessionOnly.getSelection());
         switch (outcome)
@@ -230,6 +241,17 @@ public class EulerpoolPreferencePage extends PreferencePage
         if (persistencePreferences.isLocalStorageConfirmed(ACCOUNT) != confirmed)
             persistencePreferences.setLocalStorageConfirmed(ACCOUNT, confirmed);
         persistenceApplied.run();
+    }
+
+    /**
+     * Stores the register switch. Switched off, no register request is made
+     * and countries come from profiles or ISIN prefixes; the openly licensed
+     * register data already stored is kept.
+     */
+    void applyRegisterLookup(boolean enabled)
+    {
+        if (persistencePreferences.isRegisterLookupEnabled() != enabled)
+            persistencePreferences.setRegisterLookupEnabled(enabled);
     }
 
     private void remove()

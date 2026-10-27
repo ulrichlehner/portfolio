@@ -161,6 +161,10 @@ public class LookThroughView extends AbstractFinanceView
     public void setResult(LookThroughResult result)
     {
         this.result = result;
+        // Enrichment runs after each result, outside the calculation.
+        var source = compositionSource;
+        if (result != null && source != null)
+            source.enrich(result);
         applyResult();
     }
 

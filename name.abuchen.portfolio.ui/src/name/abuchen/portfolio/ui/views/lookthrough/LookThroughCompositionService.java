@@ -1,6 +1,10 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -19,12 +23,17 @@ import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
+import name.abuchen.portfolio.online.impl.GleifCompanyRegister;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.StorageMode;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePreferences;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.HeldSecurities;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.preferences.EclipseCompositionPersistencePreferences;
@@ -62,6 +71,21 @@ public final class LookThroughCompositionService
         private static final LookThroughSession SESSION = new LookThroughSession(PROVIDER, PROVIDER,
                         CREDENTIALS, Clock.systemUTC(), EXECUTOR, LookThroughSession.storeIn(stateDirectory(),
                                         Clock.systemUTC()));
+        private static final CompanyEnrichmentCache COMPANIES = new CompanyEnrichmentCache(
+                        privateDirectory(COMPANY_FOLDER), Clock.systemUTC());
+
+        static
+        {
+            // Register data is openly licensed and always cached; profiles
+            // follow the account's storage settings like compositions.
+            SESSION.enableEnrichment(EulerpoolPreferencePage.ACCOUNT, PROVIDER::profile, new GleifCompanyRegister(),
+                            PREFERENCES::isRegisterLookupEnabled, COMPANIES, Executors.newSingleThreadExecutor(
+                                            runnable -> {
+                                                var thread = new Thread(runnable, "lookthrough-enrichment"); //$NON-NLS-1$
+                                                thread.setDaemon(true);
+                                                return thread;
+                                            }));
+        }
 
         static
         {
@@ -78,14 +102,42 @@ public final class LookThroughCompositionService
             return plugin == null ? null : plugin.getStateLocation().toFile().toPath().resolve(CACHE_FOLDER);
         }
 
+        /** The private cache directory in the state area, or null for memory-only caching. */
+        private static Path privateDirectory(String folder)
+        {
+            var plugin = PortfolioPlugin.getDefault();
+            if (plugin == null)
+                return null;
+            try
+            {
+                var directory = plugin.getStateLocation().toFile().toPath().resolve(folder);
+                Files.createDirectories(directory);
+                if (Files.getFileAttributeView(directory, PosixFileAttributeView.class) != null)
+                    Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------")); //$NON-NLS-1$
+                return directory.toRealPath();
+            }
+            catch (IOException | RuntimeException e)
+            {
+                PortfolioPlugin.log(e);
+                return null;
+            }
+        }
+
         private static void apply(ProviderAccount account)
         {
             if (EulerpoolPreferencePage.ACCOUNT.equals(account))
-                SESSION.configure(PROVIDER.getPersistencePolicy(account), PREFERENCES.get(account));
+                configure(PROVIDER.getPersistencePolicy(account), PREFERENCES.get(account));
+        }
+
+        private static void configure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
+        {
+            SESSION.configure(policy, preference);
+            COMPANIES.configure(policy, preference);
         }
     }
 
     private static final String CACHE_FOLDER = "lookthrough-cache"; //$NON-NLS-1$
+    private static final String COMPANY_FOLDER = "lookthrough-companies"; //$NON-NLS-1$
 
     /** Applies the stored provider settings to the shared session, deleting data of withdrawn storage. */
     public static void reconfigure()
@@ -138,7 +190,7 @@ public final class LookThroughCompositionService
         {
             var policy = Backend.PROVIDER.getPersistencePolicy(EulerpoolPreferencePage.ACCOUNT);
             var preference = Backend.PREFERENCES.get(EulerpoolPreferencePage.ACCOUNT);
-            Backend.SESSION.configure(policy, preference);
+            Backend.configure(policy, preference);
             var effective = policy.effectiveModeDetail(preference);
             return new GlobalFacts(effective.mode() == StorageMode.PERSISTENT ? CompositionStore.State.PERSISTENT
                             : CompositionStore.State.SESSION_ONLY, effective);
@@ -160,6 +212,18 @@ public final class LookThroughCompositionService
         public List<InstrumentEvidence> classifications()
         {
             return Backend.SESSION.classifications();
+        }
+
+        @Override
+        public void enrich(LookThroughResult result)
+        {
+            Backend.SESSION.enrich(result.companies());
+        }
+
+        @Override
+        public CompanyEnrichmentService.Snapshot companyAttributes()
+        {
+            return Backend.SESSION.companyAttributes();
         }
 
         @Override

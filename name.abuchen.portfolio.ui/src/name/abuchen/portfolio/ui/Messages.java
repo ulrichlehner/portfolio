@@ -1487,6 +1487,7 @@ public class Messages extends NLS
     public static String PrefEulerpoolPersistenceReasonPolicyUnverified;
     public static String PrefEulerpoolPersistenceReasonUserOptOut;
     public static String PrefEulerpoolPersistenceRetain;
+    public static String PrefEulerpoolRegisterLookup;
     public static String PrefEulerpoolRemove;
     public static String PrefEulerpoolSecure;
     public static String PrefEulerpoolSession;

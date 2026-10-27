@@ -20,11 +20,14 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.CompositionCredentials.Mode;
 import name.abuchen.portfolio.online.FundCompositionProvider;
 import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
@@ -39,6 +42,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolver;
+import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.snapshot.lookthrough.SessionCompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.SessionCompositionStore.NoComposition;
@@ -78,6 +82,7 @@ final class LookThroughSession implements RefreshGateway
     private final Map<Key, CompletableFuture<Refresh>> pending = new HashMap<>();
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
+    private volatile CompanyEnrichmentService enrichment;
 
     LookThroughSession(FundCompositionProvider provider, InstrumentClassifier classifier,
                     CompositionCredentials credentials, Clock clock, Executor executor)
@@ -440,6 +445,42 @@ final class LookThroughSession implements RefreshGateway
                             ? failure.result() : new CompositionResult(CompositionResult.Status.FAILED,
                                             Optional.empty(), Optional.empty()));
         }
+    }
+
+    /**
+     * Enables company enrichment with this session's provider budget, so
+     * profile requests and composition requests share one allowance. Profile
+     * requests run only while a key is configured for the account.
+     */
+    CompanyEnrichmentService enableEnrichment(ProviderAccount account, CompanyEnrichmentService.ProfileSource profiles,
+                    CompanyEnrichmentService.Register register, BooleanSupplier registerEnabled,
+                    CompanyEnrichmentCache cache, Executor enrichmentExecutor)
+    {
+        var service = new CompanyEnrichmentService(account, profiles, () -> {
+            var mode = credentials.state(account).mode();
+            return mode == Mode.SECURE || mode == Mode.SESSION_ONLY;
+        }, register, registerEnabled, cache, budget, clock, enrichmentExecutor);
+        enrichment = service;
+        return service;
+    }
+
+    /**
+     * Schedules the enrichment of a result's companies in the background. It
+     * neither blocks nor changes the calculation; companies with fresh cached
+     * attributes cause no request.
+     */
+    void enrich(List<LookThroughResult.Company> companies)
+    {
+        var service = enrichment;
+        if (service != null)
+            service.schedule(companies);
+    }
+
+    /** Company attributes and pending count of the latest scheduled result; memory-only. */
+    CompanyEnrichmentService.Snapshot companyAttributes()
+    {
+        var service = enrichment;
+        return service == null ? CompanyEnrichmentService.Snapshot.empty() : service.snapshot();
     }
 
     /** Cached classification of held instruments and constituents, exposed to the analysis. */

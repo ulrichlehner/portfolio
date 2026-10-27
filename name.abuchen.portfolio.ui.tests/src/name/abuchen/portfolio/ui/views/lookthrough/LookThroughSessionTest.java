@@ -28,6 +28,8 @@ import org.junit.rules.TemporaryFolder;
 
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.FundCompositionProvider;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyProfile;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionProvenance;
@@ -37,6 +39,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentClassifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.snapshot.lookthrough.VersionedCompositionStore;
 
@@ -487,4 +490,38 @@ public class LookThroughSessionTest
         assertEquals(3, calls.size());
     }
 
+    @Test
+    public void testEnrichmentRunsAfterResultsOnlyWithKeyAndExposesAttributes()
+    {
+        var requested = new ArrayList<String>();
+        var cache = new CompanyEnrichmentCache(null, clock);
+        cache.configure(POLICY, Optional.empty());
+        session.enableEnrichment(ACCOUNT, (account, isin) -> {
+            requested.add(isin);
+            return Optional.of(new CompanyProfile(isin, Optional.of("US"), Optional.of("USD"),
+                            Optional.of("Invented sector"), Optional.empty(), Optional.empty(), clock.instant()));
+        }, isins -> {
+            throw new AssertionError("register switched off");
+        }, () -> false, cache, Runnable::run);
+        var identity = new InstrumentEvidence.Identifier(InstrumentEvidence.ISIN, "XX0000000017");
+        var companies = List.of(new LookThroughResult.Company(identity, java.math.BigDecimal.TEN,
+                        java.math.BigDecimal.ZERO, List.of()));
+
+        // Without a key nothing is requested and the company stays pending.
+        session.enrich(companies);
+        assertTrue(requested.isEmpty());
+        assertEquals(1, session.companyAttributes().pending());
+
+        configure();
+        session.enrich(companies);
+        assertEquals(List.of("XX0000000017"), requested);
+        var attributes = session.companyAttributes();
+        assertEquals(0, attributes.pending());
+        assertEquals("Invented sector", attributes.attributes().get(identity).sector().orElseThrow().value());
+
+        // A fresh cached profile is not requested again and no composition request was made.
+        session.enrich(companies);
+        assertEquals(1, requested.size());
+        assertTrue(calls.isEmpty());
+    }
 }

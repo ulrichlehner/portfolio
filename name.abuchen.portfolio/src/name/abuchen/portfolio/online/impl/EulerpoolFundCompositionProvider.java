@@ -31,6 +31,8 @@ import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
 import name.abuchen.portfolio.online.FundCompositionProvider;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyProfile;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.Permission;
@@ -243,6 +245,56 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
                 throw new IOException();
         }
         return Optional.empty();
+    }
+
+    /**
+     * Descriptive company profile of an ISIN from equity/profile: country,
+     * currency, sector, industry and market capitalization (in millions).
+     * Empty when the provider has no profile. A malformed answer, or one for
+     * another ISIN, fails instead of counting as "no profile".
+     */
+    public Optional<CompanyProfile> profile(ProviderAccount account, String isin) throws IOException
+    {
+        checkAccount(account);
+        if (isin == null || !isin.matches("[A-Z]{2}[A-Z0-9]{9}[0-9]"))
+            throw new IllegalArgumentException();
+        var token = credentials.getBearerToken(account);
+        if (token.isEmpty() || !token.get().matches("[A-Za-z0-9._~+/-]+=*"))
+            throw new EnrichmentFailure(failure(Status.AUTHENTICATION_FAILED));
+        var response = classificationResponse("https://api.eulerpool.com/api/1/equity/profile/" + isin, token.get());
+        if (response.status() == 204 || response.status() == 404)
+            return Optional.empty();
+        if (response.status() != 200)
+            throw new IOException();
+        return Optional.of(parseCompanyProfile(isin, response.body()));
+    }
+
+    private CompanyProfile parseCompanyProfile(String isin, String body) throws IOException
+    {
+        if (body == null || body.isBlank())
+            throw new IOException();
+        try (var reader = new JsonReader(new StringReader(body)))
+        {
+            reader.setStrictness(Strictness.STRICT);
+            var json = JsonParser.parseReader(reader);
+            if (!json.isJsonObject() || reader.peek() != JsonToken.END_DOCUMENT)
+                throw new IOException();
+            var row = json.getAsJsonObject();
+            if (!isin.equalsIgnoreCase(text(row, "isin").orElse("")))
+                throw new IOException();
+            // Country names that do not map to an ISO code stay unknown.
+            var country = text(row, "country").flatMap(CompanyAttributes::countryOfName);
+            var currency = text(row, "currency").map(String::trim).filter(code -> code.matches("[A-Z]{3}"));
+            var sector = text(row, "sector").map(String::trim).filter(value -> !value.isEmpty());
+            var industry = text(row, "industry").map(String::trim).filter(value -> !value.isEmpty());
+            var marketCap = number(row, "mcap").filter(value -> value.signum() >= 0);
+            return new CompanyProfile(isin, country, currency, sector, industry, marketCap, clock.instant());
+        }
+        catch (RuntimeException e)
+        {
+            // No response bodies or exception messages escape.
+            throw new IOException();
+        }
     }
 
     private List<String> identifiers(CompositionInstrument instrument)

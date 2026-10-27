@@ -4,7 +4,9 @@ import java.util.List;
 import java.util.Optional;
 
 import name.abuchen.portfolio.model.Security;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.RefreshGateway;
@@ -49,6 +51,26 @@ public interface LookThroughCompositionSource
     default List<InstrumentEvidence> classifications()
     {
         return List.of();
+    }
+
+    /**
+     * Schedules the background enrichment of a new result's companies and
+     * returns at once. Unlike the other methods this may lead to requests,
+     * but only for companies without fresh cached attributes, never because
+     * of a redraw.
+     */
+    default void enrich(LookThroughResult result)
+    {
+        // No enrichment without a provider backend.
+    }
+
+    /**
+     * Company attributes (country, currency, sector, industry, size) and the
+     * number of companies still pending, for the presenter. Memory-only.
+     */
+    default CompanyEnrichmentService.Snapshot companyAttributes()
+    {
+        return CompanyEnrichmentService.Snapshot.empty();
     }
 
     /**
