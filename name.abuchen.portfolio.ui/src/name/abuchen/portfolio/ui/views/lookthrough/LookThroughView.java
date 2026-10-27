@@ -60,6 +60,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.PortfolioPlugin;
@@ -80,10 +81,12 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Cont
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.DetailRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Grouping;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupKind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.SegmentKind;
 
 /**
  * Read-only presentation of the look-through result. The view performs no
@@ -101,7 +104,7 @@ public class LookThroughView extends AbstractFinanceView
     private static final String CHART_KEY = LookThroughView.class.getSimpleName() + "-chart"; //$NON-NLS-1$
     private static final String GROUPING_KEY = LookThroughView.class.getSimpleName() + "-grouping"; //$NON-NLS-1$
     private static final String SASH_KEY = LookThroughView.class.getSimpleName() + "-sash"; //$NON-NLS-1$
-    private static final int[] DEFAULT_WEIGHTS = { 2, 1 };
+    private static final int[] DEFAULT_WEIGHTS = { 1, 1 };
     /** Enrichment notifications are presented at most this often. */
     private static final Duration ENRICHMENT_UPDATE_INTERVAL = Duration.ofMillis(1500);
 
@@ -128,6 +131,8 @@ public class LookThroughView extends AbstractFinanceView
     private Map<RowKey, RowKey> companyKeys = Map.of();
     private Map<RowKey, RowKey> groupKeys = Map.of();
     private Map<RowKey, RowKey> parentKeys = Map.of();
+    private Map<RowKey, Integer> ranks = Map.of();
+    private Column companyColumn;
     private LookThroughViewPresenter.Model presented;
 
     /** Empty until the credential state was read off the UI thread. */
@@ -532,7 +537,8 @@ public class LookThroughView extends AbstractFinanceView
         GridLayoutFactory.fillDefaults().numColumns(1).extendedMargins(5, 5, 5, 10)
                         .spacing(0, 8).applyTo(container);
 
-        header = new LookThroughHeader(container, this::stopRefresh, this::openProviderSettings);
+        header = new LookThroughHeader(container, this::stopRefresh, this::openProviderSettings,
+                        this::revealCategory);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(header.getControl());
 
         // separates the header from chart and table
@@ -606,7 +612,20 @@ public class LookThroughView extends AbstractFinanceView
 
     private void addColumns(ShowHideColumnHelper support)
     {
-        var column = new Column("instrument", Messages.LookThroughColumnCompany, SWT.NONE, 200); //$NON-NLS-1$
+        var column = new Column("rank", Messages.LookThroughColumnRank, SWT.RIGHT, 40); //$NON-NLS-1$
+        column.setLabelProvider(new ColumnLabelProvider()
+        {
+            @Override
+            public String getText(Object element)
+            {
+                var rank = element instanceof Row row ? ranks.get(row.key()) : null;
+                return rank != null ? String.valueOf(rank) : null;
+            }
+        });
+        support.addColumn(column);
+
+        column = new Column("instrument", companyColumnLabel(), SWT.NONE, 200); //$NON-NLS-1$
+        companyColumn = column;
         column.setLabelProvider(new ColumnLabelProvider()
         {
             @Override
@@ -618,7 +637,10 @@ public class LookThroughView extends AbstractFinanceView
                 {
                     var label = detail.label().isBlank() ? Messages.LookThroughDetailUnnamedInstrument
                                     : detail.label();
-                    return label + " (" + detail.sourceText() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+                    var source = label + " (" + detail.sourceText() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+                    // the reason is part of the row, not only of its tooltip
+                    return detail.note() == null || detail.note().isBlank() ? source
+                                    : source + " · " + detail.note(); //$NON-NLS-1$
                 }
                 return ((Row) element).label();
             }
@@ -636,6 +658,8 @@ public class LookThroughView extends AbstractFinanceView
                     return detail.note() == null || detail.note().isBlank() ? null : detail.note();
                 if (element instanceof CompanyRow company)
                     return company.detail().orElse(null);
+                if (element instanceof CategoryRow category)
+                    return categoryTooltip(category.category());
                 return null;
             }
         });
@@ -721,6 +745,46 @@ public class LookThroughView extends AbstractFinanceView
             }
         });
         support.addColumn(column);
+    }
+
+    private String companyColumnLabel()
+    {
+        return grouping() == Grouping.COMPANY ? Messages.LookThroughColumnCompany
+                        : MessageFormat.format(Messages.LookThroughColumnGrouped, grouping().label());
+    }
+
+    private static String categoryTooltip(Category category)
+    {
+        return switch (category)
+        {
+            case UNGROUPED_EQUITY -> Messages.LookThroughCategoryUngroupedEquityTooltip;
+            case CASH_OR_OTHER -> Messages.LookThroughCategoryCashOrOtherTooltip;
+            case UNRESOLVED -> Messages.LookThroughCategoryUnresolvedTooltip;
+            case UNVERIFIED_HOLDING -> Messages.LookThroughCategoryUnverifiedTooltip;
+            default -> null;
+        };
+    }
+
+    /** Selects, expands and shows the category row of a clicked coverage legend entry. */
+    private void revealCategory(SegmentKind kind)
+    {
+        var category = switch (kind)
+        {
+            case UNGROUPED_EQUITY -> Category.UNGROUPED_EQUITY;
+            case CASH_OR_OTHER -> Category.CASH_OR_OTHER;
+            case UNVERIFIED -> Category.UNVERIFIED_HOLDING;
+            case UNRESOLVED -> Category.UNRESOLVED;
+            default -> null;
+        };
+        if (category == null || presented == null || viewer == null || viewer.getControl().isDisposed())
+            return;
+        presented.rows().stream() //
+                        .filter(row -> row instanceof CategoryRow categoryRow && categoryRow.category() == category) //
+                        .findFirst().ifPresent(row -> {
+                            viewer.setExpandedState(row, true);
+                            viewer.setSelection(new StructuredSelection(row), true);
+                            viewer.getTree().setFocus();
+                        });
     }
 
     private String formatAmount(BigDecimal value)
@@ -825,6 +889,15 @@ public class LookThroughView extends AbstractFinanceView
             }
             companyKeys = owners;
             groupKeys = groups;
+            // companies, or groups of a grouping, ranked by the order of the total
+            var ranked = new HashMap<RowKey, Integer>();
+            for (var row : rows)
+            {
+                if (row instanceof CompanyRow
+                                || row instanceof GroupRow group && group.groupKind() == GroupKind.REGULAR)
+                    ranked.put(row.key(), ranked.size() + 1);
+            }
+            ranks = ranked;
             viewer.setExpandedElements(expanded.stream().map(byKey::get).filter(Objects::nonNull).toArray());
             viewer.setSelection(new StructuredSelection(
                             selected.stream().map(byKey::get).filter(Objects::nonNull).toList()));
@@ -924,12 +997,24 @@ public class LookThroughView extends AbstractFinanceView
         grouping = selected;
         getPreferenceStore().setValue(GROUPING_KEY, selected.name());
         updateTitle(getDefaultTitle());
+        updateCompanyColumnLabel();
         if (groupingDropDown != null)
         {
             groupingDropDown.setLabel(groupingLabel());
             groupingDropDown.setToolTip(Messages.LookThroughBreakdownBy);
         }
         applyResult();
+    }
+
+    private void updateCompanyColumnLabel()
+    {
+        if (viewer == null || viewer.getControl().isDisposed() || companyColumn == null)
+            return;
+        for (var treeColumn : viewer.getTree().getColumns())
+        {
+            if (treeColumn.getData(Column.class.getName()) == companyColumn)
+                treeColumn.setText(companyColumnLabel());
+        }
     }
 
     private void selectChart(Kind kind)

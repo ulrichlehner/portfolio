@@ -4,6 +4,7 @@ import java.text.MessageFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.jface.layout.GridLayoutFactory;
@@ -42,10 +43,18 @@ public class LookThroughCoverageBar
     private final Composite legend;
     private final Label notice;
 
+    private final Consumer<SegmentKind> onSelect;
+
     private List<Segment> segments = List.of();
 
-    public LookThroughCoverageBar(Composite parent)
+    /**
+     * @param onSelect
+     *            called when a legend entry is clicked, so the view can show
+     *            the matching table row
+     */
+    public LookThroughCoverageBar(Composite parent, Consumer<SegmentKind> onSelect)
     {
+        this.onSelect = onSelect;
         container = new Composite(parent, SWT.NONE);
         GridLayoutFactory.fillDefaults().numColumns(1).spacing(0, 4).applyTo(container);
 
@@ -121,6 +130,17 @@ public class LookThroughCoverageBar
         entry.setToolTipText(tooltip);
         swatch.setToolTipText(tooltip);
         label.setToolTipText(tooltip);
+
+        // clicking a legend entry reveals the matching category in the table
+        if (segment.kind() != SegmentKind.COMPANIES)
+        {
+            var hand = entry.getDisplay().getSystemCursor(SWT.CURSOR_HAND);
+            for (Control control : new Control[] { entry, swatch, label })
+            {
+                control.setCursor(hand);
+                control.addListener(SWT.MouseDown, event -> onSelect.accept(segment.kind()));
+            }
+        }
     }
 
     private static String tooltip(Segment segment)

@@ -2,6 +2,7 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.text.MessageFormat;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.jface.layout.GridLayoutFactory;
@@ -24,6 +25,7 @@ import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.UIConstants;
 import name.abuchen.portfolio.ui.util.Colors;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughBanner.Kind;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.SegmentKind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Summary;
 
 /**
@@ -53,8 +55,6 @@ public class LookThroughHeader
     private Label resolvedLabel;
     private Label indicator;
     private Label topTenLabel;
-    private Label effectiveLabel;
-    private Composite effectiveFigure;
     private Label largestLabel;
     private Composite fundsFigure;
     private Label fundsLabel;
@@ -69,7 +69,8 @@ public class LookThroughHeader
 
     private Optional<Kind> bannerKind;
 
-    public LookThroughHeader(Composite parent, Runnable onStop, Runnable onOpenSettings)
+    public LookThroughHeader(Composite parent, Runnable onStop, Runnable onOpenSettings,
+                    Consumer<SegmentKind> onSegment)
     {
         this.onStop = onStop;
         this.onOpenSettings = onOpenSettings;
@@ -85,7 +86,7 @@ public class LookThroughHeader
         GridDataFactory.fillDefaults().grab(true, false).hint(100, SWT.DEFAULT).applyTo(strip);
         createFigures();
 
-        coverageBar = new LookThroughCoverageBar(container);
+        coverageBar = new LookThroughCoverageBar(container, onSegment);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(coverageBar.getControl());
 
         setBanner(Optional.empty());
@@ -107,10 +108,6 @@ public class LookThroughHeader
         GridDataFactory.fillDefaults().align(SWT.BEGINNING, SWT.CENTER).applyTo(indicator);
 
         topTenLabel = createFigure(strip, Messages.LookThroughSummaryTopTen, 1).value();
-
-        var effective = createFigure(strip, Messages.LookThroughSummaryEffective, 1);
-        effectiveLabel = effective.value();
-        effectiveFigure = effective.figure();
 
         var largest = createFigure(strip, Messages.LookThroughSummaryLargest, 1);
         largestLabel = largest.value();
@@ -193,13 +190,6 @@ public class LookThroughHeader
             valueLabel.setText(summary.valueText());
             resolvedLabel.setText(summary.resolvedText().orElse(NOT_AVAILABLE));
             topTenLabel.setText(summary.topTenText().orElse(NOT_AVAILABLE));
-            effectiveLabel.setText(summary.effectiveText().orElse(NOT_AVAILABLE));
-            var tooltip = summary.effectiveCompanies()
-                            .map(value -> MessageFormat.format(Messages.LookThroughSummaryEffectiveTooltip,
-                                            LookThroughViewPresenter.effectiveCount(value)))
-                            .orElse(null);
-            effectiveFigure.setToolTipText(tooltip);
-            effectiveLabel.setToolTipText(tooltip);
             setLargest(summary.largest());
             fundsLabel.setText(summary.fundsText().orElse("")); //$NON-NLS-1$
             setVisible(fundsFigure, summary.fundsText().isPresent());
@@ -240,9 +230,6 @@ public class LookThroughHeader
         valueLabel.setText(NOT_AVAILABLE);
         resolvedLabel.setText(NOT_AVAILABLE);
         topTenLabel.setText(NOT_AVAILABLE);
-        effectiveLabel.setText(NOT_AVAILABLE);
-        effectiveFigure.setToolTipText(null);
-        effectiveLabel.setToolTipText(null);
         setLargest(Optional.empty());
         fundsLabel.setText(NOT_AVAILABLE);
         setVisible(fundsFigure, true);

@@ -1,7 +1,6 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
-import java.math.MathContext;
 import java.math.RoundingMode;
 import java.text.MessageFormat;
 import java.time.LocalDate;
@@ -229,8 +228,7 @@ public final class LookThroughViewPresenter
     public record Summary(String asOfText, String valueText, Optional<BigDecimal> resolvedShare,
                     Optional<String> resolvedText, Optional<BigDecimal> topTenShare, Optional<String> topTenText,
                     int decomposedFunds, int heldFunds, Optional<String> fundsText, boolean needsCompositions,
-                    boolean attention, String indicatorText, Optional<BigDecimal> effectiveCompanies,
-                    Optional<String> effectiveText, Optional<Largest> largest)
+                    boolean attention, String indicatorText, Optional<Largest> largest)
     {
     }
 
@@ -517,7 +515,6 @@ public final class LookThroughViewPresenter
         var concentrated = largest.filter(value -> value.share().compareTo(CONCENTRATION_THRESHOLD) > 0);
         concentrated.ifPresent(value -> notices.add(MessageFormat.format(Messages.LookThroughNoticeConcentration,
                         value.name(), value.shareText())));
-        var effective = denominator.isPresent() ? effectiveCompanies(result) : Optional.<BigDecimal>empty();
 
         var open = result.value(Category.UNRESOLVED).add(result.value(Category.UNVERIFIED_HOLDING));
         var resolvedShare = share(open, denominatorAmount).map(BigDecimal.ONE::subtract);
@@ -533,7 +530,7 @@ public final class LookThroughViewPresenter
                         funds.held() > 0 || funds.unclassified(),
                         denominator.isEmpty() || !valuation.diagnostics().isEmpty() || unverifiedNotice.isPresent()
                                         || concentrated.isPresent(),
-                        String.join("\n\n", notices), effective, effective.map(LookThroughViewPresenter::effectiveText), //$NON-NLS-1$
+                        String.join("\n\n", notices), //$NON-NLS-1$
                         largest);
 
         return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(), scopeText, denominator,
@@ -837,37 +834,6 @@ public final class LookThroughViewPresenter
         return Optional.of(MessageFormat.format(Messages.LookThroughNoticeExcluded, names));
     }
 
-    /**
-     * One divided by the sum of the squared shares of the companies, each
-     * relative to the total company exposure. Absent without company exposure.
-     */
-    private static Optional<BigDecimal> effectiveCompanies(LookThroughResult result)
-    {
-        var total = result.value(Category.COMPANY);
-        if (result.companies().isEmpty() || total.signum() <= 0)
-            return Optional.empty();
-        var squares = BigDecimal.ZERO;
-        for (var company : result.companies())
-        {
-            var weight = company.total().divide(total, MathContext.DECIMAL64);
-            squares = squares.add(weight.multiply(weight));
-        }
-        return squares.signum() > 0 ? Optional.of(BigDecimal.ONE.divide(squares, MathContext.DECIMAL64))
-                        : Optional.empty();
-    }
-
-    /** The effective number of companies as a whole number. */
-    static long effectiveCount(BigDecimal value)
-    {
-        return value.setScale(0, RoundingMode.HALF_UP).longValue();
-    }
-
-    /** The effective number of companies, rounded to a whole number. */
-    static String effectiveText(BigDecimal value)
-    {
-        return MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, effectiveCount(value));
-    }
-
     /** Combined share of the ten largest companies. */
     private Optional<BigDecimal> topTenShare(LookThroughResult result, Optional<BigDecimal> denominator)
     {
@@ -1161,7 +1127,7 @@ public final class LookThroughViewPresenter
 
     private Optional<String> shareText(Optional<BigDecimal> share)
     {
-        return share.map(value -> Values.Percent.format(value.doubleValue()));
+        return share.map(value -> Values.Percent2.format(value.doubleValue()));
     }
 
     private Completeness completeness(LookThroughResult result, Optional<Money> denominator)

@@ -81,7 +81,7 @@ class LookThroughChartPane
 
         treeMap = new LookThroughTreeMap(stackArea, stylingEngine, onSelect);
         barChart = new LookThroughBarChart(stackArea, onSelect);
-        overlapChart = new LookThroughOverlapChart(stackArea, onSelect);
+        overlapChart = new LookThroughOverlapChart(stackArea);
 
         emptyArea = new Composite(stackArea, SWT.NONE);
         emptyArea.setBackground(Colors.theme().defaultBackground());

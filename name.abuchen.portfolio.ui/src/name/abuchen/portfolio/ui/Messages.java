@@ -1016,9 +1016,13 @@ public class Messages extends NLS
     public static String LookThroughBannerSuspended;
     public static String LookThroughBreakdownBy;
     public static String LookThroughCategoryCashOrOther;
+    public static String LookThroughCategoryCashOrOtherTooltip;
     public static String LookThroughCategoryUngroupedEquity;
+    public static String LookThroughCategoryUngroupedEquityTooltip;
     public static String LookThroughCategoryUnresolved;
+    public static String LookThroughCategoryUnresolvedTooltip;
     public static String LookThroughCategoryUnverified;
+    public static String LookThroughCategoryUnverifiedTooltip;
     public static String LookThroughChartBarColor;
     public static String LookThroughChartEmpty;
     public static String LookThroughChartHeldDirectly;
@@ -1029,7 +1033,9 @@ public class Messages extends NLS
     public static String LookThroughChartTreemap;
     public static String LookThroughColumnCompany;
     public static String LookThroughColumnDirect;
+    public static String LookThroughColumnGrouped;
     public static String LookThroughColumnIndirect;
+    public static String LookThroughColumnRank;
     public static String LookThroughColumnShare;
     public static String LookThroughColumnTotal;
     public static String LookThroughCompanyDataComplete;
@@ -1073,6 +1079,7 @@ public class Messages extends NLS
     public static String LookThroughOverlapLargestShared;
     public static String LookThroughOverlapNeedTwoFunds;
     public static String LookThroughOverlapShared;
+    public static String LookThroughOverlapSharedCount;
     public static String LookThroughReasonAmbiguousClassification;
     public static String LookThroughReasonAmbiguousCompany;
     public static String LookThroughReasonAmbiguousIdentity;
@@ -1159,9 +1166,6 @@ public class Messages extends NLS
     public static String LookThroughStatusStale;
     public static String LookThroughStopRefresh;
     public static String LookThroughSummaryAsOf;
-    public static String LookThroughSummaryEffective;
-    public static String LookThroughSummaryEffectiveTooltip;
-    public static String LookThroughSummaryEffectiveValue;
     public static String LookThroughSummaryFunds;
     public static String LookThroughSummaryLargest;
     public static String LookThroughSummaryLargestTooltip;

@@ -11,13 +11,12 @@ import java.util.stream.Collectors;
 import name.abuchen.portfolio.money.Values;
 import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
 import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap.Pair;
-import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
 import name.abuchen.portfolio.ui.Messages;
 
 /**
  * What the overlap matrix shows, without any drawing: the fund names, and per
- * pair the text, the shade, the tooltip and the company that a click selects.
- * The matrix has the same fund order on both axes.
+ * pair the text, the shade and the tooltip. The matrix has the same fund order
+ * on both axes; the chart draws every pair only once.
  */
 final class LookThroughOverlapModel
 {
@@ -27,9 +26,10 @@ final class LookThroughOverlapModel
     /**
      * One off-diagonal cell. The shade is the overlap relative to the largest
      * overlap of the matrix, so small overlaps stay distinguishable; the text
-     * always shows the absolute overlap.
+     * always shows the absolute overlap and the detail the number of shared
+     * companies.
      */
-    record Cell(String text, double shade, String tooltip, Optional<Identifier> largest)
+    record Cell(String text, String detail, double shade, String tooltip)
     {
     }
 
@@ -94,8 +94,8 @@ final class LookThroughOverlapModel
             pair.shared().stream().limit(TOOLTIP_COMPANIES)
                             .forEach(shared -> lines.add(shared.label() + ": " + percent(shared.overlap()))); //$NON-NLS-1$
         }
-        return new Cell(text, shade, String.join("\n", lines), //$NON-NLS-1$
-                        pair.shared().stream().findFirst().map(FundOverlap.SharedCompany::identity));
+        return new Cell(text, MessageFormat.format(Messages.LookThroughOverlapSharedCount, pair.sharedCount()),
+                        shade, String.join("\n", lines)); //$NON-NLS-1$
     }
 
     private static String percent(BigDecimal fraction)

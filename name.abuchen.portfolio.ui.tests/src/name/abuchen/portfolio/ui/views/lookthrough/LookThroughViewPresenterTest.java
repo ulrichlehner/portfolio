@@ -1139,9 +1139,7 @@ public class LookThroughViewPresenterTest
         assertEquals(Values.Percent2.format(0.05d), cell.text());
         assertEquals(1d, cell.shade(), 1e-9);
         assertEquals(cell.text(), matrix.cell(1, 0).text());
-        assertEquals(Optional.of(new Identifier("synthetic:company", "CO-X")), cell.largest());
-        assertEquals(LookThroughViewPresenter.companyKey(new Identifier("synthetic:company", "CO-X")),
-                        cell.largest().map(LookThroughViewPresenter::companyKey).orElseThrow());
+        assertEquals(MessageFormat.format(Messages.LookThroughOverlapSharedCount, 2), cell.detail());
         var lines = cell.tooltip().split("\n");
         assertEquals("Fund A / Fund B", lines[0]);
         assertTrue(lines[1].endsWith(cell.text()));
@@ -1168,16 +1166,13 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
-    public void testEffectiveNumberOfEvenlySpreadCompaniesIsTheirCount()
+    public void testLargestCompanyOfEvenlySpreadCompanies()
     {
         for (int ii = 0; ii < 100; ii++)
             hold("c" + ii, "Synthetic c" + ii, AssetType.EQUITY, "CO-" + ii, 1, 100);
 
         var summary = model(result()).summary();
 
-        assertEquals(100d, summary.effectiveCompanies().orElseThrow().doubleValue(), 1e-9);
-        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, 100L),
-                        summary.effectiveText().orElseThrow());
         var largest = summary.largest().orElseThrow();
         amount("0.01", largest.share());
         assertEquals(Values.Percent2.format(0.01d), largest.shareText());
@@ -1200,8 +1195,6 @@ public class LookThroughViewPresenterTest
         assertTrue(summary.attention());
         assertTrue(summary.indicatorText().contains(MessageFormat.format(Messages.LookThroughNoticeConcentration,
                         "Synthetic big", Values.Percent2.format(0.12d))));
-        // 12 % big, 88 times 1 %: 1 / (0.12^2 + 88 * 0.01^2)
-        assertEquals(1d / (0.0144d + 88 * 0.0001d), summary.effectiveCompanies().orElseThrow().doubleValue(), 1e-6);
     }
 
     @Test
@@ -1211,8 +1204,6 @@ public class LookThroughViewPresenterTest
 
         var summary = model(result()).summary();
 
-        assertTrue(summary.effectiveCompanies().isEmpty());
-        assertTrue(summary.effectiveText().isEmpty());
         assertTrue(summary.largest().isEmpty());
     }
 }
