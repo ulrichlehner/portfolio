@@ -67,6 +67,11 @@ final class LookThroughSession implements RefreshGateway
     {
     }
 
+    /** Resolutions built from stored data for one stored composition. */
+    private record Restored(FundComposition composition, List<InstrumentResolution> resolutions)
+    {
+    }
+
     private final CompositionCredentials credentials;
     private final Clock clock;
     private final Executor executor;
@@ -80,6 +85,11 @@ final class LookThroughSession implements RefreshGateway
     private final Set<Key> storeMisses = new HashSet<>();
     /** Stored answers without composition per fund, read from the store once per configuration. */
     private final Map<Key, Optional<NoComposition>> noCompositions = new HashMap<>();
+    /**
+     * Resolutions of stored compositions, so repeated reads (status updates
+     * on the user interface thread) do not resolve every constituent again.
+     */
+    private final Map<Key, Restored> restored = new HashMap<>();
     private final Map<Key, CompletableFuture<Refresh>> pending = new HashMap<>();
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
@@ -283,6 +293,7 @@ final class LookThroughSession implements RefreshGateway
             {
                 storeMisses.clear();
                 noCompositions.clear();
+                restored.clear();
             }
         }
     }
@@ -315,8 +326,26 @@ final class LookThroughSession implements RefreshGateway
         // until a refresh replaces them.
         if (resolutions.isEmpty() && latest.latestAttempt().isEmpty() && retained.usableComposition().isPresent())
         {
-            restoreEvidence(account, fund);
-            resolutions = storedResolutions(account, retained.usableComposition().get().source());
+            var composition = retained.usableComposition().get().source();
+            var key = new Key(account, fund.identifiers());
+            Restored known;
+            synchronized (evidenceCache)
+            {
+                known = restored.get(key);
+            }
+            if (known != null && known.composition() == composition)
+            {
+                resolutions = known.resolutions();
+            }
+            else
+            {
+                restoreEvidence(account, fund);
+                resolutions = storedResolutions(account, composition);
+                synchronized (evidenceCache)
+                {
+                    restored.put(key, new Restored(composition, resolutions));
+                }
+            }
         }
         // A stored answer without composition shows as such after a restart.
         if (latest.latestAttempt().isEmpty() && latest.attemptedAt().isEmpty()
@@ -465,10 +494,30 @@ final class LookThroughSession implements RefreshGateway
                     CompanyEnrichmentService.RevenueSource revenue, CompanyEnrichmentService.Register register,
                     BooleanSupplier registerEnabled, CompanyEnrichmentCache cache, Executor enrichmentExecutor)
     {
+        return enableEnrichment(account, profiles, revenue, register, registerEnabled, cache, enrichmentExecutor,
+                        (task, delay) -> {
+                            // No automatic retry; the next result continues.
+                        });
+    }
+
+    /**
+     * @param enrichmentExecutor
+     *            runs the provider and the register lane; needs two threads
+     *            for them to run side by side
+     * @param retries
+     *            runs retries after a backoff or pause
+     */
+    CompanyEnrichmentService enableEnrichment(ProviderAccount account, CompanyEnrichmentService.ProfileSource profiles,
+                    CompanyEnrichmentService.RevenueSource revenue, CompanyEnrichmentService.Register register,
+                    BooleanSupplier registerEnabled, CompanyEnrichmentCache cache, Executor enrichmentExecutor,
+                    CompanyEnrichmentService.Scheduler retries)
+    {
+        // The credential state is read on the enrichment lane only, never
+        // for a snapshot on the user interface thread.
         var service = new CompanyEnrichmentService(account, profiles, revenue, () -> {
             var mode = credentials.state(account).mode();
             return mode == Mode.SECURE || mode == Mode.SESSION_ONLY;
-        }, register, registerEnabled, cache, budget, clock, enrichmentExecutor);
+        }, register, registerEnabled, cache, budget, clock, enrichmentExecutor, retries);
         service.addListener(this::notifyEnrichmentListeners);
         enrichment = service;
         return service;
@@ -500,6 +549,14 @@ final class LookThroughSession implements RefreshGateway
         var service = enrichment;
         if (service != null)
             service.schedule(companies);
+    }
+
+    /** Stops the running enrichment; answers so far are kept. */
+    void stopEnrichment()
+    {
+        var service = enrichment;
+        if (service != null)
+            service.stop();
     }
 
     /** Company attributes and pending count of the latest scheduled result; memory-only. */

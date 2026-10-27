@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -35,7 +36,8 @@ import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
 /**
  * Read-only status page for the look-through data. One line names the
  * effective storage mode (or the reason for session-only storage) and keeps
- * the restart limitation in its tooltip. The table lists each fund, and each
+ * the restart limitation in its tooltip. A second line tells how much company
+ * data is loaded and why the rest is missing. The table lists each fund, and each
  * security that is not classified yet, with a status icon and short status
  * text, the retrieval date and the decomposed share; all other facts are in
  * the row tooltip.
@@ -57,13 +59,20 @@ public class LookThroughDataStatusPane implements InformationPanePage
      * which the status model does not know.
      */
     public record Input(Model status, Map<Map<String, String>, String> decomposedShares,
-                    Set<Map<String, String>> directlyClassified)
+                    Set<Map<String, String>> directlyClassified, Optional<String> companyData)
     {
         public Input
         {
             Objects.requireNonNull(status);
             decomposedShares = Map.copyOf(decomposedShares);
             directlyClassified = Set.copyOf(directlyClassified);
+            Objects.requireNonNull(companyData);
+        }
+
+        public Input(Model status, Map<Map<String, String>, String> decomposedShares,
+                        Set<Map<String, String>> directlyClassified)
+        {
+            this(status, decomposedShares, directlyClassified, Optional.empty());
         }
 
         public Input(Model status, Map<Map<String, String>, String> decomposedShares)
@@ -80,6 +89,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
 
     private Composite container;
     private Label storageLabel;
+    private Label companyLabel;
     private Label emptyLabel;
     private TableViewer viewer;
     private Input rendered;
@@ -99,6 +109,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).applyTo(container);
 
         storageLabel = createWrappingLabel(container);
+        companyLabel = createWrappingLabel(container);
         emptyLabel = createWrappingLabel(container);
 
         var tableContainer = new Composite(container, SWT.NONE);
@@ -216,6 +227,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
 
         setText(storageLabel, status != null ? status.storageText() : ""); //$NON-NLS-1$
         storageLabel.setToolTipText(status != null ? storageTooltip(status) : null);
+        setText(companyLabel, input != null ? input.companyData().orElse("") : ""); //$NON-NLS-1$ //$NON-NLS-2$
         setText(emptyLabel, status == null ? Messages.LookThroughStatusPaneEmpty : ""); //$NON-NLS-1$
 
         container.layout(true);
@@ -229,6 +241,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         var visible = new ArrayList<Object>();
         visible.add(status.storageText());
         visible.add(storageTooltip(status));
+        visible.add(input.companyData());
         for (var fund : input.rows())
             visible.add(List.of(fund.reference(), fund.fundLabel(), fund.health(), fund.statusText(),
                             fund.refreshPending(), fund.retrievedDateText(), fund.tooltipText(),

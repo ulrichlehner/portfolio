@@ -84,6 +84,16 @@ public interface LookThroughCompositionSource
     }
 
     /**
+     * Stops the running enrichment after its current request, for example
+     * when the view is closed. Answers received so far are kept; the next
+     * {@link #enrich} continues.
+     */
+    default void stopEnrichment()
+    {
+        // No enrichment without a provider backend.
+    }
+
+    /**
      * Whether an API key is configured, for the onboarding banner. Empty when
      * the source has no credentials. Unlike the other methods this may read
      * the secure storage, so callers must not invoke it on the user interface

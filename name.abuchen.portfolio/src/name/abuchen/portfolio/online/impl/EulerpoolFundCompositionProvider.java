@@ -23,9 +23,12 @@ import java.util.TreeMap;
 import java.util.function.Predicate;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.util.Timeout;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -665,11 +668,15 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
     private static org.apache.hc.client5.http.impl.classic.CloseableHttpClient createClient()
     {
         var manager = new PoolingHttpClientConnectionManager();
-        manager.setDefaultConnectionConfig(WebAccess.defaultConnectionConfig);
+        // Bounded waits, so an unreachable host ends a request instead of
+        // blocking the background lane; the lane then backs off.
+        manager.setDefaultConnectionConfig(ConnectionConfig.custom().setConnectTimeout(Timeout.ofSeconds(5))
+                        .setSocketTimeout(Timeout.ofSeconds(20)).build());
         manager.setDefaultMaxPerRoute(16);
         manager.setMaxTotal(32);
         return HttpClientBuilder.create().setConnectionManager(manager)
-                        .setDefaultRequestConfig(WebAccess.defaultRequestConfig)
+                        .setDefaultRequestConfig(RequestConfig.copy(WebAccess.defaultRequestConfig)
+                                        .setConnectionRequestTimeout(Timeout.ofSeconds(10)).build())
                         .setUserAgent(OnlineHelper.getUserAgent()).useSystemProperties().disableRedirectHandling()
                         .disableAutomaticRetries().build();
     }

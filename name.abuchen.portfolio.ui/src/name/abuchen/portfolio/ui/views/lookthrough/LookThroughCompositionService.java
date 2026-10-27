@@ -14,6 +14,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import jakarta.inject.Singleton;
 
@@ -77,15 +79,22 @@ public final class LookThroughCompositionService
         static
         {
             // Register data is openly licensed and always cached; profiles
-            // follow the account's storage settings like compositions.
+            // follow the account's storage settings like compositions. Two
+            // threads: the provider lane and the slower register lane run
+            // side by side; retries are scheduled on the same pool.
+            var sequence = new AtomicInteger();
+            var enrichment = Executors.newScheduledThreadPool(2, runnable -> {
+                var thread = new Thread(runnable, "lookthrough-enrichment-" + sequence.incrementAndGet()); //$NON-NLS-1$
+                thread.setDaemon(true);
+                return thread;
+            });
             SESSION.enableEnrichment(EulerpoolPreferencePage.ACCOUNT, PROVIDER::profile,
                             PROVIDER::revenueRegions, new GleifCompanyRegister(),
-                            PREFERENCES::isRegisterLookupEnabled, COMPANIES, Executors.newSingleThreadExecutor(
-                                            runnable -> {
-                                                var thread = new Thread(runnable, "lookthrough-enrichment"); //$NON-NLS-1$
-                                                thread.setDaemon(true);
-                                                return thread;
-                                            }));
+                            PREFERENCES::isRegisterLookupEnabled, COMPANIES, enrichment,
+                            (task, delay) -> enrichment.schedule(task, delay.toMillis(), TimeUnit.MILLISECONDS));
+            // Stored register data is read once in the background, never by
+            // the first snapshot on the user interface thread.
+            enrichment.execute(COMPANIES::preload);
         }
 
         static
@@ -219,6 +228,12 @@ public final class LookThroughCompositionService
         public void enrich(LookThroughResult result)
         {
             Backend.SESSION.enrich(result.companies());
+        }
+
+        @Override
+        public void stopEnrichment()
+        {
+            Backend.SESSION.stopEnrichment();
         }
 
         @Override

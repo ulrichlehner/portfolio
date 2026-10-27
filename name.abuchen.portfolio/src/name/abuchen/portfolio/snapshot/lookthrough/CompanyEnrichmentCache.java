@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -54,7 +55,9 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.
  * again before it is due.
  * <p>
  * Changes are kept in memory and written by {@link #flush()}, so a long
- * enrichment pass does not rewrite the file per company. Files contain only
+ * enrichment pass does not rewrite the file per company. Files are encoded
+ * under the cache's lock but written outside it, so readers never wait for
+ * the disk; writes and deletions are serialized by a separate lock. Files contain only
  * the attributes, retrieval dates, a schema version and an integrity digest.
  * Without a directory, or after a disk failure, the cache is memory-only.
  */
@@ -185,6 +188,8 @@ public final class CompanyEnrichmentCache
     private final Clock clock;
     private final Map<String, Cached<RegisterRecord>> register = new HashMap<>();
     private final Map<ProviderAccount, Profiles> accounts = new HashMap<>();
+    /** Serializes disk writes and deletions; always taken before the cache's own lock. */
+    private final Object io = new Object();
     private boolean registerLoaded;
     private boolean registerDirty;
     private boolean diskFailure;
@@ -199,12 +204,12 @@ public final class CompanyEnrichmentCache
         this.directory = directory == null ? null : directory.toAbsolutePath().normalize();
     }
 
-    private boolean disk()
+    private synchronized boolean disk()
     {
         return directory != null && !diskFailure;
     }
 
-    private void failed()
+    private synchronized void failed()
     {
         diskFailure = true;
     }
@@ -216,10 +221,28 @@ public final class CompanyEnrichmentCache
      * persistent, the account's profile file is deleted while the session
      * keeps its profiles in memory.
      */
-    public synchronized void configure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
+    public void configure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
     {
         Objects.requireNonNull(policy);
         Objects.requireNonNull(preference);
+        synchronized (this)
+        {
+            var profiles = accounts.get(policy.account());
+            // The usual case, called often from the user interface: nothing changed.
+            if (profiles != null && policy.equals(profiles.policy) && preference.equals(profiles.preference))
+                return;
+        }
+        synchronized (io)
+        {
+            synchronized (this)
+            {
+                reconfigure(policy, preference);
+            }
+        }
+    }
+
+    private void reconfigure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
+    {
         var profiles = accounts.computeIfAbsent(policy.account(), ignored -> new Profiles());
         if (policy.equals(profiles.policy) && preference.equals(profiles.preference))
             return;
@@ -371,35 +394,63 @@ public final class CompanyEnrichmentCache
         registerDirty = true;
     }
 
-    /** Writes changed files atomically. Disk failures make the cache memory-only. */
-    public synchronized void flush()
+    /** Reads the stored register data, so a later lookup needs no disk access. */
+    public synchronized void preload()
     {
-        if (!disk())
-            return;
-        try
+        loadRegister();
+    }
+
+    /**
+     * Writes changed files atomically. Disk failures make the cache
+     * memory-only. The files are encoded under the cache's lock and written
+     * after releasing it.
+     */
+    public void flush()
+    {
+        synchronized (io)
         {
-            if (registerDirty)
+            var files = new LinkedHashMap<Path, byte[]>();
+            synchronized (this)
             {
-                write(directory.resolve(REGISTER_FILE), encodeRegister());
-                registerDirty = false;
-            }
-            for (var item : accounts.entrySet())
-            {
-                var account = item.getValue();
-                if (!account.persistent)
-                    continue;
-                for (var section : account.sections())
+                if (!disk())
+                    return;
+                try
                 {
-                    if (!section.dirty)
-                        continue;
-                    write(file(item.getKey(), section.codec), encode(item.getKey(), section));
-                    section.dirty = false;
+                    if (registerDirty)
+                    {
+                        files.put(directory.resolve(REGISTER_FILE), encodeRegister());
+                        registerDirty = false;
+                    }
+                    for (var item : accounts.entrySet())
+                    {
+                        var account = item.getValue();
+                        if (!account.persistent)
+                            continue;
+                        for (var section : account.sections())
+                        {
+                            if (!section.dirty)
+                                continue;
+                            files.put(file(item.getKey(), section.codec), encode(item.getKey(), section));
+                            section.dirty = false;
+                        }
+                    }
+                }
+                catch (IOException | RuntimeException e)
+                {
+                    failed();
+                    return;
                 }
             }
-        }
-        catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
-        {
-            failed();
+            // A withdrawal waits for the io lock, so no file is written after its deletion.
+            try
+            {
+                for (var item : files.entrySet())
+                    write(item.getKey(), item.getValue());
+            }
+            catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
+            {
+                failed();
+            }
         }
     }
 

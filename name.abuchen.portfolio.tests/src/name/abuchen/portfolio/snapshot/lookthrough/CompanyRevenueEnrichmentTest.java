@@ -1,7 +1,6 @@
 package name.abuchen.portfolio.snapshot.lookthrough;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -118,7 +117,8 @@ public class CompanyRevenueEnrichmentTest
                         "revenue " + MEDIUM), events);
         var snapshot = service.snapshot();
         var large = new Identifier(InstrumentEvidence.ISIN, LARGE);
-        assertEquals(Set.of(new Identifier(InstrumentEvidence.ISIN, SMALL)), snapshot.revenueWaiting());
+        // The budget is back only tomorrow, so the rest is not pending.
+        assertEquals(Set.of(), snapshot.revenueWaiting());
         assertEquals(Set.of(large), snapshot.revenue().keySet());
         assertEquals(0, new BigDecimal("60").compareTo(snapshot.revenue().get(large).percentOf(
                         new RevenueSplit.Member(RevenueSplit.Kind.COUNTRY, "US"))));
@@ -148,14 +148,25 @@ public class CompanyRevenueEnrichmentTest
     }
 
     @Test
-    public void testNoRequestsWithoutProfileAccessAndFailuresStopThePass()
+    public void testAFailingCompanyIsSkippedAndRepeatedFailuresStopThePass()
     {
         failures.put(LARGE, new IOException());
         var service = service(memory(), budget(1000));
         service.schedule(COMPANIES);
         service.schedule(COMPANIES);
-        assertEquals(1, events.stream().filter(event -> event.startsWith("revenue")).count());
-        assertFalse(service.snapshot().revenueWaiting().isEmpty());
+        assertEquals(3, events.stream().filter(event -> event.startsWith("revenue")).count());
+        assertTrue(service.snapshot().revenueWaiting().isEmpty());
+
+        // Three failures in a row: the provider is unavailable and the pass backs off.
+        events.clear();
+        failures.put(MEDIUM, new IOException());
+        failures.put(SMALL, new IOException());
+        var failing = service(memory(), budget(1000));
+        failing.schedule(COMPANIES);
+        assertEquals(3, events.stream().filter(event -> event.startsWith("revenue")).count());
+        assertEquals(CompanyEnrichmentService.State.UNAVAILABLE, failing.snapshot().progress().state());
+        failing.schedule(COMPANIES);
+        assertEquals(3, events.stream().filter(event -> event.startsWith("revenue")).count());
     }
 
     @Test

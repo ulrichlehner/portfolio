@@ -1032,6 +1032,13 @@ public class Messages extends NLS
     public static String LookThroughColumnIndirect;
     public static String LookThroughColumnShare;
     public static String LookThroughColumnTotal;
+    public static String LookThroughCompanyDataComplete;
+    public static String LookThroughCompanyDataLoading;
+    public static String LookThroughCompanyDataNoAccess;
+    public static String LookThroughCompanyDataNoKey;
+    public static String LookThroughCompanyDataPaused;
+    public static String LookThroughCompanyDataPausedOpen;
+    public static String LookThroughCompanyDataUnavailable;
     public static String LookThroughCoverageCaption;
     public static String LookThroughCoverageCompanies;
     public static String LookThroughCoverageUnavailable;

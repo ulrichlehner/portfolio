@@ -16,7 +16,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -119,15 +118,18 @@ public class CompanyEnrichmentServiceTest
     }
 
     @Test
-    public void testLargestCompaniesFirstWithinBudgetAndRestStaysPending()
+    public void testLargestCompaniesFirstWithinBudgetAndRestIsUnknownUntilTheBudgetIsBack()
     {
         var budget = budget(2);
         var service = service(memory(), budget);
         service.schedule(COMPANIES);
         assertEquals(List.of(LARGE, MEDIUM), profileCalls);
         var snapshot = service.snapshot();
-        assertEquals(1, snapshot.pending());
-        assertEquals(Set.of(new Identifier(InstrumentEvidence.ISIN, SMALL)), snapshot.waiting());
+        // No pass runs or retries soon, so the rest is unknown rather than pending.
+        assertEquals(0, snapshot.pending());
+        assertTrue(snapshot.waiting().isEmpty());
+        assertEquals(new CompanyEnrichmentService.Progress(2, 3, CompanyEnrichmentService.State.PAUSED,
+                        Optional.of(START.plus(Duration.ofHours(24)))), snapshot.progress());
         var small = snapshot.attributes().get(new Identifier(InstrumentEvidence.ISIN, SMALL));
         assertTrue(small.sector().isEmpty());
         assertEquals(Source.ISIN_PREFIX, small.country().orElseThrow().source());
@@ -163,23 +165,25 @@ public class CompanyEnrichmentServiceTest
     }
 
     @Test
-    public void testRegisterIsBatchedWinsCountryAndCanBeSwitchedOff()
+    public void testRegisterIsScopedWinsCountryAndCanBeSwitchedOff()
     {
         registerEnabled = true;
         var service = service(memory(), budget(100));
         service.schedule(COMPANIES);
-        assertEquals(List.of(List.of(LARGE, MEDIUM, SMALL)), registerCalls);
+        // A domicile prefix and a profile without country are looked up; a
+        // profile country equal to the ISIN prefix needs no register.
+        assertEquals(List.of(List.of(LARGE), List.of(MEDIUM)), registerCalls);
         var large = service.snapshot().attributes().get(new Identifier(InstrumentEvidence.ISIN, LARGE));
         assertEquals("HK", large.country().orElseThrow().value());
         assertEquals(Source.REGISTER, large.country().orElseThrow().source());
 
         service.schedule(COMPANIES);
-        assertEquals(1, registerCalls.size());
+        assertEquals(2, registerCalls.size());
 
         registerEnabled = false;
         clock.now = clock.now.plus(Duration.ofDays(31));
         service.schedule(COMPANIES);
-        assertEquals(1, registerCalls.size());
+        assertEquals(2, registerCalls.size());
         large = service.snapshot().attributes().get(new Identifier(InstrumentEvidence.ISIN, LARGE));
         assertEquals(Source.PROVIDER, large.country().orElseThrow().source());
     }
@@ -193,6 +197,7 @@ public class CompanyEnrichmentServiceTest
         assertTrue(profileCalls.isEmpty());
         assertEquals(0, service.snapshot().pending());
         assertTrue(service.snapshot().waiting().isEmpty());
+        assertEquals(CompanyEnrichmentService.State.NO_KEY, service.snapshot().progress().state());
     }
 
     @Test
@@ -205,17 +210,25 @@ public class CompanyEnrichmentServiceTest
         service.schedule(COMPANIES);
         assertEquals(List.of(LARGE), profileCalls);
         assertTrue(budget.isSuspended(ACCOUNT));
-        assertEquals(3, service.snapshot().pending());
+        // Denied access is no reason to wait: the companies are unknown.
+        assertEquals(0, service.snapshot().pending());
+        assertEquals(CompanyEnrichmentService.State.NO_ACCESS, service.snapshot().progress().state());
+        assertTrue(service.snapshot().progress().retryAt().isEmpty());
 
-        // Other failures back off without suspending the account.
+        // A single failing company is skipped and not asked again within the hour.
         var other = budget(100);
         profileFailures.put(LARGE, new IOException());
         profileCalls.clear();
         var retry = service(memory(), other);
         retry.schedule(COMPANIES);
         retry.schedule(COMPANIES);
-        assertEquals(List.of(LARGE), profileCalls);
+        assertEquals(List.of(LARGE, MEDIUM, SMALL), profileCalls);
         assertFalse(other.isSuspended(ACCOUNT));
+        assertEquals(CompanyEnrichmentService.State.COMPLETE, retry.snapshot().progress().state());
+
+        clock.now = clock.now.plus(Duration.ofHours(1));
+        retry.schedule(COMPANIES);
+        assertEquals(List.of(LARGE, MEDIUM, SMALL, LARGE), profileCalls);
     }
 
     @Test
@@ -228,7 +241,7 @@ public class CompanyEnrichmentServiceTest
         cache.configure(policy, Optional.empty());
         service(cache, budget(100)).schedule(COMPANIES);
         assertEquals(3, profileCalls.size());
-        assertEquals(1, registerCalls.size());
+        assertEquals(2, registerCalls.size());
 
         clock.now = clock.now.plus(Duration.ofDays(1));
         var restarted = new CompanyEnrichmentCache(path, clock);
@@ -236,7 +249,7 @@ public class CompanyEnrichmentServiceTest
         var service = service(restarted, budget(100));
         service.schedule(COMPANIES);
         assertEquals(3, profileCalls.size());
-        assertEquals(1, registerCalls.size());
+        assertEquals(2, registerCalls.size());
         assertEquals(0, service.snapshot().pending());
         assertEquals("HK", service.snapshot().attributes().get(new Identifier(InstrumentEvidence.ISIN, LARGE))
                         .country().orElseThrow().value());

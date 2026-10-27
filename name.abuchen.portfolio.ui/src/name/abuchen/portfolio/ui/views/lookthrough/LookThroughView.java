@@ -3,7 +3,10 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 import java.math.BigDecimal;
 import java.text.MessageFormat;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -15,7 +18,6 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import jakarta.inject.Inject;
@@ -100,6 +102,8 @@ public class LookThroughView extends AbstractFinanceView
     private static final String GROUPING_KEY = LookThroughView.class.getSimpleName() + "-grouping"; //$NON-NLS-1$
     private static final String SASH_KEY = LookThroughView.class.getSimpleName() + "-sash"; //$NON-NLS-1$
     private static final int[] DEFAULT_WEIGHTS = { 40, 60 };
+    /** Enrichment notifications are presented at most this often. */
+    private static final Duration ENRICHMENT_UPDATE_INTERVAL = Duration.ofMillis(1500);
 
     private final LookThroughViewPresenter presenter = new LookThroughViewPresenter();
 
@@ -116,7 +120,10 @@ public class LookThroughView extends AbstractFinanceView
     private Grouping grouping;
     private Runnable enrichmentRegistration = () -> {
     };
-    private final AtomicBoolean enrichmentUpdateQueued = new AtomicBoolean();
+    /** At most one enrichment update per interval; null before the body exists. */
+    private volatile LookThroughUpdateThrottle enrichmentThrottle;
+    /** The company data line of the status pane; user interface thread only. */
+    private Optional<String> companyData = Optional.empty();
     private Map<RowKey, Row> rowsByKey = Map.of();
     private Map<RowKey, RowKey> companyKeys = Map.of();
     private Map<RowKey, RowKey> groupKeys = Map.of();
@@ -139,7 +146,8 @@ public class LookThroughView extends AbstractFinanceView
     private ExecutorService calculationExecutor;
     private Shell shell;
     private LookThroughRecalculation<LookThroughResult> recalculation;
-    private Inputs calculatedInputs;
+    /** Read and written on the calculation thread, reset on the user interface thread. */
+    private volatile Inputs calculatedInputs;
 
     @Inject
     private ExchangeRateProviderFactory rates;
@@ -212,6 +220,7 @@ public class LookThroughView extends AbstractFinanceView
         this.compositionSource = source;
         this.calculatedInputs = null;
         this.keyConfigured = Optional.empty();
+        this.companyData = Optional.empty();
 
         if (source == null)
         {
@@ -249,22 +258,73 @@ public class LookThroughView extends AbstractFinanceView
 
     /**
      * Called on a background thread whenever company attributes changed.
-     * Notifications arriving before the user interface handled the last one
-     * are merged. Only a grouped view depends on the attributes, and it is
-     * presented again from the current result: no recalculation, no request.
+     * Notifications are coalesced to at most one update per
+     * {@link #ENRICHMENT_UPDATE_INTERVAL}.
      */
     private void onEnrichmentChanged()
     {
-        if (disposed || !enrichmentUpdateQueued.compareAndSet(false, true))
+        var throttle = enrichmentThrottle;
+        if (!disposed && throttle != null)
+            throttle.request();
+    }
+
+    /**
+     * Presents the current result again with the latest company attributes:
+     * no recalculation, no request. The snapshot and the presentation of
+     * thousands of companies are computed on the calculation thread; the user
+     * interface thread only applies the model, and only if the result and
+     * grouping are still the same. Only a grouped view depends on the
+     * attributes; every view updates the company data line.
+     */
+    private void refreshEnrichment()
+    {
+        var source = compositionSource;
+        var executor = calculationExecutor;
+        var current = result;
+        var currentGrouping = grouping();
+        if (disposed || source == null || executor == null || executor.isShutdown())
             return;
         var display = Display.getDefault();
-        if (display.isDisposed())
-            return;
-        display.asyncExec(() -> {
-            enrichmentUpdateQueued.set(false);
-            if (!disposed && result != null && grouping() != Grouping.COMPANY)
-                applyResult();
-        });
+        try
+        {
+            executor.execute(() -> {
+                CompanyEnrichmentService.Snapshot attributes;
+                LookThroughViewPresenter.Model model;
+                try
+                {
+                    attributes = source.companyAttributes();
+                    model = current != null && currentGrouping != Grouping.COMPANY
+                                    ? presenter.present(current, currentGrouping, attributes)
+                                    : null;
+                }
+                catch (RuntimeException e)
+                {
+                    PortfolioPlugin.log(e);
+                    return;
+                }
+                if (display.isDisposed())
+                    return;
+                display.asyncExec(() -> {
+                    if (disposed || source != compositionSource)
+                        return;
+                    companyData = companyText(attributes);
+                    if (model != null && current == result && currentGrouping == grouping())
+                        applyModel(model, false);
+                    else
+                        updateStatus();
+                });
+            });
+        }
+        catch (RejectedExecutionException e)
+        {
+            // The view is being disposed; nothing is left to update.
+        }
+    }
+
+    private static Optional<String> companyText(CompanyEnrichmentService.Snapshot attributes)
+    {
+        return LookThroughDataStatus.companyText(attributes.progress(), Instant.now(),
+                        ZoneId.systemDefault());
     }
 
     /** Called on the user interface thread after every status change. */
@@ -276,25 +336,50 @@ public class LookThroughView extends AbstractFinanceView
 
     /**
      * Requests a background calculation. Unless forced, nothing happens when
-     * the memory-only inputs equal those of the last request.
+     * the memory-only inputs equal those of the last request. The inputs are
+     * gathered on the calculation thread: reading the retained compositions
+     * may wait for the store while compositions are being loaded.
      */
     private void recalculate(boolean force)
     {
         var source = compositionSource;
         var client = getClient();
         var exchangeRates = rates;
-        if (disposed || recalculation == null || source == null || exchangeRates == null || client == null)
+        var executor = calculationExecutor;
+        if (disposed || recalculation == null || source == null || exchangeRates == null || client == null
+                        || executor == null || executor.isShutdown())
             return;
 
-        var funds = source.funds();
-        var retained = funds.stream().map(fund -> source.gateway().read(fund.account(), fund.fund())).toList();
-        var inputs = new Inputs(funds, retained, source.classifications());
-        if (!force && inputs.equals(calculatedInputs))
-            return;
-        calculatedInputs = inputs;
+        try
+        {
+            executor.execute(() -> {
+                if (disposed || source != compositionSource)
+                    return;
+                Inputs inputs;
+                try
+                {
+                    var funds = source.funds();
+                    var retained = funds.stream().map(fund -> source.gateway().read(fund.account(), fund.fund()))
+                                    .toList();
+                    inputs = new Inputs(funds, retained, source.classifications());
+                }
+                catch (RuntimeException e)
+                {
+                    PortfolioPlugin.log(e);
+                    return;
+                }
+                if (!force && inputs.equals(calculatedInputs))
+                    return;
+                calculatedInputs = inputs;
 
-        // The calculation reads the client but never modifies it.
-        recalculation.request(() -> calculate(client, exchangeRates, source, inputs));
+                // The calculation reads the client but never modifies it.
+                recalculation.request(() -> calculate(client, exchangeRates, source, inputs));
+            });
+        }
+        catch (RejectedExecutionException e)
+        {
+            // The view is being disposed; nothing is left to calculate.
+        }
     }
 
     private static LookThroughResult calculate(Client client, ExchangeRateProviderFactory rates,
@@ -387,6 +472,10 @@ public class LookThroughView extends AbstractFinanceView
     {
         disposed = true;
         enrichmentRegistration.run();
+        // Closing the view stops the enrichment after its current request;
+        // answers so far are kept and the next result continues.
+        if (compositionSource != null)
+            compositionSource.stopEnrichment();
         if (shell != null && !shell.isDisposed())
             shell.removeListener(SWT.Activate, shellActivation);
         Display.getDefault().timerExec(-1, automaticRefresh);
@@ -427,6 +516,17 @@ public class LookThroughView extends AbstractFinanceView
                         runnable.run();
                 });
         }, this::setResult, PortfolioPlugin::log);
+        enrichmentThrottle = new LookThroughUpdateThrottle(Clock.systemUTC(), ENRICHMENT_UPDATE_INTERVAL,
+                        (task, delay) -> {
+                            if (!display.isDisposed())
+                                display.asyncExec(() -> {
+                                    if (!disposed)
+                                        display.timerExec((int) delay.toMillis(), () -> {
+                                            if (!disposed)
+                                                task.run();
+                                        });
+                                });
+                        }, this::refreshEnrichment);
 
         var container = new Composite(parent, SWT.NONE);
         GridLayoutFactory.fillDefaults().numColumns(1).extendedMargins(5, 5, 5, 10)
@@ -666,15 +766,27 @@ public class LookThroughView extends AbstractFinanceView
             return;
         }
 
+        // The snapshot reads memory only (no credentials, no disk), so it is
+        // cheap enough here; enrichment updates are presented off this thread.
         var source = compositionSource;
         var attributes = source != null ? source.companyAttributes()
                         : CompanyEnrichmentService.Snapshot.empty();
-        var model = presenter.present(result, grouping(), attributes);
+        companyData = companyText(attributes);
+        applyModel(presenter.present(result, grouping(), attributes), true);
+    }
+
+    /** Shows a presented model of the current result; the overlap depends on the result only. */
+    private void applyModel(LookThroughViewPresenter.Model model, boolean newResult)
+    {
+        if (viewer == null || viewer.getControl().isDisposed() || chartPane == null || result == null)
+            return;
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
-        chartPane.setOverlap(FundOverlap.of(result));
-        chartPane.setModel(model.chart(), currencyCode, state);
+        if (newResult)
+            chartPane.setOverlap(FundOverlap.of(result));
+        chartPane.setModel(model.chart(), currencyCode,
+                        LookThroughViewPresenter.contentState(true, compositionSource != null));
         setRows(model.rows());
         updateStatus();
     }
@@ -928,7 +1040,9 @@ public class LookThroughView extends AbstractFinanceView
         var status = model != null ? model.status() : Optional.<LookThroughDataStatus.Model>empty();
         var shares = presented != null ? presented.decomposedShares() : Map.<Map<String, String>, String>of();
         var classified = presented != null ? presented.directlyClassified() : Set.<Map<String, String>>of();
-        setInformationPaneInput(status.map(value -> new LookThroughDataStatusPane.Input(value, shares, classified))
+        var company = companyData;
+        setInformationPaneInput(status.map(
+                        value -> new LookThroughDataStatusPane.Input(value, shares, classified, company))
                         .orElse(null));
         updateBanner(status);
         updateProgress();

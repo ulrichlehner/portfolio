@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.FormatStyle;
 import java.util.ArrayList;
@@ -18,6 +19,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import name.abuchen.portfolio.money.Values;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionProvenance;
@@ -492,6 +494,37 @@ public final class LookThroughDataStatus
             case REJECTED_NEGATIVE_WEIGHT, REJECTED_TOTAL_ABOVE_ONE, REJECTED_INVALID_WEIGHT, REJECTED, MALFORMED -> true;
             default -> false;
         };
+    }
+
+    /**
+     * One compact line on the company data of the result: how many companies
+     * with an ISIN have provider data, and why the rest is missing. Empty
+     * when no company has an ISIN. A retry time of today shows as a time,
+     * a later one with its date.
+     */
+    public static Optional<String> companyText(CompanyEnrichmentService.Progress progress, Instant now, ZoneId zone)
+    {
+        if (progress.total() == 0)
+            return Optional.empty();
+        var retry = progress.retryAt().map(at -> {
+            var local = at.atZone(zone);
+            var formatter = local.toLocalDate().equals(now.atZone(zone).toLocalDate())
+                            ? DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+                            : DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT);
+            return local.format(formatter);
+        });
+        var pattern = switch (progress.state())
+        {
+            case LOADING -> Messages.LookThroughCompanyDataLoading;
+            case NO_KEY -> Messages.LookThroughCompanyDataNoKey;
+            case NO_ACCESS -> Messages.LookThroughCompanyDataNoAccess;
+            case PAUSED -> retry.isPresent() ? Messages.LookThroughCompanyDataPaused
+                            : Messages.LookThroughCompanyDataPausedOpen;
+            case UNAVAILABLE -> retry.isPresent() ? Messages.LookThroughCompanyDataUnavailable
+                            : Messages.LookThroughCompanyDataComplete;
+            default -> Messages.LookThroughCompanyDataComplete;
+        };
+        return Optional.of(MessageFormat.format(pattern, progress.loaded(), progress.total(), retry.orElse(""))); //$NON-NLS-1$
     }
 
     /**
