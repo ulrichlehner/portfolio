@@ -1,5 +1,6 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
+import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,6 +42,8 @@ class LookThroughTreeMap
 {
     private static final int PADDING = 4;
     private static final int MINIMUM_LABEL_WIDTH = 24;
+    /** Smaller tiles get no gap, otherwise the gaps cover them entirely. */
+    private static final int MINIMUM_GAP_SIZE = 6;
 
     /** The root has no company. */
     private static final class Node
@@ -55,12 +58,12 @@ class LookThroughTreeMap
         }
     }
 
-    private static final class Tiles implements IWeightedTreeModel<Node>
+    private static final class TileModel implements IWeightedTreeModel<Node>
     {
         private final Node root;
         private final List<Node> children;
 
-        private Tiles(Node root, List<Node> children)
+        private TileModel(Node root, List<Node> children)
         {
             this.root = root;
             this.children = children;
@@ -121,12 +124,12 @@ class LookThroughTreeMap
             redraw();
         }
 
-        private ChartCompany companyAt(int x, int y)
+        private Node nodeAt(int x, int y)
         {
             if (rectangles == null)
                 return null;
             var rectangle = findRectangle(x, y);
-            return rectangle == null ? null : rectangle.getNode().company;
+            return rectangle == null ? null : rectangle.getNode();
         }
 
         @Override
@@ -168,6 +171,9 @@ class LookThroughTreeMap
             synth.height = height;
             try
             {
+                // rounding of the layout must never leave an unpainted area
+                gc.setBackground(LookThroughChartPane.indirectColor());
+                gc.fillRectangle(0, 0, width, height);
                 render(new PaintEvent(synth), rects);
             }
             finally
@@ -190,14 +196,17 @@ class LookThroughTreeMap
             stylingEngine.style(treeMap);
 
         treeMap.setTreeMapLayout(new SquarifiedLayout<>(10));
-        treeMap.setLabelProvider((tiles, rectangle) -> rectangle.getNode().company != null
-                        ? rectangle.getNode().company.label()
-                        : ""); //$NON-NLS-1$
+        treeMap.setLabelProvider((nodes, rectangle) -> {
+            var node = rectangle.getNode();
+            return node.company != null ? node.company.label() : ""; //$NON-NLS-1$
+        });
         treeMap.setRectangleRenderer(new TileRenderer());
 
         treeMap.addMouseMoveListener(event -> {
-            var company = treeMap.companyAt(event.x, event.y);
-            var tooltip = company != null ? LookThroughChartPane.tooltip(company, currencyCode) : null;
+            var node = treeMap.nodeAt(event.x, event.y);
+            String tooltip = null;
+            if (node != null && node.company != null)
+                tooltip = LookThroughChartPane.tooltip(node.company, currencyCode);
             if (!Objects.equals(tooltip, treeMap.getToolTipText()))
                 treeMap.setToolTipText(tooltip);
         });
@@ -205,9 +214,9 @@ class LookThroughTreeMap
         treeMap.addMouseListener(MouseListener.mouseUpAdapter(event -> {
             if (event.button != 1)
                 return;
-            var company = treeMap.companyAt(event.x, event.y);
-            if (company != null)
-                onSelect.accept(company.key());
+            var node = treeMap.nodeAt(event.x, event.y);
+            if (node != null && node.company != null)
+                onSelect.accept(node.company.key());
         }));
     }
 
@@ -230,13 +239,18 @@ class LookThroughTreeMap
         long sum = 0;
         for (var company : model.companies())
         {
-            var weight = Math.max(1L, company.total().setScale(0, RoundingMode.HALF_UP).longValue());
+            var weight = weight(company.total());
             children.add(new Node(company, weight));
             sum += weight;
         }
         if (children.isEmpty())
             return;
-        treeMap.setTreeModel(new Tiles(new Node(null, sum), children));
+        treeMap.setTreeModel(new TileModel(new Node(null, sum), children));
+    }
+
+    private static long weight(BigDecimal amount)
+    {
+        return Math.max(1L, amount.setScale(0, RoundingMode.HALF_UP).longValue());
     }
 
     /** Highlights the tile of the company without notifying anybody. */
@@ -271,8 +285,11 @@ class LookThroughTreeMap
             gc.fillRectangle(x, y, width, height);
 
             // thin gap between neighbours in the background color
-            gc.setForeground(Colors.theme().defaultBackground());
-            gc.drawRectangle(x, y, width - 1, height - 1);
+            if (width >= MINIMUM_GAP_SIZE && height >= MINIMUM_GAP_SIZE)
+            {
+                gc.setForeground(Colors.theme().defaultBackground());
+                gc.drawRectangle(x, y, width - 1, height - 1);
+            }
 
             drawLabel(gc, company, x, y, width, height);
 
@@ -290,16 +307,21 @@ class LookThroughTreeMap
 
         private void drawLabel(GC gc, ChartCompany company, int x, int y, int width, int height)
         {
+            drawLines(gc, x, y, width, height, company.label(), company.shareText().orElse(null));
+        }
+
+        private void drawLines(GC gc, int x, int y, int width, int height, String first, String second)
+        {
             int available = width - 2 * PADDING;
             int lineHeight = gc.getFontMetrics().getHeight();
             if (available < MINIMUM_LABEL_WIDTH || height < lineHeight + 4)
                 return;
 
             gc.setForeground(Colors.WHITE);
-            gc.drawText(shorten(gc, company.label(), available), x + PADDING, y + 3, true);
+            gc.drawText(shorten(gc, first, available), x + PADDING, y + 3, true);
 
-            if (height >= 2 * lineHeight + 8 && company.shareText().isPresent())
-                gc.drawText(shorten(gc, company.shareText().get(), available), x + PADDING, y + 3 + lineHeight, true);
+            if (height >= 2 * lineHeight + 8 && second != null)
+                gc.drawText(shorten(gc, second, available), x + PADDING, y + 3 + lineHeight, true);
         }
 
         @Override

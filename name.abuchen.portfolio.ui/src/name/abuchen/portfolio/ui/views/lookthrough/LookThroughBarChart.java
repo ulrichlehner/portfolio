@@ -38,6 +38,7 @@ class LookThroughBarChart
     private static final String DIRECT = "direct"; //$NON-NLS-1$
     private static final String INDIRECT = "indirect"; //$NON-NLS-1$
     private static final int LABEL_LENGTH = 28;
+    private static final int VALUE_GAP = 6;
 
     private final PlainChart chart;
 
@@ -46,6 +47,7 @@ class LookThroughBarChart
     private ChartModel model;
     private String currencyCode = ""; //$NON-NLS-1$
     private RowKey selectedKey;
+    private double maximum;
 
     LookThroughBarChart(Composite parent, Consumer<RowKey> onSelect)
     {
@@ -70,6 +72,7 @@ class LookThroughBarChart
             public void paintControl(PaintEvent e)
             {
                 paintSelection(e.gc);
+                paintValues(e.gc);
             }
 
             @Override
@@ -80,6 +83,7 @@ class LookThroughBarChart
         });
 
         var plot = chart.getPlotArea().getControl();
+        plot.addListener(SWT.Resize, event -> adjustRange());
         plot.addListener(SWT.MouseMove, event -> {
             var index = indexAt(event.y);
             var tooltip = index >= 0 ? LookThroughChartPane.tooltip(displayed.get(index), currencyCode) : null;
@@ -129,7 +133,7 @@ class LookThroughBarChart
         var categories = new String[top.size()];
         var direct = new double[top.size()];
         var indirect = new double[top.size()];
-        double maximum = 0;
+        maximum = 0;
         for (int ii = 0; ii < top.size(); ii++)
         {
             var company = top.get(ii);
@@ -144,8 +148,43 @@ class LookThroughBarChart
         addSeries(INDIRECT, Messages.LookThroughColumnIndirect, indirect, LookThroughChartPane.indirectColor());
 
         chart.getAxisSet().adjustRange();
-        chart.getAxisSet().getYAxis(0).setRange(new Range(0, maximum * 1.05));
+        adjustRange();
+    }
+
+    /** Leaves room right of the longest bar for its value label. */
+    private void adjustRange()
+    {
+        if (displayed.isEmpty() || maximum <= 0)
+            return;
+
+        var plot = chart.getPlotArea().getControl();
+        int width = plot.getBounds().width;
+        double upper = maximum * 1.05;
+        if (width > 0)
+        {
+            var gc = new GC(plot);
+            try
+            {
+                gc.setFont(chart.getFont());
+                int label = 0;
+                for (var company : displayed)
+                    label = Math.max(label, gc.textExtent(valueText(company)).x);
+                double free = 1 - (label + 2d * VALUE_GAP) / width;
+                upper = Math.max(upper, maximum / Math.max(free, 1 / 3d));
+            }
+            finally
+            {
+                gc.dispose();
+            }
+        }
+        chart.getAxisSet().getYAxis(0).setRange(new Range(0, upper));
         chart.redraw();
+    }
+
+    private String valueText(ChartCompany company)
+    {
+        return LookThroughViewPresenter.formatAmount(company.total(), currencyCode)
+                        + company.shareText().map(share -> " (" + share + ")").orElse(""); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
     private void addSeries(String id, String label, double[] values, org.eclipse.swt.graphics.Color color)
@@ -201,6 +240,36 @@ class LookThroughBarChart
         if (pitch == Integer.MAX_VALUE)
             pitch = bounds[0].height * 2;
         return distance <= Math.max(1, pitch / 2) ? best : -1;
+    }
+
+    /** Writes amount and share right of each bar. */
+    private void paintValues(GC gc)
+    {
+        var direct = (IBarSeries<?>) chart.getSeriesSet().getSeries(DIRECT);
+        var indirect = (IBarSeries<?>) chart.getSeriesSet().getSeries(INDIRECT);
+        if (direct == null || indirect == null)
+            return;
+        var directBounds = direct.getBounds();
+        var indirectBounds = indirect.getBounds();
+        if (directBounds == null || indirectBounds == null || directBounds.length != displayed.size()
+                        || indirectBounds.length != displayed.size())
+            return;
+
+        var foreground = gc.getForeground();
+        gc.setFont(chart.getFont());
+        gc.setForeground(Colors.theme().defaultForeground());
+        int lineHeight = gc.getFontMetrics().getHeight();
+        for (int ii = 0; ii < displayed.size(); ii++)
+        {
+            var row = directBounds[ii] != null ? directBounds[ii] : indirectBounds[ii];
+            if (row == null)
+                continue;
+            int end = row.x + row.width;
+            if (indirectBounds[ii] != null)
+                end = Math.max(end, indirectBounds[ii].x + indirectBounds[ii].width);
+            gc.drawText(valueText(displayed.get(ii)), end + VALUE_GAP, row.y + (row.height - lineHeight) / 2, true);
+        }
+        gc.setForeground(foreground);
     }
 
     private void paintSelection(GC gc)

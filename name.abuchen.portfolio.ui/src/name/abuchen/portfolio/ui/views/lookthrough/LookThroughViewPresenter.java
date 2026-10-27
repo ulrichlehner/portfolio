@@ -219,6 +219,12 @@ public final class LookThroughViewPresenter
             segments = List.copyOf(segments);
         }
 
+        /** The segments for the legend: categories without a value are left out. */
+        public List<Segment> legend()
+        {
+            return segments.stream().filter(Segment::nonzero).toList();
+        }
+
         /**
          * Distributes the available width proportionally. A nonzero segment
          * gets at least the minimum width, taken from the widest segments, so
@@ -321,7 +327,7 @@ public final class LookThroughViewPresenter
                             .filter(company -> company.total().signum() > 0) //
                             .sorted(Comparator.comparing(CompanyRow::total).reversed()) //
                             .map(company -> new ChartCompany(company.key(), company.label(), company.direct(),
-                                            company.indirect(), company.total(), company.shareText())) //
+                                            company.indirect(), company.total(), percentText(company.share()))) //
                             .toList());
         }
 
@@ -393,8 +399,9 @@ public final class LookThroughViewPresenter
         var topTenShare = topTenShare(result, denominatorAmount);
         var summary = new Summary(MessageFormat.format(Messages.LookThroughSummaryAsOf,
                         Values.Date.format(valuation.date())), valueText(valuation), resolvedShare,
-                        resolvedShare.map(value -> boundedShareText(value, value.signum() > 0, open.signum() != 0)),
-                        topTenShare, topTenShare.map(value -> Values.Percent.format(value.doubleValue())),
+                        resolvedShare.map(value -> boundedShareText(Values.Percent2, value, value.signum() > 0,
+                                        open.signum() != 0)),
+                        topTenShare, topTenShare.map(value -> Values.Percent2.format(value.doubleValue())),
                         funds.decomposed(), funds.held(),
                         funds.held() > 0 ? Optional.of(MessageFormat.format(Messages.LookThroughSummaryOf,
                                         funds.decomposed(), funds.held())) : Optional.empty(),
@@ -515,7 +522,8 @@ public final class LookThroughViewPresenter
         var nonzero = value.signum() != 0;
         var currency = result.valuation().valuedSubset().getCurrencyCode();
         return new Segment(kind, label, value, formatAmount(value, currency), fraction,
-                        boundedShareText(fraction, nonzero, value.compareTo(denominator) < 0), nonzero);
+                        boundedShareText(Values.Percent2, fraction, nonzero, value.compareTo(denominator) < 0),
+                        nonzero);
     }
 
     /**
@@ -524,12 +532,13 @@ public final class LookThroughViewPresenter
      * value whose share rounds to zero is shown as below the smallest
      * displayable share instead of as zero.
      */
-    private static String boundedShareText(BigDecimal fraction, boolean nonzero, boolean remainder)
+    private static String boundedShareText(Values<Double> format, BigDecimal fraction, boolean nonzero,
+                    boolean remainder)
     {
         var value = remainder ? fraction.setScale(4, RoundingMode.DOWN) : fraction;
-        var text = Values.Percent.format(value.doubleValue());
-        if (nonzero && text.equals(Values.Percent.format(0d)))
-            return "< " + Values.Percent.format(0.0001d); //$NON-NLS-1$
+        var text = format.format(value.doubleValue());
+        if (nonzero && text.equals(format.format(0d)))
+            return "< " + format.format(0.0001d); //$NON-NLS-1$
         return text;
     }
 
@@ -596,7 +605,8 @@ public final class LookThroughViewPresenter
                     return;
                 var resolved = decomposed.getOrDefault(security, BigDecimal.ZERO);
                 var fraction = resolved.divide(value, SHARE_SCALE, RoundingMode.DOWN);
-                var text = boundedShareText(fraction, resolved.signum() != 0, resolved.compareTo(value) < 0);
+                var text = boundedShareText(Values.Percent, fraction, resolved.signum() != 0,
+                                resolved.compareTo(value) < 0);
                 shares.putIfAbsent(LookThroughCompositionService.instrumentOf(security).identifiers(), text);
             });
             return shares;
@@ -751,6 +761,12 @@ public final class LookThroughViewPresenter
     private Optional<BigDecimal> share(BigDecimal value, Optional<BigDecimal> denominator)
     {
         return denominator.map(amount -> value.divide(amount, SHARE_SCALE, RoundingMode.HALF_UP));
+    }
+
+    /** Share with a percent sign, for texts without a percent column. */
+    private static Optional<String> percentText(Optional<BigDecimal> share)
+    {
+        return share.map(value -> Values.Percent2.format(value.doubleValue()));
     }
 
     private Optional<String> shareText(Optional<BigDecimal> share)

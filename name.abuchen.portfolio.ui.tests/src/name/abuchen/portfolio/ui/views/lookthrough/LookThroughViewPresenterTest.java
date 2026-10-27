@@ -483,7 +483,8 @@ public class LookThroughViewPresenterTest
         amount("6000", entry.indirect());
         amount("9000", entry.total());
         assertEquals(1d / 3d, entry.directFraction(), 0.0001);
-        assertEquals(company(model, "Synthetic company").shareText(), entry.shareText());
+        assertEquals(company(model, "Synthetic company").share().map(share -> Values.Percent2.format(share.doubleValue())),
+                        entry.shareText());
 
         // cash, ungrouped equities and the unresolved fund stay out
         amount("1000", category(model, Category.CASH_OR_OTHER).value());
@@ -518,6 +519,22 @@ public class LookThroughViewPresenterTest
         for (int ii = 1; ii < chart.companies().size(); ii++)
             assertTrue(chart.companies().get(ii - 1).total().compareTo(chart.companies().get(ii).total()) >= 0);
         assertEquals(chart.companies().subList(0, 20), chart.top());
+    }
+
+    @Test
+    public void testLegendListsOnlyCategoriesWithAValue()
+    {
+        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-CO", 1, 10);
+        hold("fund", "Synthetic fund holding", AssetType.FUND, null, 1, 100);
+        var company = instrument("company", AssetType.EQUITY, "SYNTH-CO");
+        composition(instruments.get("fund"), row(company, "1"));
+
+        var coverage = model(result()).coverage().orElseThrow();
+
+        assertTrue(coverage.segments().stream().anyMatch(segment -> !segment.nonzero()));
+        assertFalse(coverage.legend().isEmpty());
+        assertTrue(coverage.legend().stream().allMatch(Segment::nonzero));
+        assertEquals(coverage.segments().stream().filter(Segment::nonzero).toList(), coverage.legend());
     }
 
     @Test
@@ -684,7 +701,7 @@ public class LookThroughViewPresenterTest
         var resolved = BigDecimal.ONE.subtract(new BigDecimal("8000").divide(new BigDecimal("23000"), 6,
                         RoundingMode.HALF_UP));
         amount(resolved.toPlainString(), summary.resolvedShare().orElseThrow());
-        assertEquals(Values.Percent.format(resolved.setScale(4, RoundingMode.DOWN).doubleValue()),
+        assertEquals(Values.Percent2.format(resolved.setScale(4, RoundingMode.DOWN).doubleValue()),
                         summary.resolvedText().orElseThrow());
         amount(new BigDecimal("12000").divide(new BigDecimal("23000"), 6, RoundingMode.HALF_UP).toPlainString(),
                         summary.topTenShare().orElseThrow());
@@ -725,9 +742,9 @@ public class LookThroughViewPresenterTest
 
         amount("100", unresolved.value());
         assertTrue(unresolved.nonzero());
-        assertEquals("< " + Values.Percent.format(0.0001d), unresolved.shareText());
-        assertNotEquals(Values.Percent.format(1d), model.summary().resolvedText().orElseThrow());
-        assertNotEquals(Values.Percent.format(1d), segment(model, SegmentKind.COMPANIES).shareText());
+        assertEquals("< " + Values.Percent2.format(0.0001d), unresolved.shareText());
+        assertNotEquals(Values.Percent2.format(1d), model.summary().resolvedText().orElseThrow());
+        assertNotEquals(Values.Percent2.format(1d), segment(model, SegmentKind.COMPANIES).shareText());
         assertNotEquals(Values.Percent.format(1d), model.decomposedShares().get(Map.of("ISIN", "SYNTH-big-fund")));
 
         var coverage = model.coverage().orElseThrow();
@@ -771,7 +788,7 @@ public class LookThroughViewPresenterTest
         assertFalse(summary.attention());
         assertEquals(0, summary.heldFunds());
         assertTrue(summary.fundsText().isEmpty());
-        assertEquals(Values.Percent.format(1d), summary.resolvedText().orElseThrow());
+        assertEquals(Values.Percent2.format(1d), summary.resolvedText().orElseThrow());
     }
 
     @Test

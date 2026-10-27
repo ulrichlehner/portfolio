@@ -83,8 +83,14 @@ public class LookThroughCoverageBar
 
         for (var child : legend.getChildren())
             child.dispose();
-        for (var segment : segments)
-            createLegendEntry(segment);
+        if (coverage.isPresent())
+        {
+            var caption = new Label(legend, SWT.NONE);
+            caption.setText(Messages.LookThroughCoverageCaption);
+            caption.setForeground(Colors.theme().grayForeground());
+            for (var segment : coverage.get().legend())
+                createLegendEntry(segment);
+        }
 
         var present = coverage.isPresent();
         setVisible(bar, present);
@@ -185,7 +191,7 @@ public class LookThroughCoverageBar
         {
             case COMPANIES -> Colors.getColor(31, 119, 180); // 1F77B4
             case UNGROUPED_EQUITY -> Colors.getColor(126, 178, 221); // 7EB2DD
-            case CASH_OR_OTHER -> Colors.getColor(143, 207, 112); // 8FCF70
+            case CASH_OR_OTHER -> Colors.getColor(154, 165, 177); // 9AA5B1
             case UNVERIFIED -> Colors.getColor(148, 103, 189); // 9467BD
             case UNRESOLVED -> Colors.theme().warningForeground();
             default -> Colors.OTHER_CATEGORY;

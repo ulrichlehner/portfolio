@@ -42,6 +42,7 @@ class LookThroughChartPane
     }
 
     private static final int SWATCH_SIZE = 10;
+    private static final int SCALE_WIDTH = 80;
 
     private final Composite container;
     private final Composite stackArea;
@@ -56,6 +57,7 @@ class LookThroughChartPane
     private ChartModel model = new ChartModel(List.of());
     private String currencyCode = ""; //$NON-NLS-1$
     private ContentState state = ContentState.CALCULATED;
+    private Kind legendKind;
 
     LookThroughChartPane(Composite parent, IStylingEngine stylingEngine, Consumer<RowKey> onSelect)
     {
@@ -84,8 +86,6 @@ class LookThroughChartPane
         legend.setBackground(Colors.theme().defaultBackground());
         RowLayoutFactory.fillDefaults().spacing(16).margins(4, 2).applyTo(legend);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(legend);
-        createLegendEntry(Messages.LookThroughColumnDirect, directColor());
-        createLegendEntry(Messages.LookThroughColumnIndirect, indirectColor());
 
         update();
     }
@@ -161,10 +161,67 @@ class LookThroughChartPane
             top = barChart.getControl();
         }
 
+        updateLegend();
         stack.topControl = top;
         ((org.eclipse.swt.layout.GridData) legend.getLayoutData()).exclude = model.isEmpty();
         legend.setVisible(!model.isEmpty());
         container.layout(true, true);
+    }
+
+    /** The treemap legend is a color scale, the bar chart legend has two swatches. */
+    private void updateLegend()
+    {
+        if (legendKind == kind)
+            return;
+        legendKind = kind;
+
+        for (var child : legend.getChildren())
+            child.dispose();
+
+        var caption = new Label(legend, SWT.NONE);
+        caption.setBackground(Colors.theme().defaultBackground());
+        caption.setForeground(Colors.theme().grayForeground());
+
+        if (kind == Kind.TREEMAP)
+        {
+            caption.setText(Messages.LookThroughChartTileColor);
+            createScale();
+        }
+        else
+        {
+            caption.setText(Messages.LookThroughChartBarColor);
+            createLegendEntry(Messages.LookThroughChartHeldDirectly, directColor());
+            createLegendEntry(Messages.LookThroughChartThroughFunds, indirectColor());
+        }
+        legend.layout(true, true);
+    }
+
+    /** Gradient from the color of directly held tiles to the color of tiles through funds. */
+    private void createScale()
+    {
+        var entry = new Composite(legend, SWT.NONE);
+        entry.setBackground(Colors.theme().defaultBackground());
+        GridLayoutFactory.fillDefaults().numColumns(3).spacing(4, 0).applyTo(entry);
+
+        createText(entry, Messages.LookThroughChartHeldDirectly);
+
+        var scale = new Canvas(entry, SWT.NONE);
+        GridDataFactory.fillDefaults().align(SWT.CENTER, SWT.CENTER).hint(SCALE_WIDTH, SWATCH_SIZE).applyTo(scale);
+        scale.addPaintListener(event -> {
+            event.gc.setForeground(directColor());
+            event.gc.setBackground(indirectColor());
+            event.gc.fillGradientRectangle(0, 0, SCALE_WIDTH, SWATCH_SIZE, false);
+        });
+
+        createText(entry, Messages.LookThroughChartThroughFunds);
+    }
+
+    private void createText(Composite parent, String text)
+    {
+        var label = new Label(parent, SWT.NONE);
+        label.setText(text);
+        label.setBackground(Colors.theme().defaultBackground());
+        label.setForeground(Colors.theme().defaultForeground());
     }
 
     private void createLegendEntry(String text, Color color)
@@ -180,10 +237,7 @@ class LookThroughChartPane
             event.gc.fillRectangle(0, 0, SWATCH_SIZE, SWATCH_SIZE);
         });
 
-        var label = new Label(entry, SWT.NONE);
-        label.setText(text);
-        label.setBackground(Colors.theme().defaultBackground());
-        label.setForeground(Colors.theme().defaultForeground());
+        createText(entry, text);
     }
 
     /** Mid-tone for the part held directly, readable on light and dark themes. */

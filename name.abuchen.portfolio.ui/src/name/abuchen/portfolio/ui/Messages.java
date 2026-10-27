@@ -1015,7 +1015,11 @@ public class Messages extends NLS
     public static String LookThroughCategoryUngroupedEquity;
     public static String LookThroughCategoryUnresolved;
     public static String LookThroughCategoryUnverified;
+    public static String LookThroughChartBarColor;
     public static String LookThroughChartEmpty;
+    public static String LookThroughChartHeldDirectly;
+    public static String LookThroughChartThroughFunds;
+    public static String LookThroughChartTileColor;
     public static String LookThroughChartTopCompanies;
     public static String LookThroughChartTreemap;
     public static String LookThroughColumnCompany;
@@ -1024,6 +1028,7 @@ public class Messages extends NLS
     public static String LookThroughColumnShare;
     public static String LookThroughColumnSource;
     public static String LookThroughColumnTotal;
+    public static String LookThroughCoverageCaption;
     public static String LookThroughCoverageCompanies;
     public static String LookThroughCoverageUnavailable;
     public static String LookThroughDetailUnnamedInstrument;

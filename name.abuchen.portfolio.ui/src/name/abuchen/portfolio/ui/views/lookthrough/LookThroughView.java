@@ -38,6 +38,7 @@ import org.eclipse.jface.window.ToolTip;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.SashForm;
 import org.eclipse.swt.custom.StackLayout;
+import org.eclipse.swt.widgets.Canvas;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
@@ -354,6 +355,18 @@ public class LookThroughView extends AbstractFinanceView
         super.dispose();
     }
 
+    /** A thin line across the view; native separators are not visible on all themes. */
+    private static void createSeparator(Composite parent)
+    {
+        var separator = new Canvas(parent, SWT.NONE);
+        GridDataFactory.fillDefaults().grab(true, false).hint(SWT.DEFAULT, 1).applyTo(separator);
+        separator.addPaintListener(event -> {
+            event.gc.setBackground(Colors.theme().defaultForeground());
+            event.gc.setAlpha(80);
+            event.gc.fillRectangle(0, 0, separator.getSize().x, 1);
+        });
+    }
+
     @Override
     protected Control createBody(Composite parent)
     {
@@ -372,14 +385,21 @@ public class LookThroughView extends AbstractFinanceView
         }, this::setResult, PortfolioPlugin::log);
 
         var container = new Composite(parent, SWT.NONE);
-        GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).spacing(0, 8).applyTo(container);
+        GridLayoutFactory.fillDefaults().numColumns(1).extendedMargins(5, 5, 5, 10)
+                        .spacing(0, 8).applyTo(container);
 
         header = new LookThroughHeader(container, this::stopRefresh, this::openProviderSettings);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(header.getControl());
 
+        // separates the header from chart and table
+        createSeparator(container);
+
         // chart and table side by side; the weights are kept in the preferences
         var sash = new SashForm(container, SWT.HORIZONTAL);
         GridDataFactory.fillDefaults().grab(true, true).applyTo(sash);
+
+        // separates the view from the data status pane below
+        createSeparator(container);
 
         chartPane = new LookThroughChartPane(sash, getStylingEngine(), this::selectCompany);
         chartPane.setKind(chartKind());
@@ -663,8 +683,11 @@ public class LookThroughView extends AbstractFinanceView
     private void selectCompany(RowKey key)
     {
         var row = rowsByKey.get(key);
-        if (row != null)
-            viewer.setSelection(new StructuredSelection(row), true);
+        if (row == null)
+            return;
+        viewer.setSelection(new StructuredSelection(row), true);
+        viewer.setExpandedState(row, true);
+        viewer.reveal(row);
     }
 
     /**
