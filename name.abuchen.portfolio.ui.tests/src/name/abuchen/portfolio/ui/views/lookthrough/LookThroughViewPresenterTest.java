@@ -297,7 +297,7 @@ public class LookThroughViewPresenterTest
         assertEquals(1, directRows.size());
         assertEquals(direct.getName(), directRows.get(0).origin());
         assertEquals("", directRows.get(0).path());
-        assertTrue(directRows.get(0).sourceText().contains(direct.getName()));
+        assertEquals(Messages.LookThroughSourceDirect, directRows.get(0).sourceText());
         amount("3000", directRows.get(0).value());
 
         var indirectRows = companyRow.contributions().stream().filter(contribution -> !contribution.direct()).toList();
@@ -1133,7 +1133,8 @@ public class LookThroughViewPresenterTest
         var summary = model(result()).summary();
 
         assertEquals(100d, summary.effectiveCompanies().orElseThrow().doubleValue(), 1e-9);
-        assertEquals("100", summary.effectiveText().orElseThrow());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, 100L),
+                        summary.effectiveText().orElseThrow());
         var largest = summary.largest().orElseThrow();
         amount("0.01", largest.share());
         assertEquals(Values.Percent2.format(0.01d), largest.shareText());

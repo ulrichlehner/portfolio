@@ -54,6 +54,7 @@ public class LookThroughHeader
     private Label indicator;
     private Label topTenLabel;
     private Label effectiveLabel;
+    private Composite effectiveFigure;
     private Label largestLabel;
     private Composite fundsFigure;
     private Label fundsLabel;
@@ -109,8 +110,7 @@ public class LookThroughHeader
 
         var effective = createFigure(strip, Messages.LookThroughSummaryEffective, 1);
         effectiveLabel = effective.value();
-        effective.figure().setToolTipText(Messages.LookThroughSummaryEffectiveTooltip);
-        effectiveLabel.setToolTipText(Messages.LookThroughSummaryEffectiveTooltip);
+        effectiveFigure = effective.figure();
 
         var largest = createFigure(strip, Messages.LookThroughSummaryLargest, 1);
         largestLabel = largest.value();
@@ -194,6 +194,12 @@ public class LookThroughHeader
             resolvedLabel.setText(summary.resolvedText().orElse(NOT_AVAILABLE));
             topTenLabel.setText(summary.topTenText().orElse(NOT_AVAILABLE));
             effectiveLabel.setText(summary.effectiveText().orElse(NOT_AVAILABLE));
+            var tooltip = summary.effectiveCompanies()
+                            .map(value -> MessageFormat.format(Messages.LookThroughSummaryEffectiveTooltip,
+                                            LookThroughViewPresenter.effectiveCount(value)))
+                            .orElse(null);
+            effectiveFigure.setToolTipText(tooltip);
+            effectiveLabel.setToolTipText(tooltip);
             setLargest(summary.largest());
             fundsLabel.setText(summary.fundsText().orElse("")); //$NON-NLS-1$
             setVisible(fundsFigure, summary.fundsText().isPresent());
@@ -235,6 +241,8 @@ public class LookThroughHeader
         resolvedLabel.setText(NOT_AVAILABLE);
         topTenLabel.setText(NOT_AVAILABLE);
         effectiveLabel.setText(NOT_AVAILABLE);
+        effectiveFigure.setToolTipText(null);
+        effectiveLabel.setToolTipText(null);
         setLargest(Optional.empty());
         fundsLabel.setText(NOT_AVAILABLE);
         setVisible(fundsFigure, true);

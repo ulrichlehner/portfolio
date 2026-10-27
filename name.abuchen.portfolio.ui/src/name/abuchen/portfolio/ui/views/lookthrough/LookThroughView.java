@@ -165,7 +165,7 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected String getDefaultTitle()
     {
-        return Messages.LookThroughViewTitle;
+        return MessageFormat.format(Messages.LookThroughViewTitle, grouping().label());
     }
 
     /**
@@ -512,8 +512,14 @@ public class LookThroughView extends AbstractFinanceView
             @Override
             public String getText(Object element)
             {
+                if (element instanceof ContributionRow contribution)
+                    return contribution.sourceText();
                 if (element instanceof DetailRow detail)
-                    return detail.label().isBlank() ? Messages.LookThroughDetailUnnamedInstrument : detail.label();
+                {
+                    var label = detail.label().isBlank() ? Messages.LookThroughDetailUnnamedInstrument
+                                    : detail.label();
+                    return label + " (" + detail.sourceText() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+                }
                 return ((Row) element).label();
             }
 
@@ -522,6 +528,10 @@ public class LookThroughView extends AbstractFinanceView
             {
                 if (element instanceof ExcludedRow excluded)
                     return excluded.reasonText();
+                if (element instanceof ContributionRow contribution)
+                    return contribution.label();
+                if (element instanceof GroupRow group)
+                    return MessageFormat.format(Messages.LookThroughGroupCompanies, group.count());
                 if (element instanceof DetailRow detail)
                     return detail.note();
                 if (element instanceof CompanyRow company)
@@ -530,23 +540,6 @@ public class LookThroughView extends AbstractFinanceView
             }
         });
         column.setRemovable(false);
-        support.addColumn(column);
-
-        column = new Column("source", Messages.LookThroughColumnSource, SWT.NONE, 280); //$NON-NLS-1$
-        column.setLabelProvider(new ColumnLabelProvider()
-        {
-            @Override
-            public String getText(Object element)
-            {
-                if (element instanceof ContributionRow contribution)
-                    return contribution.sourceText();
-                if (element instanceof DetailRow detail)
-                    return detail.sourceText();
-                if (element instanceof GroupRow group)
-                    return MessageFormat.format(Messages.LookThroughGroupCompanies, group.count());
-                return null;
-            }
-        });
         support.addColumn(column);
 
         column = new Column("note", Messages.ColumnNote, SWT.NONE, 300); //$NON-NLS-1$
@@ -833,6 +826,7 @@ public class LookThroughView extends AbstractFinanceView
             return;
         grouping = selected;
         getPreferenceStore().setValue(GROUPING_KEY, selected.name());
+        updateTitle(getDefaultTitle());
         if (groupingDropDown != null)
         {
             groupingDropDown.setLabel(groupingLabel());

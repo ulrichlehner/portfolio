@@ -1031,7 +1031,6 @@ public class Messages extends NLS
     public static String LookThroughColumnDirect;
     public static String LookThroughColumnIndirect;
     public static String LookThroughColumnShare;
-    public static String LookThroughColumnSource;
     public static String LookThroughColumnTotal;
     public static String LookThroughCoverageCaption;
     public static String LookThroughCoverageCompanies;
@@ -1153,6 +1152,7 @@ public class Messages extends NLS
     public static String LookThroughSummaryAsOf;
     public static String LookThroughSummaryEffective;
     public static String LookThroughSummaryEffectiveTooltip;
+    public static String LookThroughSummaryEffectiveValue;
     public static String LookThroughSummaryFunds;
     public static String LookThroughSummaryLargest;
     public static String LookThroughSummaryLargestTooltip;

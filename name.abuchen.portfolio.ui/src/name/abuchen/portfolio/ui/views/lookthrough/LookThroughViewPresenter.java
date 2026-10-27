@@ -3,7 +3,6 @@ package name.abuchen.portfolio.ui.views.lookthrough;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
-import java.text.NumberFormat;
 import java.text.MessageFormat;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -819,12 +818,16 @@ public final class LookThroughViewPresenter
                         : Optional.empty();
     }
 
-    /** A whole number from 100 on, otherwise one decimal. */
+    /** The effective number of companies as a whole number. */
+    static long effectiveCount(BigDecimal value)
+    {
+        return value.setScale(0, RoundingMode.HALF_UP).longValue();
+    }
+
+    /** The effective number of companies, rounded to a whole number. */
     static String effectiveText(BigDecimal value)
     {
-        var format = NumberFormat.getNumberInstance();
-        format.setMaximumFractionDigits(value.compareTo(BigDecimal.valueOf(99.95)) >= 0 ? 0 : 1);
-        return format.format(value);
+        return MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, effectiveCount(value));
     }
 
     /** Combined share of the ten largest companies. */
@@ -1005,8 +1008,7 @@ public final class LookThroughViewPresenter
     {
         var path = pathText(contribution);
         var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
-        var sourceText = contribution.isDirect()
-                        ? MessageFormat.format(Messages.LookThroughSourceDirect, origin)
+        var sourceText = contribution.isDirect() ? Messages.LookThroughSourceDirect
                         : MessageFormat.format(Messages.LookThroughSourceIndirect, path, origin);
 
         var share = share(contribution.value(), denominator);
@@ -1040,8 +1042,7 @@ public final class LookThroughViewPresenter
     {
         var path = pathText(contribution);
         var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
-        var sourceText = contribution.isDirect()
-                        ? MessageFormat.format(Messages.LookThroughSourceDirect, origin)
+        var sourceText = contribution.isDirect() ? Messages.LookThroughSourceDirect
                         : MessageFormat.format(Messages.LookThroughSourceIndirect, path, origin);
         var share = share(contribution.value(), denominator);
         return new DetailRow(keys.unique(sourceKey(parent, contribution)),
