@@ -304,4 +304,163 @@ public class CompositionValidatorTest
             assertTrue(result.rows().getFirst().source().instrument().identifiers().isEmpty());
         }
     }
+
+    private Constituent identified(String id, String weight)
+    {
+        return new Constituent(new CompositionInstrument("Synthetic share " + id, Map.of("test", id)),
+                        Optional.of(weight));
+    }
+
+    private Constituent unidentified(String label, String weight)
+    {
+        return new Constituent(new CompositionInstrument(label, Map.of()), Optional.of(weight));
+    }
+
+    private FundComposition verified(Constituent... rows)
+    {
+        return snapshot(Denominator.TOTAL_FUND_NAV, ExposureBasis.PHYSICAL_HOLDINGS, Completeness.UNKNOWN,
+                        List.of(rows));
+    }
+
+    @Test
+    public void testNegativeRowsWithoutIdentifierAreNettedIntoOneUnresolvedRow()
+    {
+        var source = verified(identified("a", "0.6"), unidentified("Synthetic cash", "0.0005"),
+                        identified("b", "0.39965"), unidentified("Synthetic forward", "-0.00015"));
+        var original = List.copyOf(source.constituents());
+
+        for (var result : List.of(validator.validate(source), validator.validateArithmetic(source)))
+        {
+            assertTrue(result.isUsable());
+            assertTrue(result.fatalDiagnostics().isEmpty());
+            assertEquals(List.of(new Diagnostic(Reason.NETTED_IDENTIFIERLESS_ROWS, Optional.empty())),
+                            result.diagnostics());
+            assertEquals(3, result.rows().size());
+            assertEquals(new BigDecimal("0.6"), result.rows().get(0).weight());
+            assertEquals(0, result.rows().get(0).sourceIndex());
+            assertEquals(1, result.rows().get(1).sourceIndex());
+            assertSame(source.constituents().get(1), result.rows().get(1).source());
+            assertEquals(new BigDecimal("0.00035"), result.rows().get(1).weight());
+            assertEquals(new BigDecimal("0.39965"), result.rows().get(2).weight());
+            assertEquals(2, result.rows().get(2).sourceIndex());
+            assertEquals(0, result.shortfall().orElseThrow().signum());
+            assertEquals(0, result.rows().stream().map(r -> r.weight()).reduce(BigDecimal.ZERO, BigDecimal::add)
+                            .compareTo(BigDecimal.ONE));
+        }
+
+        assertEquals(original, source.constituents());
+        assertEquals("-0.00015", source.constituents().get(3).weight().orElseThrow());
+    }
+
+    @Test
+    public void testNettedRowUsesLargestPositiveRowWithoutIdentifier()
+    {
+        var source = verified(unidentified("Synthetic small", "0.001"), identified("a", "0.9"),
+                        unidentified("Synthetic large", "0.002"), unidentified("Synthetic negative", "-0.0005"));
+        var result = validator.validate(source);
+
+        assertTrue(result.isUsable());
+        assertEquals(2, result.rows().size());
+        assertEquals(1, result.rows().get(0).sourceIndex());
+        assertEquals(2, result.rows().get(1).sourceIndex());
+        assertEquals(new BigDecimal("0.0025"), result.rows().get(1).weight());
+        assertEquals(new BigDecimal("0.0975"), result.shortfall().orElseThrow());
+    }
+
+    @Test
+    public void testRowsWithoutIdentifierStaySeparateWithoutNegativeRow()
+    {
+        var source = verified(identified("a", "0.9"), unidentified("Synthetic cash", "0.05"),
+                        unidentified("Synthetic other", "0.05"));
+        var result = validator.validate(source);
+
+        assertTrue(result.isUsable());
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(3, result.rows().size());
+        assertEquals(new BigDecimal("0.05"), result.rows().get(1).weight());
+        assertEquals(new BigDecimal("0.05"), result.rows().get(2).weight());
+    }
+
+    @Test
+    public void testNegativeNetWithoutIdentifierRejects()
+    {
+        var source = verified(identified("a", "0.9"), unidentified("Synthetic cash", "0.0001"),
+                        unidentified("Synthetic forward", "-0.0002"));
+
+        var result = validator.validate(source);
+        assertRejected(result, Reason.NEGATIVE_WEIGHT, Optional.empty());
+        assertEquals(List.of(new Diagnostic(Reason.NEGATIVE_WEIGHT, Optional.empty())), result.diagnostics());
+        assertFalse(validator.validateArithmetic(source).isUsable());
+    }
+
+    @Test
+    public void testNegativeIdentifiedRowRejectsEvenIfRowsWithoutIdentifierCouldAbsorbIt()
+    {
+        var source = verified(identified("a", "0.9"), identified("short", "-0.0001"),
+                        unidentified("Synthetic cash", "0.01"), unidentified("Synthetic forward", "-0.0001"));
+
+        var result = validator.validate(source);
+        assertRejected(result, Reason.NEGATIVE_WEIGHT, Optional.of(1));
+        assertEquals(List.of(new Diagnostic(Reason.NEGATIVE_WEIGHT, Optional.of(1))), result.diagnostics());
+        assertFalse(validator.validateArithmetic(source).isUsable());
+    }
+
+    @Test
+    public void testNettingDoesNotHideOverfullTotal()
+    {
+        var source = verified(identified("a", "1.01"), unidentified("Synthetic cash", "0.002"),
+                        unidentified("Synthetic forward", "-0.001"));
+
+        var result = validator.validate(source);
+        assertRejected(result, Reason.TOTAL_EXCEEDS_ONE, Optional.empty());
+        assertTrue(result.diagnostics().stream().allMatch(Diagnostic::isFatal));
+    }
+
+    @Test
+    public void testNettingKeepsMissingWeightFatal()
+    {
+        var source = verified(identified("a", "0.9"), unidentified("Synthetic cash", "0.002"),
+                        unidentified("Synthetic forward", "-0.001"),
+                        new Constituent(new CompositionInstrument("Synthetic gap", Map.of()), Optional.empty()));
+
+        assertRejected(validator.validate(source), Reason.MISSING_WEIGHT, Optional.of(3));
+    }
+
+    @Test
+    public void testZeroNetWithoutIdentifierLeavesNoNettedRow()
+    {
+        var source = verified(identified("a", "0.7"), unidentified("Synthetic cash", "0.0003"),
+                        identified("b", "0.3"), unidentified("Synthetic forward", "-0.0003"));
+        var result = validator.validate(source);
+
+        assertTrue(result.isUsable());
+        assertTrue(result.diagnostics().contains(new Diagnostic(Reason.NETTED_IDENTIFIERLESS_ROWS, Optional.empty())));
+        assertEquals(2, result.rows().size());
+        assertEquals(new BigDecimal("0.7"), result.rows().get(0).weight());
+        assertEquals(new BigDecimal("0.3"), result.rows().get(1).weight());
+        assertEquals(0, result.shortfall().orElseThrow().signum());
+        assertEquals(4, result.source().constituents().size());
+    }
+
+    @Test
+    public void testNettedRowsTakePartInRoundingExcessCorrection()
+    {
+        var source = verified(identified("a", "0.6"), identified("b", "0.3999995"),
+                        unidentified("Synthetic cash", "0.000002"), unidentified("Synthetic forward", "-0.000001"));
+        var result = validator.validate(source);
+
+        assertTrue(result.isUsable());
+        assertEquals(3, result.rows().size());
+        assertEquals(BigDecimal.ZERO, result.shortfall().orElseThrow());
+        assertEquals(0, result.rows().stream().map(r -> r.weight()).reduce(BigDecimal.ZERO, BigDecimal::add)
+                        .compareTo(BigDecimal.ONE));
+        assertEquals("0.000002", source.constituents().get(2).weight().orElseThrow());
+    }
+
+    @Test
+    public void testOnlyNettingDiagnosticIsNotFatal()
+    {
+        for (var reason : Reason.values())
+            assertEquals(reason != Reason.NETTED_IDENTIFIERLESS_ROWS, reason.isFatal());
+    }
 }

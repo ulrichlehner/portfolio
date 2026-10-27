@@ -437,6 +437,54 @@ public class LookThroughDataStatusTest
         assertEquals("Rejected: missing or invalid weights", rejected(weighted("0.5", "n/a")).statusText());
     }
 
+    private static FundComposition withUnidentifiedRows(FundComposition.Denominator denominator, String identified,
+                    String... unidentified)
+    {
+        var provenance = new CompositionProvenance(ACCOUNT, FUND, RETRIEVAL, Optional.empty(), Optional.empty());
+        var constituents = new ArrayList<FundComposition.Constituent>();
+        constituents.add(new FundComposition.Constituent(instrument("SYNTH-CO"), Optional.of(identified)));
+        for (var weight : unidentified)
+            constituents.add(new FundComposition.Constituent(
+                            new CompositionInstrument("Synthetic cash row", Map.of()), Optional.of(weight)));
+        return new FundComposition(provenance, denominator, FundComposition.ExposureBasis.PHYSICAL_HOLDINGS, PARTIAL,
+                        constituents);
+    }
+
+    @Test
+    public void testNettedRowsWithoutIdentifierAreNamedInTheTooltip()
+    {
+        var hint = "Cash and currency rows without identifier were netted; the remainder stays unresolved.";
+        var netted = withUnidentifiedRows(NAV, "0.9995", "0.0007", "-0.0002");
+
+        var retained = first(singleFundModel(Optional.of(netted), Optional.of(CompositionResult.Status.RECEIVED),
+                        Optional.empty()));
+        assertEquals(StatusKind.OK, retained.kind());
+        assertEquals(Health.OK, retained.health());
+        assertTrue(retained.usableData());
+        assertEquals(Optional.of(hint), retained.nettingText());
+        assertTrue(retained.tooltipText().contains("\n" + hint + "\n"));
+
+        // Arithmetic-only data is used by the calculation as well.
+        var arithmetic = withUnidentifiedRows(FundComposition.Denominator.UNKNOWN, "0.9995", "0.0007", "-0.0002");
+        var facts = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty(), false,
+                        Optional.of(arithmetic), Optional.of(arithmetic));
+        var unverified = first(LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts)));
+        assertEquals(StatusKind.OK, unverified.kind());
+        assertTrue(unverified.tooltipText().contains(hint));
+
+        // Without a negative row nothing is netted and no hint is shown.
+        var plain = first(singleFundModel(Optional.of(withUnidentifiedRows(NAV, "0.9995", "0.0005")),
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty()));
+        assertTrue(plain.nettingText().isEmpty());
+        assertFalse(plain.tooltipText().contains(hint));
+
+        // A negative net is still rejected for its negative weight.
+        var negativeNet = rejected(withUnidentifiedRows(NAV, "0.9", "0.0001", "-0.0002"));
+        assertEquals(StatusKind.REJECTED_NEGATIVE_WEIGHT, negativeNet.kind());
+        assertTrue(negativeNet.nettingText().isEmpty());
+    }
+
     @Test
     public void testUsableDataShowsTheCalculatedShare()
     {

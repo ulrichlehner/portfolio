@@ -10,6 +10,7 @@ import java.util.Optional;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidationResult.Diagnostic;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidationResult.Reason;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidationResult.ValidatedRow;
+import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Constituent;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Denominator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis;
 
@@ -25,6 +26,8 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis
  * close the provider evidence gate.</li>
  * </ul>
  * All rows share the snapshot's semantics and are never merged by name or ID.
+ * The only exception: rows without a security identifier are netted into one
+ * unresolved row when at least one of them is negative and their net is not.
  * Neither a reconciled sum nor completeness metadata verifies the declarations.
  */
 public final class CompositionValidator
@@ -68,8 +71,10 @@ public final class CompositionValidator
     private CompositionValidationResult check(FundComposition source, List<Diagnostic> diagnostics)
     {
         boolean semanticsVerified = semanticsDiagnostics(source).isEmpty();
-        var rows = new ArrayList<ValidatedRow>();
+        List<ValidatedRow> rows = new ArrayList<>();
         var total = BigDecimal.ZERO;
+        var identifierlessNet = BigDecimal.ZERO;
+        boolean negativeIdentifierless = false;
         boolean allWeightsPresent = true;
         for (int index = 0; index < source.constituents().size(); index++)
         {
@@ -94,18 +99,45 @@ public final class CompositionValidator
                 continue;
             }
 
-            if (weight.signum() < 0)
+            if (isIdentifierless(row))
+            {
+                identifierlessNet = identifierlessNet.add(weight);
+                negativeIdentifierless |= weight.signum() < 0;
+            }
+            else if (weight.signum() < 0)
+            {
                 diagnostics.add(new Diagnostic(Reason.NEGATIVE_WEIGHT, Optional.of(index)));
+            }
             total = total.add(weight);
             rows.add(new ValidatedRow(index, row, weight));
+        }
+
+        // Negative rows without a security identifier (for example cash
+        // balances or currency forwards) are netted against the other rows
+        // without an identifier. Only a negative net rejects. The rows are
+        // never classified by name, and identified rows keep their weights.
+        boolean netted = false;
+        if (negativeIdentifierless)
+        {
+            if (identifierlessNet.signum() < 0)
+            {
+                diagnostics.add(new Diagnostic(Reason.NEGATIVE_WEIGHT, Optional.empty()));
+            }
+            else
+            {
+                rows = netIdentifierless(rows, identifierlessNet);
+                netted = true;
+            }
         }
 
         if (allWeightsPresent && total.compareTo(BigDecimal.ONE.add(ROUNDING_EXCESS_TOLERANCE)) > 0)
             diagnostics.add(new Diagnostic(Reason.TOTAL_EXCEEDS_ONE, Optional.empty()));
 
-        if (!diagnostics.isEmpty())
+        if (diagnostics.stream().anyMatch(Diagnostic::isFatal))
             return new CompositionValidationResult(source, List.of(), Optional.empty(), diagnostics,
                             semanticsVerified);
+        if (netted)
+            diagnostics.add(new Diagnostic(Reason.NETTED_IDENTIFIERLESS_ROWS, Optional.empty()));
         var shortfall = BigDecimal.ONE.subtract(total);
         if (shortfall.signum() < 0)
         {
@@ -135,5 +167,36 @@ public final class CompositionValidator
         }
         return new CompositionValidationResult(source, rows, Optional.of(shortfall), diagnostics,
                         semanticsVerified);
+    }
+
+    /** A row without any security identifier, independent of its label. */
+    private static boolean isIdentifierless(Constituent row)
+    {
+        return row.instrument().identifiers().isEmpty();
+    }
+
+    /**
+     * Replaces all rows without an identifier by one row with the net weight,
+     * at the position of the first row with the largest positive weight, which
+     * stays its source for provenance. A zero net leaves no row. The sum of
+     * all rows is unchanged.
+     */
+    private static List<ValidatedRow> netIdentifierless(List<ValidatedRow> rows, BigDecimal net)
+    {
+        ValidatedRow representative = null;
+        for (var row : rows)
+            if (isIdentifierless(row.source()) && row.weight().signum() > 0
+                            && (representative == null || row.weight().compareTo(representative.weight()) > 0))
+                representative = row;
+
+        var result = new ArrayList<ValidatedRow>(rows.size());
+        for (var row : rows)
+        {
+            if (!isIdentifierless(row.source()))
+                result.add(row);
+            else if (row == representative && net.signum() > 0)
+                result.add(new ValidatedRow(row.sourceIndex(), row.source(), net));
+        }
+        return result;
     }
 }

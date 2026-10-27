@@ -199,10 +199,11 @@ public final class LookThroughDataStatus
                     Optional<CompositionResult.Status> latestAttempt, String attemptText, Optional<Instant> retryAfter,
                     Optional<String> retryText, boolean refreshPending, FundRef reference, Health health,
                     Optional<String> retrievedDateText, StatusKind kind, String statusText,
-                    Optional<String> explanation, boolean usableData)
+                    Optional<String> explanation, boolean usableData, Optional<String> nettingText)
     {
         public FundStatus
         {
+            Objects.requireNonNull(nettingText);
             Objects.requireNonNull(reference);
             Objects.requireNonNull(health);
             Objects.requireNonNull(kind);
@@ -249,6 +250,7 @@ public final class LookThroughDataStatus
             holdingsText.ifPresent(lines::add);
             sourceDataText.ifPresent(lines::add);
             denominatorText.ifPresent(lines::add);
+            nettingText.ifPresent(lines::add);
             lines.add(providerAccountText);
             return String.join("\n", lines); //$NON-NLS-1$
         }
@@ -446,7 +448,23 @@ public final class LookThroughDataStatus
                         sourceDataText, denominatorText, latestAttempt, attemptText, facts.retryAfter(), retryText,
                         facts.refreshPending(), new FundRef(facts.account(), facts.fund()), health(facts),
                         retrievedDateText, kind, statusText(clock, kind, facts.retryAfter()), explanation(kind),
-                        hasUsableData(facts));
+                        hasUsableData(facts), nettingText(facts));
+    }
+
+    /**
+     * Names the netting of rows without a security identifier when the
+     * composition that the calculation uses was netted. The remainder stays
+     * unresolved, so this is a hint, not a rejection.
+     */
+    private static Optional<String> nettingText(FundFacts facts)
+    {
+        var validator = new CompositionValidator();
+        var used = facts.retained().map(validator::validate)
+                        .or(() -> facts.unverifiedComposition().map(validator::validateArithmetic));
+        return used.filter(CompositionValidationResult::isUsable)
+                        .filter(result -> result.diagnostics().stream().anyMatch(diagnostic -> diagnostic
+                                        .reason() == CompositionValidationResult.Reason.NETTED_IDENTIFIERLESS_ROWS))
+                        .map(result -> Messages.LookThroughStatusNettedIdentifierlessRows);
     }
 
     /**
@@ -532,13 +550,14 @@ public final class LookThroughDataStatus
 
     /**
      * Validates the received composition again to name why it is not used.
-     * The first reason by a fixed priority wins. Missing semantics alone do
-     * not reject a composition, because it is then used as unverified data,
-     * so they have no text of their own.
+     * The first reason by a fixed priority wins. Only fatal diagnostics count,
+     * so netted rows without identifier are no rejection. Missing semantics
+     * alone do not reject a composition, because it is then used as unverified
+     * data, so they have no text of their own.
      */
     private static StatusKind rejection(FundComposition preview)
     {
-        var reasons = new CompositionValidator().validate(preview).diagnostics().stream()
+        var reasons = new CompositionValidator().validate(preview).fatalDiagnostics().stream()
                         .map(CompositionValidationResult.Diagnostic::reason).collect(Collectors.toSet());
         if (reasons.contains(CompositionValidationResult.Reason.NEGATIVE_WEIGHT))
             return StatusKind.REJECTED_NEGATIVE_WEIGHT;

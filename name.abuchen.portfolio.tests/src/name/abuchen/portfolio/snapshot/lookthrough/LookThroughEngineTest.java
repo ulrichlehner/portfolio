@@ -530,4 +530,40 @@ public class LookThroughEngineTest
                                         && contribution.resolution().isEmpty())
                         .count());
     }
+
+    @Test
+    public void testNegativeRowsWithoutIdentifierAreNettedIntoUnresolvedRemainder()
+    {
+        var fund = instrument("netted-fund", AssetType.FUND, null);
+        var first = instrument("first-share", AssetType.EQUITY, "CO-1");
+        var second = instrument("second-share", AssetType.EQUITY, "CO-2");
+        var cash = new CompositionInstrument("Synthetic cash", Map.of());
+        var forward = new CompositionInstrument("Synthetic forward", Map.of());
+        for (var unidentified : List.of(cash, forward))
+            resolutions.put(unidentified, new InstrumentResolver().resolve(unidentified, List.of(),
+                            ignored -> List.of(), () -> false));
+        holding(fund, 1_000_000);
+        var source = composition(fund, row(first, "0.6"), row(cash, "0.0005"), row(second, "0.39965"),
+                        row(forward, "-0.00015"));
+
+        var result = calculate();
+
+        reconciles(result);
+        amount("1000000", result.total());
+        assertEquals(2, result.companies().size());
+        amount("600000", result.companies().get(0).total());
+        amount("399650", result.companies().get(1).total());
+        amount("999650", result.value(Category.COMPANY));
+        amount("350", result.value(Category.UNRESOLVED));
+        amount("0", result.value(Category.CASH_OR_OTHER));
+        assertEquals(3, result.contributions().size());
+        var netted = result.contributions().get(1);
+        assertEquals(Category.UNRESOLVED, netted.category());
+        assertSame(cash, netted.instrument());
+        amount("350", netted.value());
+        assertEquals(1, netted.path().get(0).sourceIndex());
+        assertTrue(netted.path().get(0).composition().diagnostics().contains(new CompositionValidationResult.Diagnostic(
+                        CompositionValidationResult.Reason.NETTED_IDENTIFIERLESS_ROWS, Optional.empty())));
+        assertEquals(4, source.constituents().size());
+    }
 }

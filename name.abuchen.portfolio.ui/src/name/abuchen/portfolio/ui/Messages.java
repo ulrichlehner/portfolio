@@ -1085,6 +1085,7 @@ public class Messages extends NLS
     public static String LookThroughStatusLimitationSessionOnly;
     public static String LookThroughStatusMalformed;
     public static String LookThroughStatusModeDiskFailure;
+    public static String LookThroughStatusNettedIdentifierlessRows;
     public static String LookThroughStatusNoAccess;
     public static String LookThroughStatusNoAttempt;
     public static String LookThroughStatusNoComposition;

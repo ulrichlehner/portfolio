@@ -22,12 +22,28 @@ public final class CompositionValidationResult
     public enum Reason
     {
         UNVERIFIED_DENOMINATOR, UNSUPPORTED_EXPOSURE_BASIS, MISSING_WEIGHT, INVALID_WEIGHT, NEGATIVE_WEIGHT,
-        TOTAL_EXCEEDS_ONE
+        TOTAL_EXCEEDS_ONE,
+        /**
+         * Informational: rows without a security identifier, at least one of
+         * them negative, were replaced by one nonnegative netted row that stays
+         * unresolved. The source rows are unchanged.
+         */
+        NETTED_IDENTIFIERLESS_ROWS;
+
+        /** A fatal reason makes the result unusable. */
+        public boolean isFatal()
+        {
+            return this != NETTED_IDENTIFIERLESS_ROWS;
+        }
     }
 
     /** Empty row index denotes a snapshot-level diagnostic; indices are zero-based. */
     public record Diagnostic(Reason reason, Optional<Integer> sourceIndex)
     {
+        public boolean isFatal()
+        {
+            return reason.isFatal();
+        }
     }
 
     /** Separate source occurrences stay separate, including identical rows. */
@@ -56,9 +72,10 @@ public final class CompositionValidationResult
         return source;
     }
 
+    /** Usable when no diagnostic is fatal; informational ones are allowed. */
     public boolean isUsable()
     {
-        return diagnostics.isEmpty();
+        return diagnostics.stream().noneMatch(Diagnostic::isFatal);
     }
 
     public List<ValidatedRow> rows()
@@ -72,9 +89,16 @@ public final class CompositionValidationResult
         return shortfall;
     }
 
+    /** All diagnostics, including informational ones. */
     public List<Diagnostic> diagnostics()
     {
         return diagnostics;
+    }
+
+    /** Only the diagnostics that make the result unusable. */
+    public List<Diagnostic> fatalDiagnostics()
+    {
+        return diagnostics.stream().filter(Diagnostic::isFatal).toList();
     }
 
     /**
