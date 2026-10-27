@@ -49,6 +49,9 @@ class LookThroughBarChart
     private RowKey selectedKey;
     private RowKey selectedGroupKey;
     private double maximum;
+    /** Plot width of the last range adjustment; a range change resizes the plot again. */
+    private int rangeWidth = -1;
+    private boolean rangeScheduled;
 
     LookThroughBarChart(Composite parent, Consumer<RowKey> onSelect)
     {
@@ -84,7 +87,18 @@ class LookThroughBarChart
         });
 
         var plot = chart.getPlotArea().getControl();
-        plot.addListener(SWT.Resize, event -> adjustRange());
+        // Deferred and coalesced: changing the range relayouts the chart and
+        // resizes the plot, which must not re-enter the adjustment.
+        plot.addListener(SWT.Resize, event -> {
+            if (rangeScheduled)
+                return;
+            rangeScheduled = true;
+            plot.getDisplay().asyncExec(() -> {
+                rangeScheduled = false;
+                if (!chart.isDisposed())
+                    adjustRange();
+            });
+        });
         plot.addListener(SWT.MouseMove, event -> {
             var index = indexAt(event.y);
             var tooltip = index >= 0 ? LookThroughChartPane.tooltip(displayed.get(index), currencyCode) : null;
@@ -149,6 +163,7 @@ class LookThroughBarChart
         addSeries(INDIRECT, Messages.LookThroughColumnIndirect, indirect, LookThroughChartPane.indirectColor());
 
         chart.getAxisSet().adjustRange();
+        rangeWidth = -1;
         adjustRange();
     }
 
@@ -160,6 +175,9 @@ class LookThroughBarChart
 
         var plot = chart.getPlotArea().getControl();
         int width = plot.getBounds().width;
+        if (width == rangeWidth)
+            return;
+        rangeWidth = width;
         double upper = maximum * 1.05;
         if (width > 0)
         {
@@ -178,7 +196,11 @@ class LookThroughBarChart
                 gc.dispose();
             }
         }
-        chart.getAxisSet().getYAxis(0).setRange(new Range(0, upper));
+        var axis = chart.getAxisSet().getYAxis(0);
+        // small differences come from the plot width changing with the tick labels
+        if (Math.abs(axis.getRange().upper - upper) <= upper * 0.02)
+            return;
+        axis.setRange(new Range(0, upper));
         chart.redraw();
     }
 
