@@ -12,6 +12,8 @@ import name.abuchen.portfolio.junit.PortfolioBuilder;
 import name.abuchen.portfolio.junit.SecurityBuilder;
 import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.model.Security;
+import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
+import name.abuchen.portfolio.money.ExchangeRateTimeSeries;
 import name.abuchen.portfolio.money.Values;
 
 /**
@@ -79,5 +81,29 @@ public class HeldSecuritiesTest
                         .addTo(client);
 
         assertEquals(List.of(first, second), HeldSecurities.of(client, DATE));
+    }
+
+    @Test
+    public void testValuedExcludesHeldSecuritiesWithoutValue()
+    {
+        var priced = security("Priced");
+        var unpriced = new SecurityBuilder("EUR").addTo(client);
+        var tiny = new SecurityBuilder("EUR").addPrice("2026-01-01", Values.Quote.factorize(0.01)).addTo(client);
+        new PortfolioBuilder() //
+                        .buy(priced, "2026-01-02", Values.Share.factorize(10), Values.Amount.factorize(100))
+                        .inbound_delivery(unpriced, "2026-01-02", Values.Share.factorize(10), 0)
+                        .buy(tiny, "2026-01-02", Values.Share.factorize(0.1), 0).addTo(client);
+
+        var rates = new ExchangeRateProviderFactory(client)
+        {
+            @Override
+            public List<ExchangeRateTimeSeries> getAvailableTimeSeries()
+            {
+                return List.of();
+            }
+        };
+
+        assertEquals(List.of(priced, unpriced, tiny), HeldSecurities.of(client, DATE));
+        assertEquals(List.of(priced), HeldSecurities.valued(client, DATE, rates));
     }
 }

@@ -460,6 +460,39 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
+    public void testValuedFundWithZeroResidualStaysCountedWithoutZeroRows()
+    {
+        hold("fund", "Synthetic valued fund holding", AssetType.FUND, null, 100, 10);
+        var company = instrument("company", AssetType.EQUITY, "SYNTH-CO");
+        // The residual is 0.000001 of 100000 minor units: a tenth of a cent
+        composition(instruments.get("fund"), row(company, "0.999999"));
+
+        var model = model(result());
+
+        assertEquals(1, model.rows().stream().filter(CompanyRow.class::isInstance).count());
+        assertTrue(category(model, Category.UNRESOLVED).details().isEmpty());
+        assertEquals(1, model.summary().heldFunds());
+        assertEquals(1, model.summary().decomposedFunds());
+    }
+
+    @Test
+    public void testCompaniesWorthLessThanTheMinorUnitAreNeitherListedNorRanked()
+    {
+        hold("big", "Synthetic big holding", AssetType.EQUITY, "SYNTH-BIG", 1, 10);
+        hold("tiny-fund", "Synthetic tiny fund holding", AssetType.FUND, null, 1, 0.01);
+        var small = instrument("small", AssetType.EQUITY, "SYNTH-SMALL");
+        var other = instrument("other", AssetType.EQUITY, "SYNTH-OTHER");
+        composition(instruments.get("tiny-fund"), row(small, "0.4"), row(other, "0.6"));
+
+        var model = model(result());
+        var labels = model.rows().stream().filter(CompanyRow.class::isInstance).map(CompanyRow.class::cast)
+                        .map(CompanyRow::label).toList();
+
+        assertEquals(List.of("Synthetic big", "Synthetic other"), labels);
+        assertEquals(2, model.chart().companies().size());
+    }
+
+    @Test
     public void testCompaniesSortByTotalDescendingThenByIdentifier()
     {
         hold("company-b", "Synthetic B holding", AssetType.EQUITY, "SYNTH-B", 1, 10);

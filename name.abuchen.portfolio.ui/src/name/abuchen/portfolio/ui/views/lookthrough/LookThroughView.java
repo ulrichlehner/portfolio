@@ -632,7 +632,7 @@ public class LookThroughView extends AbstractFinanceView
         // A source injected by the platform wins; otherwise the view uses the
         // application wiring so the status and refresh work without extra setup.
         if (compositionSource == null)
-            applyCompositionSource(compositionService.sourceFor(getClient()));
+            applyCompositionSource(compositionService.sourceFor(getClient(), rates));
 
         shell = container.getShell();
         shell.addListener(SWT.Activate, shellActivation);

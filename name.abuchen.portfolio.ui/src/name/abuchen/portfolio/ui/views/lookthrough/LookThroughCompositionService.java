@@ -25,6 +25,7 @@ import org.eclipse.e4.core.di.annotations.Creatable;
 
 import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.model.Security;
+import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
 import name.abuchen.portfolio.online.impl.GleifCompanyRegister;
@@ -185,9 +186,9 @@ public final class LookThroughCompositionService
         Backend.apply(EulerpoolPreferencePage.ACCOUNT);
     }
 
-    public LookThroughCompositionSource sourceFor(Client client)
+    public LookThroughCompositionSource sourceFor(Client client, ExchangeRateProviderFactory rates)
     {
-        return client == null ? null : new SessionSource(client);
+        return client == null || rates == null ? null : new SessionSource(client, rates);
     }
 
     static CompositionInstrument instrumentOf(Security security)
@@ -213,10 +214,12 @@ public final class LookThroughCompositionService
     private final class SessionSource implements LookThroughCompositionSource
     {
         private final Client client;
+        private final ExchangeRateProviderFactory rates;
 
-        private SessionSource(Client client)
+        private SessionSource(Client client, ExchangeRateProviderFactory rates)
         {
             this.client = client;
+            this.rates = rates;
         }
 
         @Override
@@ -239,7 +242,8 @@ public final class LookThroughCompositionService
         @Override
         public List<Security> securities()
         {
-            return HeldSecurities.of(client, LocalDate.now());
+            // Positions without a value at the date are no held funds: no request
+            return HeldSecurities.valued(client, LocalDate.now(), rates);
         }
 
         @Override

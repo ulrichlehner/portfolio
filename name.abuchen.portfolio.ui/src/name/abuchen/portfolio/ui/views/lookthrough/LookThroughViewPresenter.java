@@ -470,7 +470,8 @@ public final class LookThroughViewPresenter
         var rows = new ArrayList<Row>();
         var classifier = new LookThroughGrouping();
         var companyRows = new LinkedHashMap<Identifier, CompanyRow>();
-        result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER).forEach(company -> companyRows.put(
+        result.companies().stream().filter(LookThroughViewPresenter::isShown).sorted(BY_TOTAL_THEN_IDENTIFIER)
+                        .forEach(company -> companyRows.put(
                         company.identity(), companyRow(keys, company, denominatorAmount,
                                         detail(classifier, grouping, attributes.attributes().get(company.identity())))));
         var revenueNotice = Optional.<String>empty();
@@ -562,7 +563,7 @@ public final class LookThroughViewPresenter
         long count = 0;
         for (var company : result.companies())
         {
-            if (company.total().signum() > 0)
+            if (isShown(company) && company.total().signum() > 0)
             {
                 total = total.add(company.total());
                 count++;
@@ -573,7 +574,7 @@ public final class LookThroughViewPresenter
         var squares = BigDecimal.ZERO;
         for (var company : result.companies())
         {
-            if (company.total().signum() <= 0)
+            if (!isShown(company) || company.total().signum() <= 0)
                 continue;
             var weight = company.total().divide(total, MathContext.DECIMAL64);
             squares = squares.add(weight.multiply(weight));
@@ -911,12 +912,21 @@ public final class LookThroughViewPresenter
         return Optional.of(MessageFormat.format(Messages.LookThroughNoticeExcluded, names));
     }
 
+    /**
+     * Companies whose total is zero in the currency's minor unit are not
+     * listed, ranked or charted. Amounts are in minor units.
+     */
+    static boolean isShown(Company company)
+    {
+        return company.total().setScale(0, RoundingMode.HALF_UP).signum() != 0;
+    }
+
     /** Combined share of the ten largest companies. */
     private Optional<BigDecimal> topTenShare(LookThroughResult result, Optional<BigDecimal> denominator)
     {
-        if (result.companies().isEmpty())
+        if (result.companies().stream().noneMatch(LookThroughViewPresenter::isShown))
             return Optional.empty();
-        var top = result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER).limit(10).map(Company::total)
+        var top = result.companies().stream().filter(LookThroughViewPresenter::isShown).sorted(BY_TOTAL_THEN_IDENTIFIER).limit(10).map(Company::total)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
         return share(top, denominator);
     }
@@ -1115,6 +1125,7 @@ public final class LookThroughViewPresenter
     {
         return result.contributions().stream() //
                         .filter(contribution -> contribution.category() == category) //
+                        .filter(contribution -> contribution.value().setScale(0, RoundingMode.HALF_UP).signum() != 0) //
                         .map(contribution -> detailRow(keys, parent, contribution, denominator)) //
                         .sorted(BY_DETAIL_VALUE) //
                         .toList();
