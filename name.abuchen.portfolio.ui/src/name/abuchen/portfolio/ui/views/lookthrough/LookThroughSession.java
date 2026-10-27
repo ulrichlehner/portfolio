@@ -458,7 +458,14 @@ final class LookThroughSession implements RefreshGateway
                     CompanyEnrichmentService.Register register, BooleanSupplier registerEnabled,
                     CompanyEnrichmentCache cache, Executor enrichmentExecutor)
     {
-        var service = new CompanyEnrichmentService(account, profiles, () -> {
+        return enableEnrichment(account, profiles, null, register, registerEnabled, cache, enrichmentExecutor);
+    }
+
+    CompanyEnrichmentService enableEnrichment(ProviderAccount account, CompanyEnrichmentService.ProfileSource profiles,
+                    CompanyEnrichmentService.RevenueSource revenue, CompanyEnrichmentService.Register register,
+                    BooleanSupplier registerEnabled, CompanyEnrichmentCache cache, Executor enrichmentExecutor)
+    {
+        var service = new CompanyEnrichmentService(account, profiles, revenue, () -> {
             var mode = credentials.state(account).mode();
             return mode == Mode.SECURE || mode == Mode.SESSION_ONLY;
         }, register, registerEnabled, cache, budget, clock, enrichmentExecutor);

@@ -24,16 +24,20 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.function.Function;
 
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.StorageMode;
 
@@ -42,8 +46,9 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.
  * source in a dedicated private directory. Register records are openly
  * licensed and always stored. Provider profiles follow the account's
  * persistence policy: they are written only while its effective mode is
- * persistent, and otherwise kept in memory for the session. Withdrawing
- * persistence deletes the account's profile file; a lookup started under an
+ * persistent, and otherwise kept in memory for the session. Revenue splits
+ * are handled like profiles, in a file of their own. Withdrawing
+ * persistence deletes the account's files; a lookup started under an
  * earlier configuration generation can never be written afterwards. A stored
  * answer without data ("not found") is cached like data, so it is not asked
  * again before it is due.
@@ -65,17 +70,108 @@ public final class CompanyEnrichmentCache
         }
     }
 
+    /** How the entries of one kind are written to and read from their file. */
+    private interface Codec<T>
+    {
+        String name();
+
+        void write(DataOutputStream out, T value) throws IOException;
+
+        T read(DataInputStream in, String isin, Instant retrieved) throws IOException;
+    }
+
+    private static final Codec<CompanyProfile> PROFILE_CODEC = new Codec<>()
+    {
+        @Override
+        public String name()
+        {
+            return "profiles"; //$NON-NLS-1$
+        }
+
+        @Override
+        public void write(DataOutputStream out, CompanyProfile profile) throws IOException
+        {
+            optional(out, profile.country());
+            optional(out, profile.currency());
+            optional(out, profile.sector());
+            optional(out, profile.industry());
+            optional(out, profile.marketCapMillions().map(BigDecimal::toPlainString));
+        }
+
+        @Override
+        public CompanyProfile read(DataInputStream in, String isin, Instant retrieved) throws IOException
+        {
+            return new CompanyProfile(isin, optional(in), optional(in), optional(in), optional(in),
+                            optional(in).map(BigDecimal::new), retrieved);
+        }
+    };
+
+    private static final Codec<RevenueSplit> REVENUE_CODEC = new Codec<>()
+    {
+        @Override
+        public String name()
+        {
+            return "revenue"; //$NON-NLS-1$
+        }
+
+        @Override
+        public void write(DataOutputStream out, RevenueSplit split) throws IOException
+        {
+            text(out, split.period().toString());
+            text(out, split.reportedSum().toPlainString());
+            out.writeInt(count(split.shares().size()));
+            for (var share : split.shares())
+            {
+                text(out, share.member().key());
+                text(out, share.percent().toPlainString());
+            }
+        }
+
+        @Override
+        public RevenueSplit read(DataInputStream in, String isin, Instant retrieved) throws IOException
+        {
+            var period = LocalDate.parse(text(in));
+            var reported = new BigDecimal(text(in));
+            var size = count(in.readInt());
+            var shares = new ArrayList<RevenueSplit.Share>();
+            for (int index = 0; index < size; index++)
+            {
+                var member = RevenueSplit.Member.parse(text(in)).orElseThrow(IOException::new);
+                shares.add(new RevenueSplit.Share(member, new BigDecimal(text(in))));
+            }
+            return new RevenueSplit(isin, period, shares, reported, retrieved);
+        }
+    };
+
+    /** The entries of one kind of one account. */
+    private static final class Section<T>
+    {
+        private final Codec<T> codec;
+        private boolean loaded;
+        private boolean dirty;
+        private final Map<String, Cached<T>> entries = new HashMap<>();
+        /** ISINs whose entry may be written: loaded or fetched in the current persistent generation. */
+        private final Set<String> storable = new HashSet<>();
+
+        private Section(Codec<T> codec)
+        {
+            this.codec = codec;
+        }
+    }
+
     private static final class Profiles
     {
         private CompositionPersistencePolicy policy;
         private Optional<Boolean> preference;
         private boolean persistent;
-        private boolean loaded;
-        private boolean dirty;
         private long generation;
-        private final Map<String, Cached<CompanyProfile>> entries = new HashMap<>();
-        /** ISINs whose entry may be written: loaded or fetched in the current persistent generation. */
-        private final Set<String> storable = new HashSet<>();
+        private final Section<CompanyProfile> profiles = new Section<>(PROFILE_CODEC);
+        private final Section<RevenueSplit> revenue = new Section<>(REVENUE_CODEC);
+
+        private List<Section<?>> sections()
+        {
+            return List.of(profiles, revenue);
+        }
     }
 
     private static final int SCHEMA_VERSION = 1;
@@ -135,30 +231,36 @@ public final class CompanyEnrichmentCache
         if (!profiles.persistent)
         {
             // Entries fetched before stay in memory only, also after a later re-enable.
-            profiles.storable.clear();
-            profiles.loaded = false;
-            profiles.dirty = false;
-            if (disk())
+            for (var section : profiles.sections())
             {
-                try
+                section.storable.clear();
+                section.loaded = false;
+                section.dirty = false;
+                if (disk())
                 {
-                    deleteFile(profileFile(policy.account()));
-                }
-                catch (IOException | SecurityException | DirectoryIteratorException e)
-                {
-                    failed();
+                    try
+                    {
+                        deleteFile(file(policy.account(), section.codec));
+                    }
+                    catch (IOException | SecurityException | DirectoryIteratorException e)
+                    {
+                        failed();
+                    }
                 }
             }
             return;
         }
         if (!wasPersistent)
-            profiles.storable.clear();
-        if (!profiles.loaded && disk())
+            profiles.sections().forEach(section -> section.storable.clear());
+        for (var section : profiles.sections())
         {
-            profiles.loaded = true;
-            loadProfiles(policy.account(), profiles);
+            if (!section.loaded && disk())
+            {
+                section.loaded = true;
+                load(policy.account(), section);
+            }
+            expire(profiles, section);
         }
-        expireProfiles(profiles);
     }
 
     /** Generation of the account's configuration; capture it before a profile request. */
@@ -175,27 +277,50 @@ public final class CompanyEnrichmentCache
                         .map(age -> Duration.between(retrieved, now).compareTo(age) >= 0).orElse(false);
     }
 
-    private void expireProfiles(Profiles profiles)
+    private void expire(Profiles account, Section<?> section)
     {
-        var removed = profiles.entries.entrySet().removeIf(item -> expired(item.getValue().retrievedAt(),
-                        profiles.policy));
-        profiles.storable.retainAll(profiles.entries.keySet());
-        if (removed && profiles.persistent)
-            profiles.dirty = true;
+        var removed = section.entries.entrySet().removeIf(item -> expired(item.getValue().retrievedAt(),
+                        account.policy));
+        section.storable.retainAll(section.entries.keySet());
+        if (removed && account.persistent)
+            section.dirty = true;
+    }
+
+    private <T> Optional<Cached<T>> get(ProviderAccount account, Function<Profiles, Section<T>> kind, String isin)
+    {
+        var state = accounts.computeIfAbsent(Objects.requireNonNull(account), ignored -> new Profiles());
+        var section = kind.apply(state);
+        var cached = section.entries.get(Objects.requireNonNull(isin));
+        if (cached != null && expired(cached.retrievedAt(), state.policy))
+        {
+            section.entries.remove(isin);
+            if (section.storable.remove(isin))
+                section.dirty = true;
+            return Optional.empty();
+        }
+        return Optional.ofNullable(cached);
+    }
+
+    private <T> void put(ProviderAccount account, Function<Profiles, Section<T>> kind, String isin,
+                    Optional<T> value, Instant retrieved, long generation)
+    {
+        var state = accounts.computeIfAbsent(Objects.requireNonNull(account), ignored -> new Profiles());
+        var section = kind.apply(state);
+        section.entries.put(isin, new Cached<>(value, retrieved));
+        if (state.persistent && state.generation == generation)
+        {
+            section.storable.add(isin);
+            section.dirty = true;
+        }
+        else
+        {
+            section.storable.remove(isin);
+        }
     }
 
     public synchronized Optional<Cached<CompanyProfile>> profile(ProviderAccount account, String isin)
     {
-        var profiles = accounts.computeIfAbsent(Objects.requireNonNull(account), ignored -> new Profiles());
-        var cached = profiles.entries.get(Objects.requireNonNull(isin));
-        if (cached != null && expired(cached.retrievedAt(), profiles.policy))
-        {
-            profiles.entries.remove(isin);
-            if (profiles.storable.remove(isin))
-                profiles.dirty = true;
-            return Optional.empty();
-        }
-        return Optional.ofNullable(cached);
+        return get(account, state -> state.profiles, isin);
     }
 
     /**
@@ -209,18 +334,25 @@ public final class CompanyEnrichmentCache
         Objects.requireNonNull(isin);
         if (profile.filter(value -> !value.isin().equals(isin)).isPresent())
             throw new IllegalArgumentException();
-        var profiles = accounts.computeIfAbsent(Objects.requireNonNull(account), ignored -> new Profiles());
-        var retrieved = profile.map(CompanyProfile::retrievedAt).orElseGet(clock::instant);
-        profiles.entries.put(isin, new Cached<>(profile, retrieved));
-        if (profiles.persistent && profiles.generation == generation)
-        {
-            profiles.storable.add(isin);
-            profiles.dirty = true;
-        }
-        else
-        {
-            profiles.storable.remove(isin);
-        }
+        put(account, state -> state.profiles, isin, profile,
+                        profile.map(CompanyProfile::retrievedAt).orElseGet(clock::instant), generation);
+    }
+
+    /** The cached revenue split of an ISIN; an empty value is a stored "no revenue data". */
+    public synchronized Optional<Cached<RevenueSplit>> revenue(ProviderAccount account, String isin)
+    {
+        return get(account, state -> state.revenue, isin);
+    }
+
+    /** Like {@link #putProfile}, for the revenue split. */
+    public synchronized void putRevenue(ProviderAccount account, String isin, Optional<RevenueSplit> split,
+                    long generation)
+    {
+        Objects.requireNonNull(isin);
+        if (split.filter(value -> !value.isin().equals(isin)).isPresent())
+            throw new IllegalArgumentException();
+        put(account, state -> state.revenue, isin, split,
+                        split.map(RevenueSplit::retrievedAt).orElseGet(clock::instant), generation);
     }
 
     public synchronized Optional<Cached<RegisterRecord>> register(String isin)
@@ -253,11 +385,16 @@ public final class CompanyEnrichmentCache
             }
             for (var item : accounts.entrySet())
             {
-                var profiles = item.getValue();
-                if (!profiles.persistent || !profiles.dirty)
+                var account = item.getValue();
+                if (!account.persistent)
                     continue;
-                write(profileFile(item.getKey()), encodeProfiles(item.getKey(), profiles));
-                profiles.dirty = false;
+                for (var section : account.sections())
+                {
+                    if (!section.dirty)
+                        continue;
+                    write(file(item.getKey(), section.codec), encode(item.getKey(), section));
+                    section.dirty = false;
+                }
             }
         }
         catch (IOException | SecurityException | UnsupportedOperationException | DirectoryIteratorException e)
@@ -266,10 +403,10 @@ public final class CompanyEnrichmentCache
         }
     }
 
-    private Path profileFile(ProviderAccount account)
+    private Path file(ProviderAccount account, Codec<?> codec)
     {
         var key = account.providerId().length() + ":" + account.providerId() + account.accountId(); //$NON-NLS-1$
-        return directory.resolve("profiles-" //$NON-NLS-1$
+        return directory.resolve(codec.name() + "-" //$NON-NLS-1$
                         + HexFormat.of().formatHex(digest(key.getBytes(StandardCharsets.UTF_8))) + EXTENSION);
     }
 
@@ -299,16 +436,16 @@ public final class CompanyEnrichmentCache
         }
     }
 
-    private void loadProfiles(ProviderAccount account, Profiles profiles)
+    private <T> void load(ProviderAccount account, Section<T> section)
     {
-        var path = profileFile(account);
+        var path = file(account, section.codec);
         try
         {
-            var loaded = decodeProfiles(account, read(path));
+            var loaded = decode(account, section.codec, read(path));
             for (var item : loaded.entrySet())
             {
-                if (profiles.entries.putIfAbsent(item.getKey(), item.getValue()) == null)
-                    profiles.storable.add(item.getKey());
+                if (section.entries.putIfAbsent(item.getKey(), item.getValue()) == null)
+                    section.storable.add(item.getKey());
             }
         }
         catch (NoSuchFileException e)
@@ -493,18 +630,18 @@ public final class CompanyEnrichmentCache
         }
     }
 
-    private static byte[] encodeProfiles(ProviderAccount account, Profiles profiles) throws IOException
+    private static <T> byte[] encode(ProviderAccount account, Section<T> section) throws IOException
     {
         var bytes = new ByteArrayOutputStream();
         try (var out = new DataOutputStream(bytes))
         {
             out.writeInt(SCHEMA_VERSION);
-            text(out, "profiles"); //$NON-NLS-1$
+            text(out, section.codec.name());
             text(out, account.providerId());
             text(out, account.accountId());
-            var stored = new TreeMap<String, Cached<CompanyProfile>>();
-            for (var isin : profiles.storable)
-                stored.put(isin, profiles.entries.get(isin));
+            var stored = new TreeMap<String, Cached<T>>();
+            for (var isin : section.storable)
+                stored.put(isin, section.entries.get(isin));
             out.writeInt(count(stored.size()));
             for (var item : stored.entrySet())
             {
@@ -513,36 +650,28 @@ public final class CompanyEnrichmentCache
                 var value = item.getValue().value();
                 out.writeBoolean(value.isPresent());
                 if (value.isPresent())
-                {
-                    var profile = value.get();
-                    optional(out, profile.country());
-                    optional(out, profile.currency());
-                    optional(out, profile.sector());
-                    optional(out, profile.industry());
-                    optional(out, profile.marketCapMillions().map(BigDecimal::toPlainString));
-                }
+                    section.codec.write(out, value.get());
             }
         }
         return seal(bytes);
     }
 
-    private static Map<String, Cached<CompanyProfile>> decodeProfiles(ProviderAccount account, byte[] bytes)
+    private static <T> Map<String, Cached<T>> decode(ProviderAccount account, Codec<T> codec, byte[] bytes)
                     throws IOException
     {
         try (var in = open(bytes))
         {
-            if (!"profiles".equals(text(in)) || !account.equals(new ProviderAccount(text(in), text(in)))) //$NON-NLS-1$
+            if (!codec.name().equals(text(in)) || !account.equals(new ProviderAccount(text(in), text(in))))
                 throw new IOException();
             var size = count(in.readInt());
-            var result = new HashMap<String, Cached<CompanyProfile>>();
+            var result = new HashMap<String, Cached<T>>();
             for (int index = 0; index < size; index++)
             {
                 var isin = text(in);
                 var retrieved = Instant.parse(text(in));
-                Optional<CompanyProfile> value = Optional.empty();
+                Optional<T> value = Optional.empty();
                 if (in.readBoolean())
-                    value = Optional.of(new CompanyProfile(isin, optional(in), optional(in), optional(in),
-                                    optional(in), optional(in).map(BigDecimal::new), retrieved));
+                    value = Optional.of(codec.read(in, isin, retrieved));
                 if (result.put(isin, new Cached<>(value, retrieved)) != null)
                     throw new IOException();
             }

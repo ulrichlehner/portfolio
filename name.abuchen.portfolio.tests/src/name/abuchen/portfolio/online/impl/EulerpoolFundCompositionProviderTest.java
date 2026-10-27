@@ -579,4 +579,59 @@ public class EulerpoolFundCompositionProviderTest
         assertEquals(Status.RATE_LIMITED, failure.result().status());
         assertThrows(IllegalArgumentException.class, () -> limited.profile(ACCOUNT, "XX/../other"));
     }
+
+    private static EulerpoolFundCompositionProvider regions(String body, List<URI> calls)
+    {
+        return new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN), (uri, authorization) -> {
+            calls.add(uri);
+            return new Response(200, body, Optional.empty());
+        }, CLOCK);
+    }
+
+    @Test
+    public void testRevenueRegionsUseLatestPeriodAndLargestGeographicalAxis() throws IOException
+    {
+        var calls = new ArrayList<URI>();
+        var split = regions("""
+                        [{"period":"2023-06-30","unit":"u_usd","axis":"srt_StatementGeographicalAxis","label":"Old","value":1,"percentage":100,"member":"country_FR","symbol":"SYN"},
+                         {"period":"2024-06-30","unit":"u_usd","axis":"srt_ProductOrServiceAxis","label":"Product","value":1,"percentage":100,"member":"x_Product","symbol":"SYN"},
+                         {"period":"2024-06-30","unit":"u_usd","axis":"srt_StatementGeographicalAxis","label":"United States","value":6,"percentage":60,"member":"country_US","symbol":"SYN"},
+                         {"period":"2024-06-30","unit":"u_usd","axis":"srt_StatementGeographicalAxis","label":"Europe","value":3,"percentage":30,"member":"srt_EuropeMember","symbol":"SYN"},
+                         {"period":"2024-06-30","unit":"u_usd","axis":"srt_StatementGeographicalAxis","label":"Other","value":1,"percentage":10,"member":"","symbol":"SYN"},
+                         {"period":"2024-06-30","unit":"u_usd","axis":"x_OtherGeographicalAxis","label":"Asia","value":10,"percentage":100,"member":"x_AsiaMember","symbol":"SYN"}]
+                        """, calls).revenueRegions(ACCOUNT, "XX0000000017").orElseThrow();
+        assertEquals("/api/1/equity/regions/XX0000000017", calls.get(0).getPath());
+        assertEquals(java.time.LocalDate.parse("2024-06-30"), split.period());
+        assertEquals(3, split.shares().size());
+        assertEquals(0, new java.math.BigDecimal("60").compareTo(split.shares().get(0).percent()));
+        assertEquals("country:US", split.shares().get(0).member().key());
+        assertFalse(split.incomplete());
+        assertEquals(NOW, split.retrievedAt());
+    }
+
+    @Test
+    public void testRevenueRegionsNotFoundEmptyAndMalformedAnswers() throws IOException
+    {
+        assertTrue(new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(404, null, Optional.empty()), CLOCK)
+                                        .revenueRegions(ACCOUNT, "XX0000000017").isEmpty());
+        assertTrue(regions("[]", new ArrayList<>()).revenueRegions(ACCOUNT, "XX0000000017").isEmpty());
+        // Only non-geographical axes: no revenue by region.
+        assertTrue(regions("[{\"period\":\"2024-06-30\",\"axis\":\"srt_ProductOrServiceAxis\",\"percentage\":100}]",
+                        new ArrayList<>()).revenueRegions(ACCOUNT, "XX0000000017").isEmpty());
+        for (var body : List.of("{}", "[1]", "[{\"axis\":\"geo\"}]", "[{\"period\":\"soon\",\"axis\":\"geo\"}]",
+                        "[{\"period\":\"2024-06-30\",\"axis\":\"geographical\",\"percentage\":\"7\"}]", "[] trailing",
+                        ""))
+        {
+            var provider = regions(body, new ArrayList<>());
+            assertThrows(IOException.class, () -> provider.revenueRegions(ACCOUNT, "XX0000000017"));
+        }
+        var limited = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(429, null, Optional.of("60")), CLOCK);
+        var failure = assertThrows(
+                        name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator.EnrichmentFailure.class,
+                        () -> limited.revenueRegions(ACCOUNT, "XX0000000017"));
+        assertEquals(Status.RATE_LIMITED, failure.result().status());
+        assertThrows(IllegalArgumentException.class, () -> limited.revenueRegions(ACCOUNT, "XX/../other"));
+    }
 }

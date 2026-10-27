@@ -1036,8 +1036,11 @@ public class Messages extends NLS
     public static String LookThroughCoverageCompanies;
     public static String LookThroughCoverageUnavailable;
     public static String LookThroughDetailCountry;
+    public static String LookThroughDetailRevenue;
+    public static String LookThroughDetailRevenueScaled;
     public static String LookThroughDetailUnnamedInstrument;
     public static String LookThroughGroupCompanies;
+    public static String LookThroughGroupNoRevenue;
     public static String LookThroughGroupPending;
     public static String LookThroughGroupUnknown;
     public static String LookThroughGroupingCompany;
@@ -1046,6 +1049,7 @@ public class Messages extends NLS
     public static String LookThroughGroupingIndustry;
     public static String LookThroughGroupingMarket;
     public static String LookThroughGroupingRegion;
+    public static String LookThroughGroupingRevenueRegion;
     public static String LookThroughGroupingSector;
     public static String LookThroughLabelCalculating;
     public static String LookThroughLabelComplete;
@@ -1073,6 +1077,13 @@ public class Messages extends NLS
     public static String LookThroughReasonUnsupportedNegativePosition;
     public static String LookThroughReasonUnusableComposition;
     public static String LookThroughRefreshAction;
+    public static String LookThroughRegionApac;
+    public static String LookThroughRegionEmea;
+    public static String LookThroughRegionLatam;
+    public static String LookThroughRegionOther;
+    public static String LookThroughRevenueCoverage;
+    public static String LookThroughRevenueCoverageNone;
+    public static String LookThroughRevenueIncomplete;
     public static String LookThroughSourceDirect;
     public static String LookThroughSourceIndirect;
     public static String LookThroughStatusAgeFormatter;

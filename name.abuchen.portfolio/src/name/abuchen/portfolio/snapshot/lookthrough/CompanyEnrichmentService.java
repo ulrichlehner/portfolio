@@ -32,12 +32,16 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult.Company;
  * takes one unit of the shared provider budget. Companies with a cached
  * answer younger than {@link #REFRESH_AFTER} cause no request. When the budget
  * is exhausted, the remaining companies stay pending until a later pass.
+ * Revenue splits are requested like profiles, one per company in descending
+ * order of value after the profiles, and stay valid for
+ * {@link #REVENUE_REFRESH_AFTER}.
  * <p>
  * Only ISINs leave the application: no names, amounts or portfolio data.
  */
 public final class CompanyEnrichmentService implements AutoCloseable
 {
     public static final Duration REFRESH_AFTER = Duration.ofDays(30);
+    public static final Duration REVENUE_REFRESH_AFTER = Duration.ofDays(90);
     public static final int REGISTER_BATCH = 200;
     private static final int FLUSH_EVERY = 25;
     private static final Duration REGISTER_BACKOFF = Duration.ofMinutes(15);
@@ -50,6 +54,13 @@ public final class CompanyEnrichmentService implements AutoCloseable
     public interface ProfileSource
     {
         Optional<CompanyProfile> profile(ProviderAccount account, String isin) throws IOException;
+    }
+
+    /** The provider's latest revenue by geography; empty when the provider has none. */
+    @FunctionalInterface
+    public interface RevenueSource
+    {
+        Optional<RevenueSplit> revenue(ProviderAccount account, String isin) throws IOException;
     }
 
     /**
@@ -84,12 +95,20 @@ public final class CompanyEnrichmentService implements AutoCloseable
      * Attributes of the scheduled companies, the number still waiting for an
      * answer and those companies.
      */
-    public record Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending, Set<Identifier> waiting)
+    public record Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending, Set<Identifier> waiting,
+                    Map<Identifier, RevenueSplit> revenue, Set<Identifier> revenueWaiting)
     {
         public Snapshot
         {
             attributes = Collections.unmodifiableMap(new LinkedHashMap<>(attributes));
             waiting = Set.copyOf(waiting);
+            revenue = Collections.unmodifiableMap(new LinkedHashMap<>(revenue));
+            revenueWaiting = Set.copyOf(revenueWaiting);
+        }
+
+        public Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending, Set<Identifier> waiting)
+        {
+            this(attributes, pending, waiting, Map.of(), Set.of());
         }
 
         public Snapshot(Map<Identifier, CompanyAttributes> attributes, int pending)
@@ -105,6 +124,7 @@ public final class CompanyEnrichmentService implements AutoCloseable
 
     private final ProviderAccount account;
     private final ProfileSource profiles;
+    private final RevenueSource revenue;
     private final BooleanSupplier profilesEnabled;
     private final Register register;
     private final BooleanSupplier registerEnabled;
@@ -119,6 +139,7 @@ public final class CompanyEnrichmentService implements AutoCloseable
     private boolean rerun;
     private boolean closed;
     private Instant profileRetryAt = Instant.MIN;
+    private Instant revenueRetryAt = Instant.MIN;
     private Instant registerRetryAt = Instant.MIN;
 
     /**
@@ -133,8 +154,21 @@ public final class CompanyEnrichmentService implements AutoCloseable
                     Register register, BooleanSupplier registerEnabled, CompanyEnrichmentCache cache,
                     CompositionRequestBudget budget, Clock clock, Executor executor)
     {
+        this(account, profiles, null, profilesEnabled, register, registerEnabled, cache, budget, clock, executor);
+    }
+
+    /**
+     * @param revenue
+     *            the revenue source, requested under the same conditions as
+     *            profiles, or null for none
+     */
+    public CompanyEnrichmentService(ProviderAccount account, ProfileSource profiles, RevenueSource revenue,
+                    BooleanSupplier profilesEnabled, Register register, BooleanSupplier registerEnabled,
+                    CompanyEnrichmentCache cache, CompositionRequestBudget budget, Clock clock, Executor executor)
+    {
         this.account = Objects.requireNonNull(account);
         this.profiles = Objects.requireNonNull(profiles);
+        this.revenue = revenue;
         this.profilesEnabled = Objects.requireNonNull(profilesEnabled);
         this.register = Objects.requireNonNull(register);
         this.registerEnabled = Objects.requireNonNull(registerEnabled);
@@ -212,6 +246,7 @@ public final class CompanyEnrichmentService implements AutoCloseable
                                 .toList();
                 registerPass(isins);
                 profilePass(isins);
+                revenuePass(isins);
                 cache.flush();
                 notifyListeners();
                 synchronized (this)
@@ -232,7 +267,12 @@ public final class CompanyEnrichmentService implements AutoCloseable
 
     private boolean due(Optional<? extends CompanyEnrichmentCache.Cached<?>> cached)
     {
-        return cached.isEmpty() || !cached.get().retrievedAt().plus(REFRESH_AFTER).isAfter(clock.instant());
+        return due(cached, REFRESH_AFTER);
+    }
+
+    private boolean due(Optional<? extends CompanyEnrichmentCache.Cached<?>> cached, Duration refreshAfter)
+    {
+        return cached.isEmpty() || !cached.get().retrievedAt().plus(refreshAfter).isAfter(clock.instant());
     }
 
     private synchronized boolean closed()
@@ -333,6 +373,54 @@ public final class CompanyEnrichmentService implements AutoCloseable
         }
     }
 
+    private void revenuePass(List<String> isins)
+    {
+        if (revenue == null)
+            return;
+        synchronized (this)
+        {
+            if (!profilesEnabled.getAsBoolean() || revenueRetryAt.isAfter(clock.instant()))
+                return;
+        }
+        int fetched = 0;
+        for (var isin : isins)
+        {
+            if (closed())
+                return;
+            if (!due(cache.revenue(account, isin), REVENUE_REFRESH_AFTER))
+                continue;
+            if (!budget.acquirePermit(account, 1))
+                return;
+            var generation = cache.generation(account);
+            try
+            {
+                cache.putRevenue(account, isin, revenue.revenue(account, isin), generation);
+            }
+            catch (EnrichmentFailure e)
+            {
+                budget.record(account, e.result());
+                return;
+            }
+            catch (InterruptedIOException e)
+            {
+                return;
+            }
+            catch (IOException | RuntimeException e)
+            {
+                synchronized (this)
+                {
+                    revenueRetryAt = clock.instant().plus(budget.getFailureBackoff());
+                }
+                return;
+            }
+            if (++fetched % FLUSH_EVERY == 0)
+            {
+                cache.flush();
+                notifyListeners();
+            }
+        }
+    }
+
     private void notifyListeners()
     {
         for (var listener : listeners)
@@ -366,6 +454,8 @@ public final class CompanyEnrichmentService implements AutoCloseable
         var now = clock.instant();
         var attributes = new LinkedHashMap<Identifier, CompanyAttributes>();
         var waiting = new HashSet<Identifier>();
+        var splits = new LinkedHashMap<Identifier, RevenueSplit>();
+        var revenueWaiting = new HashSet<Identifier>();
         int pending = 0;
         for (var identity : current)
         {
@@ -381,8 +471,16 @@ public final class CompanyEnrichmentService implements AutoCloseable
             attributes.put(identity, CompanyAttributes.resolve(identity,
                             profile.flatMap(CompanyEnrichmentCache.Cached::value),
                             record.flatMap(CompanyEnrichmentCache.Cached::value), now));
+            if (revenue != null && isin.isPresent())
+            {
+                var cached = cache.revenue(account, isin.get());
+                if (cached.isPresent())
+                    cached.get().value().ifPresent(split -> splits.put(identity, split));
+                else if (withProfiles)
+                    revenueWaiting.add(identity);
+            }
         }
-        return new Snapshot(attributes, pending, waiting);
+        return new Snapshot(attributes, pending, waiting, splits, revenueWaiting);
     }
 
     /** Stops scheduling; a running pass ends after its current request. */

@@ -30,6 +30,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult.Company;
+import name.abuchen.portfolio.snapshot.lookthrough.RevenueSplit;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuation;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Group;
@@ -453,8 +454,14 @@ public final class LookThroughViewPresenter
         result.companies().stream().sorted(BY_TOTAL_THEN_IDENTIFIER).forEach(company -> companyRows.put(
                         company.identity(), companyRow(keys, company, denominatorAmount,
                                         detail(classifier, grouping, attributes.attributes().get(company.identity())))));
+        var revenueNotice = Optional.<String>empty();
         if (grouping == Grouping.COMPANY)
             rows.addAll(companyRows.values());
+        else if (grouping == Grouping.REVENUE_REGION)
+        {
+            rows.addAll(revenueRows(keys, classifier, companyRows, attributes, denominatorAmount));
+            revenueNotice = Optional.of(revenueNotice(companyRows, attributes));
+        }
         else
             rows.addAll(groupRows(keys, classifier, grouping, companyRows, attributes, denominatorAmount));
 
@@ -493,6 +500,7 @@ public final class LookThroughViewPresenter
         notices.add(denominatorText.orElse(Messages.LookThroughLabelNoDenominator));
         exclusionNotice(valuation).ifPresent(notices::add);
         unverifiedNotice.ifPresent(notices::add);
+        revenueNotice.ifPresent(notices::add);
         notices.add(completenessText);
 
         var open = result.value(Category.UNRESOLVED).add(result.value(Category.UNVERIFIED_HOLDING));
@@ -555,6 +563,120 @@ public final class LookThroughViewPresenter
                             MessageFormat.format(Messages.LookThroughGroupPending, pending.size()), pending,
                             denominator));
         return rows;
+    }
+
+    /**
+     * Splits every company over the members of its revenue split. A company
+     * appears in each group with its allocated part, with direct and indirect
+     * parts and contributions scaled by the same fraction, so the groups add up
+     * to the company exposure. Companies without a split form the group "No
+     * revenue data", those still waiting for one the pending group.
+     */
+    private List<GroupRow> revenueRows(Keys keys, LookThroughGrouping classifier, Map<Identifier, CompanyRow> companies,
+                    CompanyEnrichmentService.Snapshot attributes, Optional<BigDecimal> denominator)
+    {
+        var regular = new LinkedHashMap<RevenueSplit.Member, List<CompanyRow>>();
+        var unknown = new ArrayList<CompanyRow>();
+        var pending = new ArrayList<CompanyRow>();
+        companies.forEach((identity, row) -> {
+            var split = attributes.revenue().get(identity);
+            if (split != null)
+            {
+                for (var share : split.shares())
+                    regular.computeIfAbsent(share.member(), member -> new ArrayList<>())
+                                    .add(allocated(keys, row, split, share, denominator));
+            }
+            else if (attributes.revenueWaiting().contains(identity))
+            {
+                pending.add(row);
+            }
+            else
+            {
+                unknown.add(row);
+            }
+        });
+
+        var rows = new ArrayList<GroupRow>();
+        regular.forEach((member, members) -> {
+            members.sort(Comparator.comparing(CompanyRow::total).reversed().thenComparing(CompanyRow::label));
+            var group = classifier.revenueGroup(member);
+            rows.add(groupRow(keys, Grouping.REVENUE_REGION, GroupKind.REGULAR, group.code(), group.label(), members,
+                            denominator));
+        });
+        rows.sort(Comparator.comparing(GroupRow::total).reversed().thenComparing(GroupRow::label));
+        if (!unknown.isEmpty())
+            rows.add(groupRow(keys, Grouping.REVENUE_REGION, GroupKind.UNKNOWN, "~unknown", //$NON-NLS-1$
+                            MessageFormat.format(Messages.LookThroughGroupNoRevenue, unknown.size()), unknown,
+                            denominator));
+        if (!pending.isEmpty())
+            rows.add(groupRow(keys, Grouping.REVENUE_REGION, GroupKind.PENDING, "~pending", //$NON-NLS-1$
+                            MessageFormat.format(Messages.LookThroughGroupPending, pending.size()), pending,
+                            denominator));
+        return rows;
+    }
+
+    /** The part of a company that one member of its revenue split gets; the key is unique per member. */
+    private CompanyRow allocated(Keys keys, CompanyRow row, RevenueSplit split, RevenueSplit.Share share,
+                    Optional<BigDecimal> denominator)
+    {
+        // the percentages add up to exactly 100, so the parts add up to the exact amount
+        var fraction = share.percent().movePointLeft(2);
+        var key = keys.unique(row.key().child("revenue", share.member().key())); //$NON-NLS-1$
+        var direct = row.direct().multiply(fraction);
+        var indirect = row.indirect().multiply(fraction);
+        var total = direct.add(indirect);
+        var offset = row.key().parts().size();
+        var contributions = row.contributions().stream().map(contribution -> {
+            var parts = contribution.key().parts();
+            var value = contribution.value().multiply(fraction);
+            var contributionShare = share(value, denominator);
+            return new ContributionRow(keys.unique(key.child(parts.subList(offset, parts.size()).toArray())),
+                            contribution.label(), contribution.origin(), contribution.path(), contribution.sourceText(),
+                            contribution.direct(), value, contributionShare, shareText(contributionShare));
+        }).toList();
+        var companyShare = share(total, denominator);
+        var percent = Values.Percent2.format(share.percent().movePointLeft(2).doubleValue());
+        var period = Values.Date.format(split.period());
+        var detail = split.incomplete()
+                        ? MessageFormat.format(Messages.LookThroughDetailRevenueScaled, percent, period,
+                                        Values.Percent2.format(split.reportedSum().movePointLeft(2).doubleValue()))
+                        : MessageFormat.format(Messages.LookThroughDetailRevenue, percent, period);
+        return new CompanyRow(key, row.label(), direct, indirect, total, companyShare, shareText(companyShare),
+                        contributions, Optional.of(detail));
+    }
+
+    /**
+     * The share of the company exposure that has revenue data, the range of
+     * reporting periods and the number of splits that had to be scaled.
+     */
+    private String revenueNotice(Map<Identifier, CompanyRow> companies, CompanyEnrichmentService.Snapshot attributes)
+    {
+        var all = BigDecimal.ZERO;
+        var covered = BigDecimal.ZERO;
+        var splits = new ArrayList<RevenueSplit>();
+        for (var entry : companies.entrySet())
+        {
+            all = all.add(entry.getValue().total());
+            var split = attributes.revenue().get(entry.getKey());
+            if (split != null)
+            {
+                covered = covered.add(entry.getValue().total());
+                splits.add(split);
+            }
+        }
+        if (splits.isEmpty() || all.signum() <= 0)
+            return Messages.LookThroughRevenueCoverageNone;
+
+        var first = splits.stream().map(RevenueSplit::period).min(Comparator.naturalOrder()).orElseThrow();
+        var last = splits.stream().map(RevenueSplit::period).max(Comparator.naturalOrder()).orElseThrow();
+        var periods = first.equals(last) ? Values.Date.format(first)
+                        : Values.Date.format(first) + " \u2013 " + Values.Date.format(last); //$NON-NLS-1$
+        var text = MessageFormat.format(Messages.LookThroughRevenueCoverage,
+                        Values.Percent2.format(covered.divide(all, SHARE_SCALE, RoundingMode.HALF_UP).doubleValue()),
+                        periods);
+        var incomplete = splits.stream().filter(RevenueSplit::incomplete).count();
+        return incomplete == 0 ? text
+                        : text + " " + MessageFormat.format(Messages.LookThroughRevenueIncomplete, incomplete); //$NON-NLS-1$
     }
 
     private GroupRow groupRow(Keys keys, Grouping grouping, GroupKind kind, String code, String label,

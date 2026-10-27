@@ -11,6 +11,7 @@ import name.abuchen.portfolio.model.Classification;
 import name.abuchen.portfolio.model.TaxonomyTemplate;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes.Attribute;
+import name.abuchen.portfolio.snapshot.lookthrough.RevenueSplit;
 import name.abuchen.portfolio.ui.Messages;
 
 /**
@@ -23,7 +24,7 @@ public final class LookThroughGrouping
     /** Attribute that the Breakdown groups its companies by. */
     public enum Grouping
     {
-        COMPANY, COUNTRY, REGION, MARKET_CLASSIFICATION, SECTOR, INDUSTRY, CURRENCY;
+        COMPANY, COUNTRY, REGION, MARKET_CLASSIFICATION, SECTOR, INDUSTRY, CURRENCY, REVENUE_REGION;
 
         public String label()
         {
@@ -36,6 +37,7 @@ public final class LookThroughGrouping
                 case SECTOR -> Messages.LookThroughGroupingSector;
                 case INDUSTRY -> Messages.LookThroughGroupingIndustry;
                 case CURRENCY -> Messages.LookThroughGroupingCurrency;
+                case REVENUE_REGION -> Messages.LookThroughGroupingRevenueRegion;
             };
         }
     }
@@ -58,7 +60,7 @@ public final class LookThroughGrouping
                     "basic materials", "15"); //$NON-NLS-1$ //$NON-NLS-2$
 
     /** Classification maps of one locale. */
-    private record Maps(Map<String, String> countryNames, Map<String, Group> regions, Map<String, Group> markets,
+    private record Maps(Map<String, String> countryNames, Map<String, String> regionNames, Map<String, Group> regions, Map<String, Group> markets,
                     Map<String, Group> sectorsByName, Map<String, Group> sectorsByCode)
     {
     }
@@ -88,6 +90,8 @@ public final class LookThroughGrouping
             case SECTOR -> value(attributes.sector()).map(this::sector);
             case INDUSTRY -> value(attributes.industry()).map(name -> new Group(name.toLowerCase(Locale.ROOT), name));
             case CURRENCY -> value(attributes.currency()).map(code -> new Group(code, code));
+            // split over several groups, see revenueGroup
+            case REVENUE_REGION -> Optional.empty();
         };
     }
 
@@ -101,6 +105,27 @@ public final class LookThroughGrouping
             name = display.isBlank() ? code : display;
         }
         return new Group(code, name);
+    }
+
+    /**
+     * The group of a revenue member: a country, a region of PP's region
+     * template, one of the regions that the template lacks, or the remainder.
+     */
+    public Group revenueGroup(RevenueSplit.Member member)
+    {
+        var code = member.code();
+        return switch (member.kind())
+        {
+            case COUNTRY -> country(code);
+            case REGION -> new Group(member.key(), switch (code)
+            {
+                case RevenueSplit.EMEA -> Messages.LookThroughRegionEmea;
+                case RevenueSplit.APAC -> Messages.LookThroughRegionApac;
+                case RevenueSplit.LATAM -> Messages.LookThroughRegionLatam;
+                default -> maps.regionNames().getOrDefault(code, code);
+            });
+            case OTHER -> new Group(member.key(), Messages.LookThroughRegionOther);
+        };
     }
 
     /**
@@ -132,6 +157,8 @@ public final class LookThroughGrouping
         var markets = new HashMap<String, Group>();
         countries("regions", 1, names, regions); //$NON-NLS-1$
         countries("regions-msci", 1, names, markets); //$NON-NLS-1$
+        var regionNames = new HashMap<String, String>();
+        regionNames(TaxonomyTemplate.byId("regions").build().getRoot(), regionNames); //$NON-NLS-1$
 
         var byName = new HashMap<String, Group>();
         var byCode = new HashMap<String, Group>();
@@ -144,7 +171,7 @@ public final class LookThroughGrouping
             if (english.containsKey(sector.getKey() + ".label")) //$NON-NLS-1$
                 byName.put(english.getString(sector.getKey() + ".label").trim().toLowerCase(Locale.ROOT), group); //$NON-NLS-1$
         }
-        return new Maps(Map.copyOf(names), Map.copyOf(regions), Map.copyOf(markets), Map.copyOf(byName),
+        return new Maps(Map.copyOf(names), Map.copyOf(regionNames), Map.copyOf(regions), Map.copyOf(markets), Map.copyOf(byName),
                         Map.copyOf(byCode));
     }
 
@@ -157,6 +184,19 @@ public final class LookThroughGrouping
     {
         var root = TaxonomyTemplate.byId(template).build().getRoot();
         collect(root, 0, depth, null, names, groups);
+    }
+
+    /** The names of the continents and regions of the template, by their key. */
+    private static void regionNames(Classification node, Map<String, String> names)
+    {
+        for (var child : node.getChildren())
+        {
+            if (!child.getKey().startsWith(COUNTRY_PREFIX))
+            {
+                names.put(child.getKey(), child.getName());
+                regionNames(child, names);
+            }
+        }
     }
 
     private static void collect(Classification node, int level, int depth, Group group, Map<String, String> names,

@@ -208,4 +208,61 @@ public class CompanyEnrichmentCacheTest
         assertTrue(cache.register(ISIN).isPresent());
         assertTrue(cache.profile(ACCOUNT, ISIN).isPresent());
     }
+
+    private RevenueSplit revenue(String isin)
+    {
+        return RevenueSplit.of(isin, java.time.LocalDate.parse("2025-06-30"),
+                        java.util.List.of(new RevenueSplit.Entry("United States", "country_US", new BigDecimal("54")),
+                                        new RevenueSplit.Entry("Europe", "srt_EuropeMember", new BigDecimal("36"))),
+                        clock.instant()).orElseThrow();
+    }
+
+    @Test
+    public void testRevenueRoundTripWithdrawalAndSessionOnly() throws IOException
+    {
+        var path = directory();
+        var cache = new CompanyEnrichmentCache(path, clock);
+        cache.configure(policy(Permission.PERMITTED, null), Optional.empty());
+        cache.putRevenue(ACCOUNT, ISIN, Optional.of(revenue(ISIN)), cache.generation(ACCOUNT));
+        cache.putRevenue(ACCOUNT, OTHER, Optional.empty(), cache.generation(ACCOUNT));
+        cache.flush();
+        assertEquals(1, files(path, "revenue-"));
+
+        var restarted = new CompanyEnrichmentCache(path, clock);
+        restarted.configure(policy(Permission.PERMITTED, null), Optional.empty());
+        assertEquals(Optional.of(revenue(ISIN)), restarted.revenue(ACCOUNT, ISIN).orElseThrow().value());
+        assertTrue(restarted.revenue(ACCOUNT, OTHER).orElseThrow().value().isEmpty());
+        assertTrue(restarted.profile(ACCOUNT, ISIN).isEmpty());
+
+        // Withdrawing storage deletes the file; a late answer and the session copy stay in memory.
+        var stale = cache.generation(ACCOUNT);
+        cache.configure(policy(Permission.PERMITTED, null), Optional.of(false));
+        assertEquals(0, files(path, "revenue-"));
+        assertTrue(cache.revenue(ACCOUNT, ISIN).isPresent());
+        cache.configure(policy(Permission.PERMITTED, null), Optional.empty());
+        cache.putRevenue(ACCOUNT, "XX0000000099", Optional.empty(), stale);
+        cache.flush();
+        var again = new CompanyEnrichmentCache(path, clock);
+        again.configure(policy(Permission.PERMITTED, null), Optional.empty());
+        assertTrue(again.revenue(ACCOUNT, ISIN).isEmpty());
+        assertTrue(again.revenue(ACCOUNT, "XX0000000099").isEmpty());
+
+        // Unverified storage without preference keeps splits for the session only.
+        var memory = new CompanyEnrichmentCache(path, clock);
+        memory.configure(policy(Permission.UNVERIFIED, null), Optional.empty());
+        memory.putRevenue(ACCOUNT, ISIN, Optional.of(revenue(ISIN)), memory.generation(ACCOUNT));
+        memory.flush();
+        assertEquals(0, files(path, "revenue-"));
+        assertTrue(memory.revenue(ACCOUNT, ISIN).isPresent());
+    }
+
+    @Test
+    public void testRevenueFollowsMaximumAge() throws IOException
+    {
+        var cache = new CompanyEnrichmentCache(directory(), clock);
+        cache.configure(policy(Permission.PERMITTED, Duration.ofDays(10)), Optional.empty());
+        cache.putRevenue(ACCOUNT, ISIN, Optional.of(revenue(ISIN)), cache.generation(ACCOUNT));
+        clock.now = START.plus(Duration.ofDays(11));
+        assertTrue(cache.revenue(ACCOUNT, ISIN).isEmpty());
+    }
 }

@@ -54,6 +54,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Categ
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughEngine;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
+import name.abuchen.portfolio.snapshot.lookthrough.RevenueSplit;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuation;
 import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuationAdapter;
 import name.abuchen.portfolio.ui.Messages;
@@ -61,6 +62,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Cate
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Grouping;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContentState;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupKind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupRow;
@@ -976,5 +978,96 @@ public class LookThroughViewPresenterTest
         assertTrue(keys(after.rows()).contains(companyKey));
         assertTrue(keys(before.rows()).contains(RowKey.of("group:currency:EUR")));
         assertTrue(keys(after.rows()).contains(RowKey.of("group:currency:EUR")));
+    }
+
+    private static RevenueSplit split(String id, String period, RevenueSplit.Entry... entries)
+    {
+        return RevenueSplit.of(id, LocalDate.parse(period), List.of(entries), RETRIEVED).orElseThrow();
+    }
+
+    private static RevenueSplit.Entry entry(String label, String member, String percentage)
+    {
+        return new RevenueSplit.Entry(label, member, new BigDecimal(percentage));
+    }
+
+    @Test
+    public void testRevenueRegionSplitsCompaniesAndTotalsEqualTheCompanyExposure()
+    {
+        var result = groupingResult();
+        var splits = new java.util.LinkedHashMap<Identifier, RevenueSplit>();
+        splits.put(company("CO-A"), split("CO-A", "2025-03-31", entry("United States", "country_US", "100")));
+        splits.put(company("CO-B"), split("CO-B", "2025-06-30", entry("United States", "country_US", "60"),
+                        entry("Europe", "srt_EuropeMember", "40")));
+        // reported entries add up to 90 percent and are scaled
+        splits.put(company("CO-C"), split("CO-C", "2025-06-30", entry("Germany", "country_DE", "45"),
+                        entry("Europe", "srt_EuropeMember", "45")));
+        var snapshot = new CompanyEnrichmentService.Snapshot(Map.of(), 0, Set.of(), splits, Set.of(company("CO-E")));
+
+        var model = new LookThroughViewPresenter().present(result, Grouping.REVENUE_REGION, snapshot);
+        var groups = groups(model);
+        assertEquals(5, groups.size());
+
+        var us = groups.get(0);
+        assertEquals(RowKey.of("group:revenue_region:US"), us.key());
+        amount("28000", us.total());
+        assertEquals(2, us.companies().size());
+        // 60 percent of the company with 30000 and the whole company with 10000
+        amount("18000", us.companies().get(0).total());
+        amount("10000", us.companies().get(1).total());
+        var europe = groups.get(1);
+        assertEquals(RowKey.of("group:revenue_region:region:R10"), europe.key());
+        amount("14500", europe.total());
+        amount("2500", groups.get(2).total());
+        assertEquals(GroupKind.UNKNOWN, groups.get(3).groupKind());
+        assertEquals(MessageFormat.format(Messages.LookThroughGroupNoRevenue, 1), groups.get(3).label());
+        amount("2000", groups.get(3).total());
+        assertEquals(GroupKind.PENDING, groups.get(4).groupKind());
+        amount("1000", groups.get(4).total());
+
+        var sum = groups.stream().map(GroupRow::total).reduce(BigDecimal.ZERO, BigDecimal::add);
+        amount("48000", sum);
+        assertEquals(0, sum.compareTo(result.value(Category.COMPANY)));
+
+        // parts of one company add up to its exposure, also direct and indirect and the contributions
+        var parts = groups.stream().flatMap(group -> group.companies().stream())
+                        .filter(row -> row.label().equals("Synthetic b")).toList();
+        assertEquals(2, parts.size());
+        amount("30000", parts.stream().map(CompanyRow::total).reduce(BigDecimal.ZERO, BigDecimal::add));
+        amount("30000", parts.stream().map(CompanyRow::direct).reduce(BigDecimal.ZERO, BigDecimal::add));
+        amount("30000", parts.stream().flatMap(row -> row.contributions().stream()).map(ContributionRow::value)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add));
+        assertTrue(parts.get(0).detail().orElseThrow().contains(Values.Percent2.format(0.6)));
+
+        // company keys are unique per group, so selection and expansion work
+        var all = keys(model.rows());
+        assertEquals(all.size(), new java.util.HashSet<>(all).size());
+        var scaled = groups.get(2).companies().get(0);
+        assertTrue(scaled.detail().orElseThrow().contains(Values.Percent2.format(0.9)));
+
+        // the coverage notice states the share with revenue data and the periods
+        var notice = model.summary().indicatorText();
+        assertTrue(notice.contains(Values.Percent2.format(0.9375)));
+        assertTrue(notice.contains(Values.Date.format(LocalDate.parse("2025-03-31"))));
+        assertTrue(notice.contains(Values.Date.format(LocalDate.parse("2025-06-30"))));
+        assertTrue(notice.contains(MessageFormat.format(Messages.LookThroughRevenueIncomplete, 1)));
+
+        // the charts nest the allocated parts in their groups, each with its own key
+        var chart = model.chart();
+        assertTrue(chart.isGrouped());
+        assertEquals(5, chart.top().size());
+        assertEquals(7, chart.companies().size());
+    }
+
+    @Test
+    public void testRevenueRegionWithoutAnyDataKeepsAllCompaniesUnallocated()
+    {
+        var result = groupingResult();
+        var model = new LookThroughViewPresenter().present(result, Grouping.REVENUE_REGION,
+                        CompanyEnrichmentService.Snapshot.empty());
+        var groups = groups(model);
+        assertEquals(1, groups.size());
+        assertEquals(GroupKind.UNKNOWN, groups.get(0).groupKind());
+        amount("48000", groups.get(0).total());
+        assertTrue(model.summary().indicatorText().contains(Messages.LookThroughRevenueCoverageNone));
     }
 }

@@ -78,7 +78,8 @@ public final class LookThroughCompositionService
         {
             // Register data is openly licensed and always cached; profiles
             // follow the account's storage settings like compositions.
-            SESSION.enableEnrichment(EulerpoolPreferencePage.ACCOUNT, PROVIDER::profile, new GleifCompanyRegister(),
+            SESSION.enableEnrichment(EulerpoolPreferencePage.ACCOUNT, PROVIDER::profile,
+                            PROVIDER::revenueRegions, new GleifCompanyRegister(),
                             PREFERENCES::isRegisterLookupEnabled, COMPANIES, Executors.newSingleThreadExecutor(
                                             runnable -> {
                                                 var thread = new Thread(runnable, "lookthrough-enrichment"); //$NON-NLS-1$

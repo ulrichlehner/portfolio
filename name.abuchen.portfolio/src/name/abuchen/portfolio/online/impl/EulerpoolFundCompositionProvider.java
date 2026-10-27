@@ -8,14 +8,18 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.function.Predicate;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
@@ -52,6 +56,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.AssetType;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Provenance;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
+import name.abuchen.portfolio.snapshot.lookthrough.RevenueSplit;
 import name.abuchen.portfolio.util.OnlineHelper;
 import name.abuchen.portfolio.util.WebAccess;
 
@@ -289,6 +294,74 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
             var industry = text(row, "industry").map(String::trim).filter(value -> !value.isEmpty());
             var marketCap = number(row, "mcap").filter(value -> value.signum() >= 0);
             return new CompanyProfile(isin, country, currency, sector, industry, marketCap, clock.instant());
+        }
+        catch (RuntimeException e)
+        {
+            // No response bodies or exception messages escape.
+            throw new IOException();
+        }
+    }
+
+    /**
+     * Latest reported revenue by geography of an ISIN from equity/regions,
+     * normalized and reduced to percentages. Only entries of the newest
+     * period on a geographical axis count; if several geographical axes
+     * exist for it, the one with the most entries. Empty when the provider
+     * has none. A malformed answer fails instead of counting as "no data".
+     */
+    public Optional<RevenueSplit> revenueRegions(ProviderAccount account, String isin) throws IOException
+    {
+        checkAccount(account);
+        if (isin == null || !isin.matches("[A-Z]{2}[A-Z0-9]{9}[0-9]"))
+            throw new IllegalArgumentException();
+        var token = credentials.getBearerToken(account);
+        if (token.isEmpty() || !token.get().matches("[A-Za-z0-9._~+/-]+=*"))
+            throw new EnrichmentFailure(failure(Status.AUTHENTICATION_FAILED));
+        var response = classificationResponse("https://api.eulerpool.com/api/1/equity/regions/" + isin, token.get());
+        if (response.status() == 204 || response.status() == 404)
+            return Optional.empty();
+        if (response.status() != 200)
+            throw new IOException();
+        return parseRevenueRegions(isin, response.body());
+    }
+
+    private Optional<RevenueSplit> parseRevenueRegions(String isin, String body) throws IOException
+    {
+        if (body == null || body.isBlank())
+            throw new IOException();
+        try (var reader = new JsonReader(new StringReader(body)))
+        {
+            reader.setStrictness(Strictness.STRICT);
+            var json = JsonParser.parseReader(reader);
+            if (!json.isJsonArray() || reader.peek() != JsonToken.END_DOCUMENT)
+                throw new IOException();
+            var periods = new TreeMap<LocalDate, Map<String, List<RevenueSplit.Entry>>>();
+            for (var element : json.getAsJsonArray())
+            {
+                if (!element.isJsonObject())
+                    throw new IOException();
+                var row = element.getAsJsonObject();
+                var period = LocalDate.parse(text(row, "period").orElseThrow());
+                var axis = text(row, "axis").orElse("");
+                var percentage = number(row, "percentage");
+                var entry = new RevenueSplit.Entry(text(row, "label").orElse(""), text(row, "member").orElse(""),
+                                percentage.orElse(null));
+                if (axis.toLowerCase(Locale.ROOT).contains("geograph"))
+                    periods.computeIfAbsent(period, ignored -> new TreeMap<>())
+                                    .computeIfAbsent(axis, ignored -> new ArrayList<>()).add(entry);
+            }
+            // The newest period that has usable entries on a geographical axis.
+            for (var period : periods.descendingKeySet())
+            {
+                var axis = periods.get(period).entrySet().stream()
+                                .max(Comparator.comparingInt((Map.Entry<String, List<RevenueSplit.Entry>> item) -> item
+                                                .getValue().size()))
+                                .orElseThrow();
+                var split = RevenueSplit.of(isin, period, axis.getValue(), clock.instant());
+                if (split.isPresent())
+                    return split;
+            }
+            return Optional.empty();
         }
         catch (RuntimeException e)
         {
