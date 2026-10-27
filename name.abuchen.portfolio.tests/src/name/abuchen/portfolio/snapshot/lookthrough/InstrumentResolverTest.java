@@ -285,6 +285,98 @@ public class InstrumentResolverTest
         assertEquals(LookupStatus.ATTEMPTED, result.lookupStatus());
     }
 
+    private static CompositionInstrument listed(String name)
+    {
+        return new CompositionInstrument(name, Map.of("ISIN", "QS0000000017"));
+    }
+
+    @Test
+    public void testAnsweredLookupWithoutClassificationAssumesCompanyOfIsin()
+    {
+        var result = resolver.resolve(listed("Synthetic Holdings Class H"), List.of(), ignored -> List.of(),
+                        () -> true);
+
+        var isin = new Identifier("ISIN", "QS0000000017");
+        assertEquals(State.GROUPED_EQUITY, result.state());
+        assertEquals(Reason.ASSUMED_COMPANY, result.reason());
+        assertEquals(Optional.of(isin), result.company());
+        assertEquals(Optional.of(isin), result.instrument());
+        assertEquals(Optional.of(AssetType.EQUITY), result.classification());
+        assertEquals(LookupStatus.ATTEMPTED, result.lookupStatus());
+    }
+
+    @Test
+    public void testIdentityWithoutClassificationIsAssumedCompanyAfterLookup()
+    {
+        var source = listed("Synthetic Industries ADR");
+        var known = evidence(source, "first", null, null);
+        var result = resolver.resolve(source, List.of(), ignored -> List.of(known), () -> true);
+
+        assertEquals(State.GROUPED_EQUITY, result.state());
+        assertEquals(Reason.ASSUMED_COMPANY, result.reason());
+        assertEquals(Optional.of(new Identifier("ISIN", "QS0000000017")), result.company());
+        assertEquals(List.of(known), result.evidence());
+    }
+
+    @Test
+    public void testNoCompanyIsAssumedWithoutAnsweredLookup()
+    {
+        var source = listed("Synthetic Holdings");
+        assertEquals(State.UNRESOLVED, resolve(source).state());
+        assertEquals(LookupStatus.BUDGET_EXHAUSTED, resolve(source).lookupStatus());
+
+        var failed = resolver.resolve(source, List.of(), ignored -> {
+            throw new IOException();
+        }, () -> true);
+        assertEquals(State.UNRESOLVED, failed.state());
+        assertEquals(LookupStatus.FAILED, failed.lookupStatus());
+
+        var withoutIsin = resolver.resolve(new CompositionInstrument("Synthetic Holdings",
+                        Map.of("synthetic:instrument", "first")), List.of(), ignored -> List.of(), () -> true);
+        assertEquals(State.UNRESOLVED, withoutIsin.state());
+        assertEquals(Reason.MISSING_IDENTITY, withoutIsin.reason());
+    }
+
+    @Test
+    public void testClassifiedNonCompanyIsNeverAssumedCompany()
+    {
+        var source = listed("Synthetic Holdings");
+        var fund = evidence(source, "first", AssetType.FUND, null);
+        var result = resolver.resolve(source, List.of(), ignored -> List.of(fund), () -> true);
+        assertEquals(State.FUND, result.state());
+    }
+
+    @Test
+    public void testNamesOfFundsCashBondsAndDerivativesAreNotAssumedCompanies()
+    {
+        for (var name : List.of("Synthetic Core MSCI World UCITS ETF", "SYNTHETIC USD CASH",
+                        "Synthetic Money Market Fund", "SYNTH LIQUIDITY", "SYNTH USD LIQ", "US T-BILL 0% 01/2027", "Synthetic Treasury Bill",
+                        "UNITED STATES TREASURY 2.5% 2030", "SYNTH S&P500 EMINI FUT DEC26", "Synthetic Futures",
+                        "Synthetic Index Swap", "SYNTH EUR/USD FX FORWARD", "Synthetic Fonds", "Synthetic SICAV",
+                        "Synthetic REIT Trust Units", "Synthetic 4.0% Bond 2031", "Synthetic Gold ETC",
+                        "Synthetic Notes 2029", "Synthetic Index Options"))
+        {
+            var result = resolver.resolve(listed(name), List.of(), ignored -> List.of(), () -> true);
+            assertEquals(name, State.UNRESOLVED, result.state());
+            assertEquals(name, Reason.MISSING_IDENTITY, result.reason());
+        }
+    }
+
+    @Test
+    public void testCompanyNamesWithAmbiguousWordsAreStillAssumedCompanies()
+    {
+        for (var name : List.of("Synthetic Trust Bank Corp", "Synthetic Treasury Wine Estates",
+                        "Synthetic Option Care", "Synthetic Future plc", "Synthetic Cashmere Holdings", "Synthetic Bondholder Services",
+                        "Synthetic Fundamental Data Inc", "Synthetic Indexing Systems", "Synthetic Notebook AG"))
+        {
+            var result = resolver.resolve(listed(name), List.of(), ignored -> List.of(), () -> true);
+            assertEquals(name, Reason.ASSUMED_COMPANY, result.reason());
+        }
+        assertFalse(InstrumentResolver.indicatesNonCompany(null));
+        assertFalse(InstrumentResolver.indicatesNonCompany(""));
+        assertTrue(InstrumentResolver.indicatesNonCompany("synthetic world ucits etf (acc)"));
+    }
+
     @Test
     public void testFailedLookupPreservesUngroupedEvidence()
     {

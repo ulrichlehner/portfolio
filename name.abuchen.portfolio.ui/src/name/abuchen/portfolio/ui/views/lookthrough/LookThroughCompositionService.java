@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +34,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy.StorageMode;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePreferences;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.HeldSecurities;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
@@ -146,6 +149,33 @@ public final class LookThroughCompositionService
         }
     }
 
+    /**
+     * Starts the backend lazily: the first call reads and prunes the stores,
+     * which happens on the thread that calls first, never when a view only
+     * keeps the gateway.
+     */
+    private static final RefreshGateway GATEWAY = new RefreshGateway()
+    {
+        @Override
+        public CompositionRefreshCoordinator.Snapshot read(ProviderAccount account, CompositionInstrument fund)
+        {
+            return Backend.SESSION.read(account, fund);
+        }
+
+        @Override
+        public CompletableFuture<CompositionRefreshCoordinator.Refresh> refresh(ProviderAccount account,
+                        CompositionInstrument fund, boolean manual)
+        {
+            return Backend.SESSION.refresh(account, fund, manual);
+        }
+    };
+
+    private static final Executor STARTUP = runnable -> {
+        var thread = new Thread(runnable, "lookthrough-startup"); //$NON-NLS-1$
+        thread.setDaemon(true);
+        thread.start();
+    };
+
     private static final String CACHE_FOLDER = "lookthrough-cache"; //$NON-NLS-1$
     private static final String COMPANY_FOLDER = "lookthrough-companies"; //$NON-NLS-1$
 
@@ -192,7 +222,7 @@ public final class LookThroughCompositionService
         @Override
         public RefreshGateway gateway()
         {
-            return Backend.SESSION;
+            return GATEWAY;
         }
 
         @Override
@@ -245,7 +275,11 @@ public final class LookThroughCompositionService
         @Override
         public Runnable addEnrichmentListener(Runnable listener)
         {
-            return Backend.SESSION.addEnrichmentListener(listener);
+            // Registering starts the backend, which reads the stores; never on
+            // the user interface thread that creates the view.
+            var registration = CompletableFuture
+                            .supplyAsync(() -> Backend.SESSION.addEnrichmentListener(listener), STARTUP);
+            return () -> registration.thenAccept(Runnable::run);
         }
 
         @Override

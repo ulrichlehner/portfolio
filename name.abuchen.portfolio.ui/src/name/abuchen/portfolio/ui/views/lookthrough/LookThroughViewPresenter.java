@@ -1,6 +1,7 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
 import java.text.MessageFormat;
 import java.time.LocalDate;
@@ -228,7 +229,17 @@ public final class LookThroughViewPresenter
     public record Summary(String asOfText, String valueText, Optional<BigDecimal> resolvedShare,
                     Optional<String> resolvedText, Optional<BigDecimal> topTenShare, Optional<String> topTenText,
                     int decomposedFunds, int heldFunds, Optional<String> fundsText, boolean needsCompositions,
-                    boolean attention, String indicatorText, Optional<Largest> largest)
+                    boolean attention, String indicatorText, Optional<Largest> largest,
+                    Optional<Effective> effective)
+    {
+    }
+
+    /**
+     * The effective number of companies: one divided by the sum of the
+     * squared shares of the company exposure (inverse Herfindahl index), with
+     * the number of companies with positive exposure.
+     */
+    public record Effective(BigDecimal value, long companies, String text, String tooltip)
     {
     }
 
@@ -315,7 +326,8 @@ public final class LookThroughViewPresenter
                     Optional<String> denominatorText, Completeness completeness, String completenessText,
                     Optional<String> unverifiedNotice, boolean empty, List<Row> rows, Summary summary,
                     Optional<Coverage> coverage, Map<Map<String, String>, String> decomposedShares,
-                    Set<Map<String, String>> directlyClassified, Grouping grouping)
+                    Set<Map<String, String>> directlyClassified, Grouping grouping,
+                    Optional<String> assumedCompanies)
     {
         public Model
         {
@@ -531,12 +543,48 @@ public final class LookThroughViewPresenter
                         denominator.isEmpty() || !valuation.diagnostics().isEmpty() || unverifiedNotice.isPresent()
                                         || concentrated.isPresent(),
                         String.join("\n\n", notices), //$NON-NLS-1$
-                        largest);
+                        largest, denominator.isPresent() ? effective(result) : Optional.empty());
 
         return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(), scopeText, denominator,
                         denominatorText, completeness, completenessText, unverifiedNotice, empty, rows, summary,
                         empty ? Optional.empty() : coverage(result, denominatorAmount), funds.shares(),
-                        directlyClassified(result), grouping);
+                        directlyClassified(result), grouping, assumedCompanies(result, denominatorAmount));
+    }
+
+    /**
+     * One divided by the sum of the squared shares of the companies, each
+     * relative to the total company exposure. Absent without company exposure.
+     */
+    static Optional<Effective> effective(LookThroughResult result)
+    {
+        var total = BigDecimal.ZERO;
+        long count = 0;
+        for (var company : result.companies())
+        {
+            if (company.total().signum() > 0)
+            {
+                total = total.add(company.total());
+                count++;
+            }
+        }
+        if (count == 0)
+            return Optional.empty();
+        var squares = BigDecimal.ZERO;
+        for (var company : result.companies())
+        {
+            if (company.total().signum() <= 0)
+                continue;
+            var weight = company.total().divide(total, MathContext.DECIMAL64);
+            squares = squares.add(weight.multiply(weight));
+        }
+        if (squares.signum() <= 0)
+            return Optional.empty();
+        var value = BigDecimal.ONE.divide(squares, MathContext.DECIMAL64);
+        // Rounding can not exceed the number of companies.
+        var rounded = Math.min(count, Math.max(1, value.setScale(0, RoundingMode.HALF_UP).longValue()));
+        return Optional.of(new Effective(value, count,
+                        MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, rounded, count),
+                        MessageFormat.format(Messages.LookThroughSummaryEffectiveTooltip, rounded)));
     }
 
     private List<GroupRow> groupRows(Keys keys, LookThroughGrouping classifier, Grouping grouping,
@@ -794,6 +842,34 @@ public final class LookThroughViewPresenter
      * security without classification is not included: it may still turn
      * out to be a fund.
      */
+    /** A position counted as a company by assumption, not by a classification. */
+    static boolean isAssumedCompany(LookThroughContribution contribution)
+    {
+        return contribution.category() == Category.COMPANY && contribution.resolution()
+                        .filter(value -> value.reason() == InstrumentResolution.Reason.ASSUMED_COMPANY).isPresent();
+    }
+
+    /**
+     * The number of positions assumed to be companies, counted once per
+     * instrument, and their share of the portfolio value.
+     */
+    private Optional<String> assumedCompanies(LookThroughResult result, Optional<BigDecimal> denominator)
+    {
+        var instruments = new HashSet<Map<String, String>>();
+        var value = BigDecimal.ZERO;
+        for (var contribution : result.contributions())
+        {
+            if (!isAssumedCompany(contribution))
+                continue;
+            instruments.add(contribution.instrument().identifiers());
+            value = value.add(contribution.value());
+        }
+        if (instruments.isEmpty())
+            return Optional.empty();
+        var share = percentText(share(value, denominator)).orElse("\u2013"); //$NON-NLS-1$
+        return Optional.of(MessageFormat.format(Messages.LookThroughStatusAssumedCompanies, instruments.size(), share));
+    }
+
     private static Set<Map<String, String>> directlyClassified(LookThroughResult result)
     {
         var identifiers = new HashSet<Map<String, String>>();
@@ -1014,6 +1090,8 @@ public final class LookThroughViewPresenter
         var origin = Objects.toString(contribution.origin().security().getName(), ""); //$NON-NLS-1$
         var sourceText = contribution.isDirect() ? Messages.LookThroughSourceDirect
                         : MessageFormat.format(Messages.LookThroughSourceIndirect, path, origin);
+        if (isAssumedCompany(contribution))
+            sourceText = sourceText + " · " + Messages.LookThroughSourceAssumed; //$NON-NLS-1$
 
         var share = share(contribution.value(), denominator);
         return new ContributionRow(keys.unique(sourceKey(parent, contribution)),
@@ -1110,7 +1188,7 @@ public final class LookThroughViewPresenter
             case AMBIGUOUS_CLASSIFICATION -> Messages.LookThroughReasonAmbiguousClassification;
             case MISSING_COMPANY -> Messages.LookThroughReasonMissingCompany;
             case AMBIGUOUS_COMPANY -> Messages.LookThroughReasonAmbiguousCompany;
-            case VERIFIED -> Messages.LookThroughReasonMissingResolution;
+            case VERIFIED, ASSUMED_COMPANY -> Messages.LookThroughReasonMissingResolution;
         };
     }
 

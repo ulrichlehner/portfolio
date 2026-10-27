@@ -52,6 +52,9 @@ import org.eclipse.swt.widgets.Listener;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.TreeItem;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonParser;
+
 import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.money.CurrencyConverterImpl;
 import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
@@ -149,6 +152,25 @@ public class LookThroughView extends AbstractFinanceView
     }
 
     private ExecutorService calculationExecutor;
+
+    /** One data status read in the background, for the source it was read from. */
+    private record StatusUpdate(LookThroughCompositionSource source, Optional<LookThroughDataStatus.Model> status,
+                    boolean hasFunds)
+    {
+    }
+
+    /**
+     * Reads the data status off the user interface thread: the first read
+     * starts the backend, which prunes and reads the local stores.
+     */
+    private ExecutorService statusExecutor;
+    private LookThroughRecalculation<StatusUpdate> statusCalculation;
+    /** The last data status read in the background; user interface thread only. */
+    private Optional<LookThroughDataStatus.Model> dataStatus = Optional.empty();
+    private boolean hasFunds;
+    private boolean statusRead;
+    /** An automatic pass waits until the backend was started in the background. */
+    private boolean automaticPending;
     private Shell shell;
     private LookThroughRecalculation<LookThroughResult> recalculation;
     /** Read and written on the calculation thread, reset on the user interface thread. */
@@ -224,6 +246,9 @@ public class LookThroughView extends AbstractFinanceView
         };
         this.compositionSource = source;
         this.calculatedInputs = null;
+        this.dataStatus = Optional.empty();
+        this.hasFunds = false;
+        this.statusRead = false;
         this.keyConfigured = Optional.empty();
         this.companyData = Optional.empty();
 
@@ -314,7 +339,7 @@ public class LookThroughView extends AbstractFinanceView
                         return;
                     companyData = companyText(attributes);
                     if (model != null && current == result && currentGrouping == grouping())
-                        applyModel(model, false);
+                        applyModel(model);
                     else
                         updateStatus();
                 });
@@ -400,8 +425,10 @@ public class LookThroughView extends AbstractFinanceView
     {
         if (disposed)
             return;
-        if (statusModel != null)
+        if (statusModel != null && statusRead)
             statusModel.refreshAutomatically();
+        else if (statusModel != null)
+            automaticPending = true;
         Display.getDefault().timerExec(ELIGIBILITY_INTERVAL, automaticRefresh);
     }
 
@@ -490,6 +517,10 @@ public class LookThroughView extends AbstractFinanceView
             recalculation.cancel();
         if (calculationExecutor != null)
             calculationExecutor.shutdownNow();
+        if (statusCalculation != null)
+            statusCalculation.cancel();
+        if (statusExecutor != null)
+            statusExecutor.shutdownNow();
         super.dispose();
     }
 
@@ -521,6 +552,18 @@ public class LookThroughView extends AbstractFinanceView
                         runnable.run();
                 });
         }, this::setResult, PortfolioPlugin::log);
+        statusExecutor = Executors.newSingleThreadExecutor(runnable -> {
+            var thread = new Thread(runnable, "lookthrough-status"); //$NON-NLS-1$
+            thread.setDaemon(true);
+            return thread;
+        });
+        statusCalculation = new LookThroughRecalculation<>(statusExecutor, runnable -> {
+            if (!disposed && !display.isDisposed())
+                display.asyncExec(() -> {
+                    if (!disposed)
+                        runnable.run();
+                });
+        }, this::applyStatusUpdate, PortfolioPlugin::log);
         enrichmentThrottle = new LookThroughUpdateThrottle(Clock.systemUTC(), ENRICHMENT_UPDATE_INTERVAL,
                         (task, delay) -> {
                             if (!display.isDisposed())
@@ -571,6 +614,7 @@ public class LookThroughView extends AbstractFinanceView
         var columns = new ShowHideColumnHelper(LookThroughView.class.getSimpleName(), getPreferenceStore(), viewer,
                         layout);
         addColumns(columns);
+        keepNameColumnFirst();
         columns.createColumns();
 
         viewer.getTree().setHeaderVisible(true);
@@ -596,6 +640,46 @@ public class LookThroughView extends AbstractFinanceView
         return container;
     }
 
+    /**
+     * Columns are created in the saved order and the first one holds the
+     * tree's expand arrow. A configuration saved with another column first
+     * gets the name column moved to the front.
+     */
+    private void keepNameColumnFirst()
+    {
+        var key = LookThroughView.class.getSimpleName();
+        var config = getPreferenceStore().getString(key);
+        if (config == null || !config.startsWith("{")) //$NON-NLS-1$
+            return;
+        try
+        {
+            var json = JsonParser.parseString(config).getAsJsonObject();
+            var items = json.getAsJsonArray("items"); //$NON-NLS-1$
+            if (items == null)
+                return;
+            for (int index = 1; index < items.size(); index++)
+            {
+                var item = items.get(index);
+                if (item.isJsonObject() && "instrument".equals(item.getAsJsonObject().get("id").getAsString())) //$NON-NLS-1$ //$NON-NLS-2$
+                {
+                    var reordered = new JsonArray();
+                    reordered.add(item);
+                    for (int other = 0; other < items.size(); other++)
+                        if (other != index)
+                            reordered.add(items.get(other));
+                    json.add("items", reordered); //$NON-NLS-1$
+                    getPreferenceStore().setValue(key, json.toString());
+                    return;
+                }
+            }
+        }
+        catch (RuntimeException e)
+        {
+            // An unreadable configuration falls back to the default columns.
+            getPreferenceStore().setToDefault(key);
+        }
+    }
+
     private static Composite createCalculatingMessage(Composite parent)
     {
         var area = new Composite(parent, SWT.NONE);
@@ -612,19 +696,8 @@ public class LookThroughView extends AbstractFinanceView
 
     private void addColumns(ShowHideColumnHelper support)
     {
-        var column = new Column("rank", Messages.LookThroughColumnRank, SWT.RIGHT, 40); //$NON-NLS-1$
-        column.setLabelProvider(new ColumnLabelProvider()
-        {
-            @Override
-            public String getText(Object element)
-            {
-                var rank = element instanceof Row row ? ranks.get(row.key()) : null;
-                return rank != null ? String.valueOf(rank) : null;
-            }
-        });
-        support.addColumn(column);
-
-        column = new Column("instrument", companyColumnLabel(), SWT.NONE, 200); //$NON-NLS-1$
+        // The first column holds the tree's expand arrow, so the name comes first.
+        var column = new Column("instrument", companyColumnLabel(), SWT.NONE, 200); //$NON-NLS-1$
         companyColumn = column;
         column.setLabelProvider(new ColumnLabelProvider()
         {
@@ -664,6 +737,18 @@ public class LookThroughView extends AbstractFinanceView
             }
         });
         column.setRemovable(false);
+        support.addColumn(column);
+
+        column = new Column("rank", Messages.LookThroughColumnRank, SWT.RIGHT, 40); //$NON-NLS-1$
+        column.setLabelProvider(new ColumnLabelProvider()
+        {
+            @Override
+            public String getText(Object element)
+            {
+                var rank = element instanceof Row row ? ranks.get(row.key()) : null;
+                return rank != null ? String.valueOf(rank) : null;
+            }
+        });
         support.addColumn(column);
 
         column = new Column("direct", Messages.LookThroughColumnDirect, SWT.RIGHT, 95); //$NON-NLS-1$
@@ -815,25 +900,69 @@ public class LookThroughView extends AbstractFinanceView
             return;
         }
 
-        // The snapshot reads memory only (no credentials, no disk), so it is
-        // cheap enough here; enrichment updates are presented off this thread.
-        var source = compositionSource;
-        var attributes = source != null ? source.companyAttributes()
-                        : CompanyEnrichmentService.Snapshot.empty();
-        companyData = companyText(attributes);
-        applyModel(presenter.present(result, grouping(), attributes), true);
+        // Until the first model is presented the table keeps its calculating message.
+        if (presented == null)
+            setTableCalculating(true);
+        present(result, grouping());
     }
 
-    /** Shows a presented model of the current result; the overlap depends on the result only. */
-    private void applyModel(LookThroughViewPresenter.Model model, boolean newResult)
+    /**
+     * Presents a result off the user interface thread: the company attributes
+     * may wait for the enrichment cache and the presentation covers thousands
+     * of companies. The model is applied only while result and grouping are
+     * still the same.
+     */
+    private void present(LookThroughResult current, Grouping currentGrouping)
+    {
+        var source = compositionSource;
+        var executor = calculationExecutor;
+        if (disposed || executor == null || executor.isShutdown())
+            return;
+        var display = Display.getDefault();
+        try
+        {
+            executor.execute(() -> {
+                CompanyEnrichmentService.Snapshot attributes;
+                LookThroughViewPresenter.Model model;
+                FundOverlap overlap;
+                try
+                {
+                    attributes = source != null ? source.companyAttributes()
+                                    : CompanyEnrichmentService.Snapshot.empty();
+                    model = presenter.present(current, currentGrouping, attributes);
+                    overlap = FundOverlap.of(current);
+                }
+                catch (RuntimeException e)
+                {
+                    PortfolioPlugin.log(e);
+                    return;
+                }
+                if (display.isDisposed())
+                    return;
+                display.asyncExec(() -> {
+                    if (disposed || current != result || currentGrouping != grouping())
+                        return;
+                    companyData = companyText(attributes);
+                    setTableCalculating(false);
+                    chartPane.setOverlap(overlap);
+                    applyModel(model);
+                });
+            });
+        }
+        catch (RejectedExecutionException e)
+        {
+            // The view is being disposed; nothing is left to present.
+        }
+    }
+
+    /** Shows a presented model of the current result. */
+    private void applyModel(LookThroughViewPresenter.Model model)
     {
         if (viewer == null || viewer.getControl().isDisposed() || chartPane == null || result == null)
             return;
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
-        if (newResult)
-            chartPane.setOverlap(FundOverlap.of(result));
         chartPane.setModel(model.chart(), currencyCode,
                         LookThroughViewPresenter.contentState(true, compositionSource != null));
         setRows(model.rows());
@@ -863,6 +992,17 @@ public class LookThroughView extends AbstractFinanceView
         var topItem = tree.getTopItem();
         var top = topItem != null && topItem.getData() instanceof Row row ? row.key() : null;
 
+        // Labels are created during setInput, so the ranks must exist before:
+        // companies, or groups of a grouping, ranked by the order of the total.
+        var ranked = new HashMap<RowKey, Integer>();
+        for (var row : rows)
+        {
+            if (row instanceof CompanyRow
+                            || row instanceof GroupRow group && group.groupKind() == GroupKind.REGULAR)
+                ranked.put(row.key(), ranked.size() + 1);
+        }
+        ranks = ranked;
+
         tree.setRedraw(false);
         try
         {
@@ -889,15 +1029,6 @@ public class LookThroughView extends AbstractFinanceView
             }
             companyKeys = owners;
             groupKeys = groups;
-            // companies, or groups of a grouping, ranked by the order of the total
-            var ranked = new HashMap<RowKey, Integer>();
-            for (var row : rows)
-            {
-                if (row instanceof CompanyRow
-                                || row instanceof GroupRow group && group.groupKind() == GroupKind.REGULAR)
-                    ranked.put(row.key(), ranked.size() + 1);
-            }
-            ranks = ranked;
             viewer.setExpandedElements(expanded.stream().map(byKey::get).filter(Objects::nonNull).toArray());
             viewer.setSelection(new StructuredSelection(
                             selected.stream().map(byKey::get).filter(Objects::nonNull).toList()));
@@ -1107,14 +1238,52 @@ public class LookThroughView extends AbstractFinanceView
         if (disposed)
             return;
         var model = statusModel;
-        var status = model != null ? model.status() : Optional.<LookThroughDataStatus.Model>empty();
+        var source = compositionSource;
+        var calculation = statusCalculation;
+        if (model != null && source != null && calculation != null)
+        {
+            // The refresh state is captured here; the reads run in the background.
+            var task = model.statusTask();
+            calculation.request(() -> {
+                var value = task.get();
+                return new StatusUpdate(source, value, value.map(item -> !item.funds().isEmpty()).orElse(false));
+            });
+        }
+        else if (model == null)
+        {
+            dataStatus = Optional.empty();
+            hasFunds = false;
+        }
+        showStatus();
+    }
+
+    /** Applies a data status read in the background, unless the source changed meanwhile. */
+    private void applyStatusUpdate(StatusUpdate update)
+    {
+        if (disposed || update.source() != compositionSource)
+            return;
+        dataStatus = update.status();
+        hasFunds = update.hasFunds();
+        statusRead = true;
+        showStatus();
+        if (automaticPending && statusModel != null)
+        {
+            automaticPending = false;
+            statusModel.refreshAutomatically();
+        }
+    }
+
+    /** Shows the last data status read; never reads the stores. */
+    private void showStatus()
+    {
         var shares = presented != null ? presented.decomposedShares() : Map.<Map<String, String>, String>of();
         var classified = presented != null ? presented.directlyClassified() : Set.<Map<String, String>>of();
         var company = companyData;
-        setInformationPaneInput(status.map(
-                        value -> new LookThroughDataStatusPane.Input(value, shares, classified, company))
+        var assumed = presented != null ? presented.assumedCompanies() : Optional.<String>empty();
+        setInformationPaneInput(dataStatus.map(
+                        value -> new LookThroughDataStatusPane.Input(value, shares, classified, company, assumed))
                         .orElse(null));
-        updateBanner(status);
+        updateBanner(dataStatus);
         updateProgress();
         updateActionEnablement();
     }
@@ -1124,9 +1293,8 @@ public class LookThroughView extends AbstractFinanceView
     {
         if (header == null || header.getControl().isDisposed())
             return;
-        var source = compositionSource;
-        var needsCompositions = presented != null && presented.summary().needsCompositions() && source != null
-                        && !source.funds().isEmpty();
+        var needsCompositions = presented != null && presented.summary().needsCompositions()
+                        && compositionSource != null && hasFunds;
         var facts = new LookThroughBanner.Facts(keyConfigured,
                         status.map(LookThroughDataStatus.Model::isAccessSuspended).orElse(false), needsCompositions,
                         presented != null && presented.empty());
@@ -1170,7 +1338,7 @@ public class LookThroughView extends AbstractFinanceView
     {
         var source = compositionSource;
         var model = statusModel;
-        return source != null && model != null && !source.funds().isEmpty() && !model.isProgressVisible()
+        return source != null && model != null && hasFunds && !model.isProgressVisible()
                         && (presented == null || presented.summary().needsCompositions())
                         && !keyConfigured.equals(Optional.of(Boolean.FALSE));
     }

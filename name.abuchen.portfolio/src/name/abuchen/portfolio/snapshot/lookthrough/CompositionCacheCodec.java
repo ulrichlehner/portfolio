@@ -64,7 +64,12 @@ final class CompositionCacheCodec
                 if (decimal.precision() > 128 || Math.abs((long) decimal.scale()) > 10000)
                     return Optional.empty();
             }
-            var result = new CompositionValidator().validate(source);
+            var validator = new CompositionValidator();
+            var result = validator.validate(source);
+            // Provider weights without declared allocation semantics are kept
+            // as well; semanticsVerified() keeps them unverified after a restart.
+            if (!result.isUsable())
+                result = validator.validateArithmetic(source);
             return result.isUsable() ? Optional.of(result) : Optional.empty();
         }
         catch (IOException | IllegalArgumentException e)

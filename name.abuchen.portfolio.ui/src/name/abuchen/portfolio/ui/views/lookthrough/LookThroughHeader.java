@@ -56,6 +56,8 @@ public class LookThroughHeader
     private Label indicator;
     private Label topTenLabel;
     private Label largestLabel;
+    private Composite effectiveFigure;
+    private Label effectiveLabel;
     private Composite fundsFigure;
     private Label fundsLabel;
     private Composite asOfSlot;
@@ -112,6 +114,10 @@ public class LookThroughHeader
         var largest = createFigure(strip, Messages.LookThroughSummaryLargest, 1);
         largestLabel = largest.value();
         largest.figure().setToolTipText(Messages.LookThroughSummaryLargestTooltip);
+
+        var effective = createFigure(strip, Messages.LookThroughSummaryEffective, 1);
+        effectiveFigure = effective.figure();
+        effectiveLabel = effective.value();
 
         var funds = createFigure(strip, Messages.LookThroughSummaryFunds, 1);
         fundsFigure = funds.figure();
@@ -191,6 +197,7 @@ public class LookThroughHeader
             resolvedLabel.setText(summary.resolvedText().orElse(NOT_AVAILABLE));
             topTenLabel.setText(summary.topTenText().orElse(NOT_AVAILABLE));
             setLargest(summary.largest());
+            setEffective(summary.effective());
             fundsLabel.setText(summary.fundsText().orElse("")); //$NON-NLS-1$
             setVisible(fundsFigure, summary.fundsText().isPresent());
             asOfLabel.setText(summary.asOfText());
@@ -213,6 +220,14 @@ public class LookThroughHeader
                         .orElse(tooltip));
     }
 
+    private void setEffective(Optional<LookThroughViewPresenter.Effective> effective)
+    {
+        effectiveLabel.setText(effective.map(LookThroughViewPresenter.Effective::text).orElse(NOT_AVAILABLE));
+        var tooltip = effective.map(LookThroughViewPresenter.Effective::tooltip).orElse(null);
+        effectiveFigure.setToolTipText(tooltip);
+        effectiveLabel.setToolTipText(tooltip);
+    }
+
     static String shorten(String name)
     {
         return name.length() <= MAX_NAME_LENGTH ? name : name.substring(0, MAX_NAME_LENGTH - 1) + "\u2026"; //$NON-NLS-1$
@@ -231,6 +246,7 @@ public class LookThroughHeader
         resolvedLabel.setText(NOT_AVAILABLE);
         topTenLabel.setText(NOT_AVAILABLE);
         setLargest(Optional.empty());
+        setEffective(Optional.empty());
         fundsLabel.setText(NOT_AVAILABLE);
         setVisible(fundsFigure, true);
         asOfLabel.setText(""); //$NON-NLS-1$

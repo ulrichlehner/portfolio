@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.Supplier;
 
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundFacts;
@@ -216,25 +217,40 @@ public final class LookThroughStatusModel
      */
     public Optional<Model> status()
     {
-        var current = source.current();
-        if (current.isEmpty())
-            return Optional.empty();
+        return statusTask().get();
+    }
 
-        var snapshot = current.orElseThrow();
+    /**
+     * Captures the refresh state on the executor thread and returns the task
+     * that builds the display model from it. The task only reads facts and
+     * the retained compositions, which may wait for the store, so the view
+     * runs it off the user interface thread. It never submits a request.
+     */
+    public Supplier<Optional<Model>> statusTask()
+    {
         var refreshing = isProgressVisible();
-        var facts = new ArrayList<FundFacts>(snapshot.funds().size());
-        for (var fund : snapshot.funds())
-        {
-            var pending = refreshing && refreshingFunds.contains(fund);
-            var refresh = lastRefreshes.get(fund);
-            if (refresh != null)
-                facts.add(LookThroughDataStatus.fundFacts(refresh, fund.account(), fund.fund(), pending));
-            else
-                facts.add(LookThroughDataStatus.fundFacts(gateway.read(fund.account(), fund.fund()), fund.account(),
-                                fund.fund(), pending));
-        }
+        var pendingFunds = refreshingFunds;
+        var refreshes = Map.copyOf(lastRefreshes);
+        return () -> {
+            var current = source.current();
+            if (current.isEmpty())
+                return Optional.empty();
 
-        return Optional.of(LookThroughDataStatus.present(clock, snapshot.global(), facts));
+            var snapshot = current.orElseThrow();
+            var facts = new ArrayList<FundFacts>(snapshot.funds().size());
+            for (var fund : snapshot.funds())
+            {
+                var pending = refreshing && pendingFunds.contains(fund);
+                var refresh = refreshes.get(fund);
+                if (refresh != null)
+                    facts.add(LookThroughDataStatus.fundFacts(refresh, fund.account(), fund.fund(), pending));
+                else
+                    facts.add(LookThroughDataStatus.fundFacts(gateway.read(fund.account(), fund.fund()),
+                                    fund.account(), fund.fund(), pending));
+            }
+
+            return Optional.of(LookThroughDataStatus.present(clock, snapshot.global(), facts));
+        };
     }
 
     /** Records one outcome, unless it belongs to a superseded call. */

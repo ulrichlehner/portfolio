@@ -43,8 +43,8 @@ import name.abuchen.portfolio.online.FundCompositionProvider;
  * validated snapshots are enriched. Prior usable data keeps its original dates
  * after retrieval/validation failures; source previews remain separate. A
  * composition that is arithmetically usable but not semantically verified is
- * retained separately as an unverified snapshot for display only: it is never
- * persisted, never enriched and never counts as validated coverage. This is
+ * retained separately as an unverified snapshot: the store may keep it, but it
+ * stays labelled unverified and never counts as validated coverage. This is
  * not the retention/persistence store. UI jobs and interruptible transport are
  * separate concerns: close prevents queued requests and further enrichment,
  * discards late responses and clears memory, but cannot interrupt an already
@@ -285,8 +285,8 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
         var validator = new CompositionValidator();
         var received = result.composition();
         var usable = received.filter(value -> validator.validate(value).isUsable());
-        // Arithmetic acceptance only, explicitly unverified. Never persisted as
-        // validated data; it is classified and displayed in this session.
+        // Arithmetic acceptance only, explicitly unverified. Never stored as
+        // validated data; it is classified and displayed.
         var unverified = usable.isEmpty()
                         ? received.filter(value -> validator.validateArithmetic(value).isUsable())
                         : Optional.<FundComposition>empty();

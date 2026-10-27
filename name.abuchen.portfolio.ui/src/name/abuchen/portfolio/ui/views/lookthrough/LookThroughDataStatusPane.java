@@ -59,7 +59,8 @@ public class LookThroughDataStatusPane implements InformationPanePage
      * which the status model does not know.
      */
     public record Input(Model status, Map<Map<String, String>, String> decomposedShares,
-                    Set<Map<String, String>> directlyClassified, Optional<String> companyData)
+                    Set<Map<String, String>> directlyClassified, Optional<String> companyData,
+                    Optional<String> assumedCompanies)
     {
         public Input
         {
@@ -67,6 +68,13 @@ public class LookThroughDataStatusPane implements InformationPanePage
             decomposedShares = Map.copyOf(decomposedShares);
             directlyClassified = Set.copyOf(directlyClassified);
             Objects.requireNonNull(companyData);
+            Objects.requireNonNull(assumedCompanies);
+        }
+
+        public Input(Model status, Map<Map<String, String>, String> decomposedShares,
+                        Set<Map<String, String>> directlyClassified, Optional<String> companyData)
+        {
+            this(status, decomposedShares, directlyClassified, companyData, Optional.empty());
         }
 
         public Input(Model status, Map<Map<String, String>, String> decomposedShares,
@@ -90,6 +98,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
     private Composite container;
     private Label storageLabel;
     private Label companyLabel;
+    private Label assumedLabel;
     private Label emptyLabel;
     private TableViewer viewer;
     private Input rendered;
@@ -110,6 +119,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
 
         storageLabel = createWrappingLabel(container);
         companyLabel = createWrappingLabel(container);
+        assumedLabel = createWrappingLabel(container);
         emptyLabel = createWrappingLabel(container);
 
         var tableContainer = new Composite(container, SWT.NONE);
@@ -228,6 +238,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         setText(storageLabel, status != null ? status.storageText() : ""); //$NON-NLS-1$
         storageLabel.setToolTipText(status != null ? storageTooltip(status) : null);
         setText(companyLabel, input != null ? input.companyData().orElse("") : ""); //$NON-NLS-1$ //$NON-NLS-2$
+        setText(assumedLabel, input != null ? input.assumedCompanies().orElse("") : ""); //$NON-NLS-1$ //$NON-NLS-2$
         setText(emptyLabel, status == null ? Messages.LookThroughStatusPaneEmpty : ""); //$NON-NLS-1$
 
         container.layout(true);
@@ -242,6 +253,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         visible.add(status.storageText());
         visible.add(storageTooltip(status));
         visible.add(input.companyData());
+        visible.add(input.assumedCompanies());
         for (var fund : input.rows())
             visible.add(List.of(fund.reference(), fund.fundLabel(), fund.health(), fund.statusText(),
                             fund.refreshPending(), fund.retrievedDateText(), fund.tooltipText(),

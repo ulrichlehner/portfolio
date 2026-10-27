@@ -248,6 +248,32 @@ public class CompositionStoreTest
     }
 
     @Test
+    public void providerWeightsWithoutDeclaredSemanticsArePersistedAndStayUnverified() throws IOException
+    {
+        var path = directory();
+        var good = composition(ACCOUNT, FUND, "0.8");
+        // Like the provider: denominator and exposure basis are not declared.
+        var undeclared = new FundComposition(good.provenance(), Denominator.UNKNOWN, ExposureBasis.UNKNOWN,
+                        Completeness.UNKNOWN, good.constituents());
+        try (var store = new VersionedCompositionStore(path, clock))
+        {
+            store.configure(permitted(), Optional.empty());
+            var result = put(store, undeclared);
+            assertEquals(CompositionResult.Status.RECEIVED, result.latestAttempt().orElseThrow());
+            assertFalse(result.usableComposition().orElseThrow().semanticsVerified());
+            onlyRecord(path);
+        }
+        clock.now = START.plusSeconds(3600);
+        try (var store = new VersionedCompositionStore(path, clock))
+        {
+            store.configure(permitted(), Optional.empty());
+            var read = store.read(ACCOUNT, FUND).usableComposition().orElseThrow();
+            assertEquals(undeclared, read.source());
+            assertFalse(read.semanticsVerified());
+        }
+    }
+
+    @Test
     public void failedInvalidEmptyAndMismatchedRefreshesNeverReplaceGoodData() throws IOException
     {
         for (CompositionStore store : List.of(new SessionCompositionStore(clock),

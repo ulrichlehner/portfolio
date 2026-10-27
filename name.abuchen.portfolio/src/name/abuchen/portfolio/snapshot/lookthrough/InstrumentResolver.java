@@ -4,18 +4,22 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Pattern;
 
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Assertion;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.AssetType;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution.LookupStatus;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution.Reason;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution.State;
 
 /**
  * Deterministic identifier-based resolution with at most one injected lookup per
- * invocation. No network, retries, guessed mappings or persistence are provided.
+ * invocation. No network, retries, guessed mappings or persistence are provided;
+ * the only assumption is the marked company assumption after an answered lookup.
  * The caller supplies available evidence and a provider-wide budget admission
  * function. A permit admits one bounded lookup; adapters must account for actual
  * request costs and enforce their own deadlines. Redraws must reuse results, not
@@ -23,6 +27,19 @@ import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution.State;
  */
 public final class InstrumentResolver
 {
+    private static final Pattern ISIN = Pattern.compile("[A-Z]{2}[A-Z0-9]{9}[0-9]"); //$NON-NLS-1$
+    private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^A-Z0-9]+"); //$NON-NLS-1$
+
+    /** Whole words or phrases of upper case words, separated by single spaces. */
+    @SuppressWarnings("nls")
+    private static final List<String> NON_COMPANY_WORDS = List.of( //
+                    "UCITS", "ETF", "ETFS", "ETC", "ETN", "ETNS", "FUND", "FUNDS", "FONDS", "SICAV", "OEIC",
+                    "TRUST UNIT", "TRUST UNITS", "LIQ", "LIQUIDITY", "MONEY MARKET", "MMF", "CASH", "COLLATERAL",
+                    "TREASURIES", "US TREASURY", "U S TREASURY", "UNITED STATES TREASURY", "TREASURY BILL",
+                    "TREASURY BILLS", "TREASURY NOTE", "TREASURY NOTES", "TREASURY BOND", "TREASURY BONDS",
+                    "T BILL", "T BILLS", "TBILL", "TBILLS", "BOND", "BONDS", "NOTE", "NOTES", "FUTURES", "FUT",
+                    "SWAP", "SWAPS", "OPTIONS", "FX", "FORWARD", "FORWARDS", "INDEX");
+
     @FunctionalInterface
     public interface EvidenceLookup
     {
@@ -47,7 +64,7 @@ public final class InstrumentResolver
         try
         {
             evidence.addAll(List.copyOf(lookup.lookup(source)));
-            return evaluate(source, evidence, LookupStatus.ATTEMPTED);
+            return assumeCompany(evaluate(source, evidence, LookupStatus.ATTEMPTED));
         }
         catch (IOException e)
         {
@@ -97,6 +114,44 @@ public final class InstrumentResolver
         return new InstrumentResolution(source, state, reason, Optional.of(identities.getFirst()), Optional.of(type),
                         equity && companies.size() == 1 ? Optional.of(companies.getFirst()) : Optional.empty(),
                         matching, status);
+    }
+
+    /**
+     * Most constituents without any classification answer are ordinary listed
+     * shares. One with an ISIN whose lookup found no classification is
+     * assumed to be a company, keyed by its ISIN like a verified share, unless
+     * its name indicates a non-company instrument. The assumption is marked by
+     * its reason and never counts as verified.
+     */
+    private InstrumentResolution assumeCompany(InstrumentResolution resolution)
+    {
+        if (resolution.state() != State.UNRESOLVED || resolution.reason() != Reason.MISSING_IDENTITY
+                        && resolution.reason() != Reason.UNKNOWN_CLASSIFICATION)
+            return resolution;
+        var source = resolution.source();
+        var isin = source.identifiers().get(InstrumentEvidence.ISIN);
+        if (isin == null || !ISIN.matcher(isin.trim()).matches() || indicatesNonCompany(source.label()))
+            return resolution;
+        var company = new Identifier(InstrumentEvidence.ISIN, isin.trim());
+        return new InstrumentResolution(source, State.GROUPED_EQUITY, Reason.ASSUMED_COMPANY,
+                        Optional.of(resolution.instrument().orElse(company)), Optional.of(AssetType.EQUITY),
+                        Optional.of(company), resolution.evidence(), resolution.lookupStatus());
+    }
+
+    /**
+     * True when the name contains a whole word or phrase of a fund, cash,
+     * money market, bond or derivative position. Words that also occur in
+     * names of listed companies are left out or only matched as phrases:
+     * TRUST (banks), TREASURY (for example a wine producer), FUTURE and OPTION
+     * (companies of that name) and BILL.
+     */
+    public static boolean indicatesNonCompany(String name)
+    {
+        if (name == null || name.isBlank())
+            return false;
+        var words = " " + String.join(" ", //$NON-NLS-1$ //$NON-NLS-2$
+                        NON_ALPHANUMERIC.split(name.toUpperCase(Locale.ROOT).trim())) + " "; //$NON-NLS-1$
+        return NON_COMPANY_WORDS.stream().anyMatch(word -> words.contains(" " + word + " ")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private InstrumentResolution unresolved(CompositionInstrument source, List<InstrumentEvidence> evidence,

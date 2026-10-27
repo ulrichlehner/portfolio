@@ -42,7 +42,15 @@ public class SessionCompositionStore implements CompositionStore
         private boolean persistent;
         private boolean diskFailure;
         private long generation;
+        /** Reads prune the whole account at most once per interval. */
+        private Instant nextPrune = Instant.MIN;
     }
+
+    /**
+     * A full prune reads every record of the account. Reads repeat it at most
+     * this often; a read of an expired record removes it at once.
+     */
+    private static final Duration PRUNE_INTERVAL = Duration.ofHours(1);
 
     private static final class Entry
     {
@@ -99,7 +107,10 @@ public class SessionCompositionStore implements CompositionStore
         try
         {
             if (account.persistent)
+            {
                 pruneDisk(policy);
+                account.nextPrune = clock.instant().plus(PRUNE_INTERVAL);
+            }
             else
                 deleteDisk(policy.account());
         }
@@ -166,7 +177,11 @@ public class SessionCompositionStore implements CompositionStore
             try
             {
                 // Also remove expired files when session memory already exists.
-                pruneDisk(settings.policy);
+                if (!clock.instant().isBefore(settings.nextPrune))
+                {
+                    pruneDisk(settings.policy);
+                    settings.nextPrune = clock.instant().plus(PRUNE_INTERVAL);
+                }
                 if (entry.usable == null)
                 {
                     var loaded = readDisk(account, fund);

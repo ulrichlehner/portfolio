@@ -1180,6 +1180,67 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
+    public void testEffectiveNumberOfEvenlySpreadCompaniesIsTheirCount()
+    {
+        for (int ii = 0; ii < 100; ii++)
+            hold("c" + ii, "Synthetic c" + ii, AssetType.EQUITY, "CO-" + ii, 1, 100);
+
+        var effective = model(result()).summary().effective().orElseThrow();
+
+        assertEquals(100d, effective.value().doubleValue(), 1e-9);
+        assertEquals(100, effective.companies());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, 100L, 100L), effective.text());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveTooltip, 100L), effective.tooltip());
+    }
+
+    @Test
+    public void testEffectiveNumberUsesSharesOfCompanyExposure()
+    {
+        hold("big", "Synthetic big", AssetType.EQUITY, "CO-BIG", 1, 120);
+        for (int ii = 0; ii < 88; ii++)
+            hold("s" + ii, "Synthetic s" + ii, AssetType.EQUITY, "CO-S" + ii, 1, 10);
+        hold("cash", "Synthetic cash", AssetType.CASH, null, 1, 500);
+
+        var effective = model(result()).summary().effective().orElseThrow();
+
+        // 12 % big, 88 times 1 % of the company exposure: 1 / (0.12^2 + 88 * 0.01^2)
+        assertEquals(1d / (0.0144d + 88 * 0.0001d), effective.value().doubleValue(), 1e-6);
+        assertEquals(89, effective.companies());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, 43L, 89L), effective.text());
+    }
+
+    @Test
+    public void testEffectiveNumberIsWithheldWithoutCompanyExposure()
+    {
+        hold("cash", "Synthetic cash", AssetType.CASH, null, 1, 100);
+
+        assertTrue(model(result()).summary().effective().isEmpty());
+    }
+
+    @Test
+    public void testListedConstituentWithoutClassificationIsAssumedCompany()
+    {
+        hold("fund", "Synthetic fund holding", AssetType.FUND, null, 1, 100);
+        var verified = instrument("verified", AssetType.EQUITY, "CO-V");
+        var listed = new CompositionInstrument("Synthetic listed", Map.of("ISIN", "QS0000000017"));
+        resolutions.put(listed, new InstrumentResolver().resolve(listed, List.of(), ignored -> List.of(), () -> true));
+        var etf = new CompositionInstrument("Synthetic World UCITS ETF", Map.of("ISIN", "QS0000000025"));
+        resolutions.put(etf, new InstrumentResolver().resolve(etf, List.of(), ignored -> List.of(), () -> true));
+        composition(instruments.get("fund"), row(verified, "0.5"), row(listed, "0.4"), row(etf, "0.1"));
+
+        var model = model(result());
+
+        var assumed = company(model, "Synthetic listed");
+        amount("4000", assumed.total());
+        assertTrue(assumed.contributions().getFirst().sourceText().endsWith(Messages.LookThroughSourceAssumed));
+        assertFalse(company(model, "Synthetic verified").contributions().getFirst().sourceText()
+                        .contains(Messages.LookThroughSourceAssumed));
+        amount("1000", category(model, Category.UNRESOLVED).value());
+        assertEquals(Optional.of(MessageFormat.format(Messages.LookThroughStatusAssumedCompanies, 1,
+                        Values.Percent2.format(0.4d))), model.assumedCompanies());
+    }
+
+    @Test
     public void testCompanyAboveTenPercentIsNamedByTheAttentionIndicator()
     {
         hold("big", "Synthetic big", AssetType.EQUITY, "CO-BIG", 1, 120);

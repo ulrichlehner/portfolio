@@ -336,14 +336,17 @@ final class LookThroughSession implements RefreshGateway
         {
             var instrument = row.instrument();
             restoreEvidence(account, instrument);
-            List<InstrumentEvidence> known = List.of();
+            List<InstrumentEvidence> known = null;
             synchronized (evidenceCache)
             {
                 var future = evidenceCache.get(classificationKey(account, instrument));
                 if (future != null && future.isDone() && !future.isCompletedExceptionally())
                     known = future.join();
             }
-            resolutions.add(resolver.resolve(instrument, known, ignored -> List.of(), () -> false));
+            // A stored answer counts as the answered lookup, as in the refresh.
+            var answer = known;
+            resolutions.add(answer != null ? resolver.resolve(instrument, List.of(), ignored -> answer, () -> true)
+                            : resolver.resolve(instrument, List.of(), ignored -> List.of(), () -> false));
         }
         return List.copyOf(resolutions);
     }
@@ -425,9 +428,12 @@ final class LookThroughSession implements RefreshGateway
         }
         // Keep source previews and attempt dates even when validation rejected
         // the payload. Only the store decides whether data is usable/retained.
-        return new Snapshot(latest.attemptedAt(), latest.latestAttempt(),
-                        retained.usableComposition().map(CompositionValidationResult::source),
-                        latest.unverifiedComposition(), resolutions);
+        // Stored provider weights without verified semantics stay unverified.
+        var verified = retained.usableComposition().filter(CompositionValidationResult::semanticsVerified)
+                        .map(CompositionValidationResult::source);
+        var unverified = latest.unverifiedComposition().or(() -> retained.usableComposition()
+                        .filter(value -> !value.semanticsVerified()).map(CompositionValidationResult::source));
+        return new Snapshot(latest.attemptedAt(), latest.latestAttempt(), verified, unverified, resolutions);
     }
 
     @Override

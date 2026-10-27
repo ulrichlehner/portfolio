@@ -1105,9 +1105,11 @@ public class Messages extends NLS
     public static String LookThroughRevenueCoverage;
     public static String LookThroughRevenueCoverageNone;
     public static String LookThroughRevenueIncomplete;
+    public static String LookThroughSourceAssumed;
     public static String LookThroughSourceDirect;
     public static String LookThroughSourceIndirect;
     public static String LookThroughStatusAgeFormatter;
+    public static String LookThroughStatusAssumedCompanies;
     public static String LookThroughStatusAttemptAuthenticationFailed;
     public static String LookThroughStatusAttemptCancelled;
     public static String LookThroughStatusAttemptEntitlementFailed;
@@ -1166,6 +1168,9 @@ public class Messages extends NLS
     public static String LookThroughStatusStale;
     public static String LookThroughStopRefresh;
     public static String LookThroughSummaryAsOf;
+    public static String LookThroughSummaryEffective;
+    public static String LookThroughSummaryEffectiveTooltip;
+    public static String LookThroughSummaryEffectiveValue;
     public static String LookThroughSummaryFunds;
     public static String LookThroughSummaryLargest;
     public static String LookThroughSummaryLargestTooltip;

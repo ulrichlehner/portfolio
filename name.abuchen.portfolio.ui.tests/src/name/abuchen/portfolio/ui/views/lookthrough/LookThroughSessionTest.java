@@ -40,6 +40,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentClassifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.snapshot.lookthrough.VersionedCompositionStore;
@@ -118,6 +119,8 @@ public class LookThroughSessionTest
     });
     private final List<CompositionInstrument> calls = new ArrayList<>();
     private boolean unknownDenominator;
+    /** The constituent has an ISIN, like a listed share of a real response. */
+    private boolean listedChild;
     private final FundCompositionProvider provider = new FundCompositionProvider()
     {
         @Override
@@ -146,7 +149,9 @@ public class LookThroughSessionTest
                             unknownDenominator ? FundComposition.Denominator.UNKNOWN
                                             : FundComposition.Denominator.TOTAL_FUND_NAV,
                             FundComposition.ExposureBasis.PHYSICAL_HOLDINGS, FundComposition.Completeness.PARTIAL,
-                            List.of(new FundComposition.Constituent(instrument("child"), Optional.of("0.8"))));
+                            List.of(new FundComposition.Constituent(listedChild
+                                            ? new CompositionInstrument("Synthetic Holdings", Map.of("ISIN", "QS0000000017"))
+                                            : instrument("child"), Optional.of("0.8"))));
             return new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(composition), Optional.empty());
         }
     };
@@ -415,6 +420,52 @@ public class LookThroughSessionTest
         executor.drain();
         assertEquals(Disposition.COMPLETED, due.join().disposition());
         assertEquals(2, calls.size());
+    }
+
+    /**
+     * Real wiring: the provider declares neither denominator nor exposure
+     * basis, so its composition is unverified. It is still stored, used after
+     * a restart without a request, and its unclassified listed constituent is
+     * assumed to be a company.
+     */
+    @Test
+    public void testUndeclaredProviderCompositionIsStoredAndUsedAfterRestart() throws IOException
+    {
+        var directory = temporary.newFolder().toPath().toRealPath();
+        credentials.replaceSession(ACCOUNT, "synthetic-valid");
+        unknownDenominator = true;
+        listedChild = true;
+        InstrumentClassifier classifier = (account, instrument) -> Optional.empty();
+
+        var first = persistent(directory, classifier, PERMITTED);
+        var initial = first.refresh(ACCOUNT, instrument("fund"), true);
+        executor.drain();
+        assertEquals(Disposition.COMPLETED, initial.join().disposition());
+        assertTrue(initial.join().snapshot().unverifiedComposition().isPresent());
+        assertEquals(1, compositionFiles(directory));
+        assertEquals(1, calls.size());
+
+        clock.now = clock.now.plus(Duration.ofHours(1));
+        var second = persistent(directory, classifier, PERMITTED);
+        var read = second.read(ACCOUNT, instrument("fund"));
+        assertTrue(read.usableComposition().isEmpty());
+        assertTrue(read.unverifiedComposition().isPresent());
+        assertEquals(1, read.resolutions().size());
+        assertEquals(InstrumentResolution.Reason.ASSUMED_COMPANY, read.resolutions().getFirst().reason());
+
+        var automatic = second.refresh(ACCOUNT, instrument("fund"), false);
+        executor.drain();
+        assertEquals(Disposition.CADENCE, automatic.join().disposition());
+        assertTrue(automatic.join().snapshot().unverifiedComposition().isPresent());
+        assertEquals(1, calls.size());
+    }
+
+    private static long compositionFiles(Path directory) throws IOException
+    {
+        try (var paths = Files.list(directory))
+        {
+            return paths.filter(path -> path.toString().endsWith(".composition")).count();
+        }
     }
 
     @Test
