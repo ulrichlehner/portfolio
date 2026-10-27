@@ -144,6 +144,66 @@ public class CompositionRefreshCoordinatorTest
     }
 
     @Test
+    public void testKnownAnswersOfOverlappingFundsNeedNoBudget()
+    {
+        var limited = new CompositionRequestBudget("synthetic", clock, 1, Duration.ofHours(24),
+                        Duration.ofMinutes(10));
+        var lookups = new AtomicInteger();
+        try (var coordinator = new CompositionRefreshCoordinator(provider, limited, clock, executor, 1, 3, 10, 1,
+                        new CompositionRefreshCoordinator.EnrichmentLookup()
+                        {
+                            @Override
+                            public List<InstrumentEvidence> lookup(ProviderAccount requested,
+                                            CompositionInstrument source)
+                            {
+                                lookups.incrementAndGet();
+                                return List.of();
+                            }
+
+                            @Override
+                            public Optional<List<InstrumentEvidence>> known(ProviderAccount requested,
+                                            CompositionInstrument source)
+                            {
+                                return source.equals(instrument("three")) ? Optional.empty() : Optional.of(List.of());
+                            }
+                        }))
+        {
+            var refresh = coordinator.refresh(account, fund, true);
+            executor.runAll();
+            var resolutions = refresh.join().snapshot().resolutions();
+            // The composition took the whole budget; known answers still resolve.
+            assertEquals(0, lookups.get());
+            assertEquals(InstrumentResolution.LookupStatus.ATTEMPTED, resolutions.get(0).lookupStatus());
+            assertEquals(InstrumentResolution.LookupStatus.ATTEMPTED, resolutions.get(1).lookupStatus());
+            assertEquals(InstrumentResolution.LookupStatus.BUDGET_EXHAUSTED, resolutions.get(2).lookupStatus());
+        }
+    }
+
+    @Test
+    public void testLookupReleasesTheUnusedPartOfItsReservation()
+    {
+        var limited = new CompositionRequestBudget("synthetic", clock, 7, Duration.ofHours(24),
+                        Duration.ofMinutes(10));
+        var lookups = new AtomicInteger();
+        try (var coordinator = new CompositionRefreshCoordinator(provider, limited, clock, executor, 1, 3, 10, 1,
+                        (requested, source) -> {
+                            lookups.incrementAndGet();
+                            // One request made of the three reserved.
+                            limited.release(requested, 2);
+                            return List.of();
+                        }))
+        {
+            var refresh = coordinator.refresh(account, fund, true);
+            executor.runAll();
+            refresh.join();
+            // Without the release only two of the three constituents fit.
+            assertEquals(3, lookups.get());
+            assertTrue(limited.acquirePermit(account, 3));
+            assertFalse(limited.acquirePermit(account, 1));
+        }
+    }
+
+    @Test
     public void testAuthenticationFailureStopsReservedClassificationWork() throws Exception
     {
         var lookups = new AtomicInteger();

@@ -94,6 +94,8 @@ final class LookThroughSession implements RefreshGateway
     private final Map<ProviderAccount, Configuration> configurations = new HashMap<>();
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
     private volatile CompanyEnrichmentService enrichment;
+    /** Company profiles shared by classification and enrichment; null before enrichment is enabled. */
+    private volatile CompanyEnrichmentCache companies;
     private final List<Runnable> enrichmentListeners = new CopyOnWriteArrayList<>();
 
     LookThroughSession(FundCompositionProvider provider, InstrumentClassifier classifier,
@@ -113,13 +115,38 @@ final class LookThroughSession implements RefreshGateway
         this.classifier = classifier;
         this.store = store;
         // Conservative application budget, not a statement of plan entitlement.
-        // Reserve the adapter's worst-case request count, including fallbacks.
+        // Reserve the adapter's worst-case request count, including fallbacks;
+        // the part a classification did not use is released afterwards.
         this.classificationCost = classifier instanceof EulerpoolFundCompositionProvider
                         ? EulerpoolFundCompositionProvider.CLASSIFICATION_REQUEST_COST : 1;
         this.budget = new CompositionRequestBudget(provider.getId(), clock, 20000, Duration.ofHours(24),
                         Duration.ofMinutes(15));
         this.coordinator = new CompositionRefreshCoordinator(provider, budget, clock, executor,
-                        classificationExecutor(), 1, classificationCost, 5000, 1, this::classifyCached);
+                        classificationExecutor(), 1, classificationCost, 5000, 1,
+                        new CompositionRefreshCoordinator.EnrichmentLookup()
+                        {
+                            @Override
+                            public List<InstrumentEvidence> lookup(ProviderAccount account,
+                                            CompositionInstrument instrument) throws IOException
+                            {
+                                var requests = new AtomicInteger();
+                                try
+                                {
+                                    return classifyCached(account, instrument, true, requests);
+                                }
+                                finally
+                                {
+                                    release(account, requests);
+                                }
+                            }
+
+                            @Override
+                            public Optional<List<InstrumentEvidence>> known(ProviderAccount account,
+                                            CompositionInstrument instrument)
+                            {
+                                return knownEvidence(account, instrument);
+                            }
+                        });
     }
 
     /**
@@ -157,12 +184,49 @@ final class LookThroughSession implements RefreshGateway
         return Executors.newFixedThreadPool(8, factory);
     }
 
+    /** Returns the part of a classification reservation that the requests made did not use. */
+    private void release(ProviderAccount account, AtomicInteger requests)
+    {
+        budget.release(account, Math.max(0, classificationCost - requests.get()));
+    }
+
+    /** A classification answer of this session or the store, without any request. */
+    private Optional<List<InstrumentEvidence>> knownEvidence(ProviderAccount account,
+                    CompositionInstrument instrument)
+    {
+        if (!restoreEvidence(account, instrument))
+            return Optional.empty();
+        synchronized (evidenceCache)
+        {
+            var future = evidenceCache.get(classificationKey(account, instrument));
+            return future != null && future.isDone() && !future.isCompletedExceptionally()
+                            ? Optional.of(future.join())
+                            : Optional.empty();
+        }
+    }
+
+    /**
+     * Constituents are classified from their company profile first, which
+     * enrichment needs anyway; held instruments by search first, where a
+     * fund is more likely.
+     */
+    private Optional<InstrumentEvidence> classify(ProviderAccount account, CompositionInstrument instrument,
+                    boolean profileFirst, AtomicInteger requests) throws IOException
+    {
+        if (classifier instanceof EulerpoolFundCompositionProvider eulerpool)
+            return eulerpool.classify(account, instrument, companies, profileFirst, requests);
+        // Other classifiers do not report their requests; the reservation stays.
+        requests.addAndGet((int) classificationCost);
+        return classifier.classify(account, instrument);
+    }
+
     /**
      * Session-wide classification cache: one provider answer per identifier, so
      * overlapping funds share their constituents without repeated lookups.
+     * Requests counts the provider requests this call made.
      */
-    private List<InstrumentEvidence> classifyCached(ProviderAccount account,
-                    CompositionInstrument instrument) throws IOException
+    private List<InstrumentEvidence> classifyCached(ProviderAccount account, CompositionInstrument instrument,
+                    boolean profileFirst, AtomicInteger requests) throws IOException
     {
         var key = classificationKey(account, instrument);
         var created = new CompletableFuture<List<InstrumentEvidence>>();
@@ -190,7 +254,8 @@ final class LookThroughSession implements RefreshGateway
                 }
                 else
                 {
-                    var evidence = classifier.classify(account, instrument).map(List::of).orElseGet(List::of);
+                    var evidence = classify(account, instrument, profileFirst, requests).map(List::of)
+                                    .orElseGet(List::of);
                     store.writeEvidence(account, key.identifiers(), evidence, generation);
                     future.complete(evidence);
                 }
@@ -464,9 +529,22 @@ final class LookThroughSession implements RefreshGateway
         try
         {
             // A stored answer needs no provider request and no budget.
-            boolean cached = restoreEvidence(account, fund);
-            if (cached || budget.acquirePermit(account, classificationCost))
-                classifyCached(account, fund);
+            if (restoreEvidence(account, fund))
+            {
+                classifyCached(account, fund, false, new AtomicInteger());
+            }
+            else if (budget.acquirePermit(account, classificationCost))
+            {
+                var requests = new AtomicInteger();
+                try
+                {
+                    classifyCached(account, fund, false, requests);
+                }
+                finally
+                {
+                    release(account, requests);
+                }
+            }
         }
         catch (IOException e)
         {
@@ -519,6 +597,7 @@ final class LookThroughSession implements RefreshGateway
             return mode == Mode.SECURE || mode == Mode.SESSION_ONLY;
         }, register, registerEnabled, cache, budget, clock, enrichmentExecutor, retries);
         service.addListener(this::notifyEnrichmentListeners);
+        companies = cache;
         enrichment = service;
         return service;
     }

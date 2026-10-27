@@ -13,8 +13,10 @@ import java.util.Optional;
  * Shared, in-memory provider admission control. Supply the same instance to all
  * consumers of a provider's allowance, including enrichment and other features.
  * Limits and request costs are caller-supplied known units, not inferred plan
- * entitlements. Admission charges the complete bounded operation up front; unused
- * units are deliberately not refunded. This cannot account for external clients.
+ * entitlements. Admission charges the complete bounded operation up front; a
+ * caller that knows how many requests the operation actually made returns the
+ * unused units with {@link #release}, so the budget reflects real usage. This
+ * cannot account for external clients.
  * No timers, waiting, network calls or disk writes are performed.
  */
 public final class CompositionRequestBudget
@@ -79,16 +81,53 @@ public final class CompositionRequestBudget
 
     public synchronized boolean acquirePermit(ProviderAccount account, long units)
     {
-        if (units <= 0)
+        return acquirePermit(account, units, 0);
+    }
+
+    /**
+     * Admits the units only while at least the given headroom stays available
+     * afterwards, so requests of lower priority leave room for other requests.
+     */
+    public synchronized boolean acquirePermit(ProviderAccount account, long units, long headroom)
+    {
+        if (units <= 0 || headroom < 0)
             throw new IllegalArgumentException();
         var state = account(account);
         var current = now();
         if (state.suspended || current.isBefore(providerRetryAt) || current.isBefore(state.retryAt)
-                        || units > capacity - used)
+                        || units > capacity - used - headroom)
             return false;
         charges.addLast(new Charge(current, units));
         used += units;
         return true;
+    }
+
+    /**
+     * Returns reserved units that an admitted operation did not use. They are
+     * taken from the oldest charges in the window, so capacity never becomes
+     * available earlier than with exact accounting.
+     */
+    public synchronized void release(ProviderAccount account, long units)
+    {
+        if (units < 0)
+            throw new IllegalArgumentException();
+        account(account);
+        now();
+        var remaining = Math.min(units, used);
+        used -= remaining;
+        while (remaining > 0)
+        {
+            var oldest = charges.removeFirst();
+            if (oldest.units() > remaining)
+            {
+                charges.addFirst(new Charge(oldest.at(), oldest.units() - remaining));
+                remaining = 0;
+            }
+            else
+            {
+                remaining -= oldest.units();
+            }
+        }
     }
 
     public synchronized boolean isSuspended(ProviderAccount account)

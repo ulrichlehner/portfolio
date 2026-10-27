@@ -480,6 +480,87 @@ public class EulerpoolFundCompositionProviderTest
         assertEquals(EulerpoolFundCompositionProvider.CLASSIFICATION_REQUEST_COST, requests.get());
     }
 
+    private static name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache profileCache()
+    {
+        var cache = new name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache(null, CLOCK);
+        cache.configure(new name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy(ACCOUNT,
+                        Permission.UNVERIFIED, Optional.empty()), Optional.empty());
+        return cache;
+    }
+
+    @Test
+    public void testConstituentIsClassifiedFromItsProfileInOneRequestAndSharesIt() throws IOException
+    {
+        var cache = profileCache();
+        var paths = new ArrayList<String>();
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN), (uri, authorization) -> {
+            paths.add(uri.getPath());
+            if (uri.getPath().equals("/api/1/equity/profile/XX0000000017"))
+                return new Response(200, "{\"isin\":\"XX0000000017\",\"country\":\"United States\","
+                                + "\"sector\":\"Invented sector\",\"industry\":null}", Optional.empty());
+            throw new AssertionError("Only the profile is needed");
+        }, CLOCK);
+        var instrument = new CompositionInstrument("Invented company", Map.of("ISIN", "XX0000000017"));
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        var evidence = provider.classify(ACCOUNT, instrument, cache, true, requests).orElseThrow();
+        assertEquals(AssetType.EQUITY, evidence.classification().orElseThrow().value());
+        assertTrue(evidence.company().isPresent());
+        assertEquals(1, requests.get());
+        assertEquals(List.of("/api/1/equity/profile/XX0000000017"), paths);
+        // Enrichment finds the profile in the shared cache.
+        var shared = cache.profile(ACCOUNT, "XX0000000017").orElseThrow().value().orElseThrow();
+        assertEquals(Optional.of("US"), shared.country());
+        assertEquals(Optional.of("Invented sector"), shared.sector());
+
+        // A known profile classifies without any request.
+        var again = new java.util.concurrent.atomic.AtomicInteger();
+        assertEquals(AssetType.EQUITY, provider.classify(ACCOUNT, instrument, cache, true, again).orElseThrow()
+                        .classification().orElseThrow().value());
+        assertEquals(0, again.get());
+        assertEquals(1, paths.size());
+    }
+
+    @Test
+    public void testProfileNotFoundIsSharedAndSearchDecides() throws IOException
+    {
+        var cache = profileCache();
+        var paths = new ArrayList<String>();
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN), (uri, authorization) -> {
+            paths.add(uri.getPath());
+            if (uri.getPath().equals("/api/1/equity/search"))
+                return new Response(200, "{\"results\":[{\"isin\":\"XX0000000025\",\"type\":\"etf\"}]}",
+                                Optional.empty());
+            return new Response(404, "", Optional.empty());
+        }, CLOCK);
+        var instrument = new CompositionInstrument("Invented fund", Map.of("ISIN", "XX0000000025"));
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        var evidence = provider.classify(ACCOUNT, instrument, cache, true, requests).orElseThrow();
+        assertEquals(AssetType.FUND, evidence.classification().orElseThrow().value());
+        assertEquals(List.of("/api/1/equity/profile/XX0000000025", "/api/1/equity/search"), paths);
+        assertEquals(2, requests.get());
+        // "Not found" is an answer for enrichment too.
+        assertTrue(cache.profile(ACCOUNT, "XX0000000025").orElseThrow().value().isEmpty());
+
+        // Search first, as for held instruments: the known "not found" saves the profile request.
+        paths.clear();
+        var held = new java.util.concurrent.atomic.AtomicInteger();
+        assertTrue(provider.classify(ACCOUNT, instrument, cache, false, held).isPresent());
+        assertEquals(List.of("/api/1/equity/search"), paths);
+        assertEquals(1, held.get());
+    }
+
+    @Test
+    public void testInstrumentWithoutIsinIsOnlySearched() throws IOException
+    {
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        var provider = new EulerpoolFundCompositionProvider(account -> Optional.of(TOKEN),
+                        (uri, authorization) -> new Response(404, "", Optional.empty()), CLOCK);
+        var instrument = new CompositionInstrument("Invented", Map.of(EulerpoolFundCompositionProvider.SYMBOL, "SYN"));
+        assertTrue(provider.classify(ACCOUNT, instrument, profileCache(), true, requests).isEmpty());
+        // Profile and bond list answer by ISIN only.
+        assertEquals(1, requests.get());
+    }
+
     @Test
     public void testSecondaryTickerDoesNotCreateConflictingAliasesAcrossFunds() throws IOException
     {

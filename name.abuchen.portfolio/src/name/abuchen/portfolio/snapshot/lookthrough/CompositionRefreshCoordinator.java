@@ -36,8 +36,10 @@ import name.abuchen.portfolio.online.FundCompositionProvider;
  * classification, so one probe per identifier replaces guessing.
  *
  * Costs must cover all requests in each injected bounded operation (including
- * identifier lookup). Enrichment admits at most maxEnrichmentLookups operations
- * per refresh through InstrumentResolver's acquirePermit contract. Only usable
+ * identifier lookup). Answers the lookup already knows take no budget, and
+ * reserved units of a lookup that does not run are released. Enrichment
+ * admits at most maxEnrichmentLookups operations per refresh through
+ * InstrumentResolver's acquirePermit contract. Only usable
  * validated snapshots are enriched. Prior usable data keeps its original dates
  * after retrieval/validation failures; source previews remain separate. A
  * composition that is arithmetically usable but not semantically verified is
@@ -82,7 +84,20 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
     @FunctionalInterface
     public interface EnrichmentLookup
     {
+        /**
+         * Runs under a reservation of the enrichment cost; it may release the
+         * part of it that its requests did not use.
+         */
         List<InstrumentEvidence> lookup(ProviderAccount account, CompositionInstrument instrument) throws IOException;
+
+        /**
+         * An answer known without any request, for example from a cache shared
+         * with other funds; it needs no budget. Empty when a lookup is needed.
+         */
+        default Optional<List<InstrumentEvidence>> known(ProviderAccount account, CompositionInstrument instrument)
+        {
+            return Optional.empty();
+        }
     }
 
     /** Optional sanitized failure signal from an enrichment transport. */
@@ -343,6 +358,16 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
             tasks.add(task);
             distinct.put(source.identifiers(), task);
             var initial = resolver.resolve(source, known, ignored -> List.of(), () -> false);
+            if (initial.lookupStatus() == InstrumentResolution.LookupStatus.BUDGET_EXHAUSTED)
+            {
+                // A constituent of an overlapping fund is answered already.
+                var answered = lookup.known(account, source);
+                if (answered.isPresent())
+                {
+                    task.complete(resolver.resolve(source, known, ignored -> answered.get(), () -> true));
+                    continue;
+                }
+            }
             boolean admitted;
             synchronized (this)
             {
@@ -365,11 +390,13 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
                     {
                         if (!active(entry, future))
                         {
+                            budget.release(account, enrichmentCost);
                             task.complete(null);
                             return;
                         }
                         if (!budget.canExecuteReserved(account))
                         {
+                            budget.release(account, enrichmentCost);
                             task.complete(initial);
                             return;
                         }
@@ -401,6 +428,7 @@ public final class CompositionRefreshCoordinator implements AutoCloseable
             }
             catch (RejectedExecutionException e)
             {
+                budget.release(account, enrichmentCost);
                 task.complete(initial);
             }
         }

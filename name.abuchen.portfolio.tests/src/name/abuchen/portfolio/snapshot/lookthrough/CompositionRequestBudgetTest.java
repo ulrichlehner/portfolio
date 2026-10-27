@@ -152,4 +152,41 @@ public class CompositionRequestBudgetTest
         assertThrows(IllegalArgumentException.class, () -> new CompositionRequestBudget("synthetic", clock, 1,
                         Duration.ZERO, Duration.ofMinutes(1)));
     }
+
+    @Test
+    public void testUnusedReservationIsReleasedFromTheOldestCharges()
+    {
+        var budget = budget(10);
+        var start = clock.instant();
+        assertTrue(budget.acquirePermit(first, 3));
+        clock.advance(Duration.ofHours(1));
+        assertTrue(budget.acquirePermit(first, 3));
+        assertTrue(budget.acquirePermit(first, 4));
+        assertFalse(budget.acquirePermit(first, 1));
+
+        // Two operations made one request each instead of three.
+        budget.release(first, 2);
+        budget.release(first, 2);
+        assertTrue(budget.acquirePermit(first, 4));
+        assertFalse(budget.acquirePermit(first, 1));
+        // The oldest charge is gone, so nothing frees up at its expiry.
+        assertEquals(Optional.of(start.plus(Duration.ofHours(25))), budget.nextAvailable(first, 1));
+
+        // Releasing more than was charged cannot create capacity.
+        budget.release(first, 100);
+        assertTrue(budget.acquirePermit(first, 10));
+        assertFalse(budget.acquirePermit(first, 1));
+        assertThrows(IllegalArgumentException.class, () -> budget.release(first, -1));
+    }
+
+    @Test
+    public void testHeadroomKeepsUnitsForOtherRequests()
+    {
+        var budget = budget(10);
+        assertTrue(budget.acquirePermit(first, 5, 4));
+        assertFalse(budget.acquirePermit(first, 2, 4));
+        assertTrue(budget.acquirePermit(first, 1, 4));
+        assertTrue(budget.acquirePermit(first, 4));
+        assertThrows(IllegalArgumentException.class, () -> budget.acquirePermit(first, 1, -1));
+    }
 }

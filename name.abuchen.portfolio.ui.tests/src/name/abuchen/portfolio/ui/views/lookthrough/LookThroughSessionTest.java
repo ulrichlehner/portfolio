@@ -28,6 +28,7 @@ import org.junit.rules.TemporaryFolder;
 
 import name.abuchen.portfolio.online.CompositionCredentials;
 import name.abuchen.portfolio.online.FundCompositionProvider;
+import name.abuchen.portfolio.online.impl.EulerpoolFundCompositionProvider;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyProfile;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
@@ -523,5 +524,80 @@ public class LookThroughSessionTest
         session.enrich(companies);
         assertEquals(1, requested.size());
         assertTrue(calls.isEmpty());
+    }
+
+    @Test
+    public void testConstituentProfileIsSharedWithEnrichmentAcrossOverlappingFunds()
+    {
+        var account = new ProviderAccount(EulerpoolFundCompositionProvider.ID, "test");
+        var policy = new CompositionPersistencePolicy(account, CompositionPersistencePolicy.Permission.UNVERIFIED,
+                        Optional.empty());
+        var constituent = new CompositionInstrument("Invented company", Map.of("ISIN", "XX0000000017"));
+        var funds = new FundCompositionProvider()
+        {
+            @Override
+            public String getId()
+            {
+                return EulerpoolFundCompositionProvider.ID;
+            }
+
+            @Override
+            public CompositionPersistencePolicy getPersistencePolicy(ProviderAccount requested)
+            {
+                return policy;
+            }
+
+            @Override
+            public CompositionResult getComposition(ProviderAccount requested, CompositionInstrument fund)
+            {
+                calls.add(fund);
+                var composition = new FundComposition(new CompositionProvenance(requested, fund, clock.instant(),
+                                Optional.empty(), Optional.empty()), FundComposition.Denominator.TOTAL_FUND_NAV,
+                                FundComposition.ExposureBasis.PHYSICAL_HOLDINGS, FundComposition.Completeness.PARTIAL,
+                                List.of(new FundComposition.Constituent(constituent, Optional.of("0.8"))));
+                return new CompositionResult(CompositionResult.Status.RECEIVED, Optional.of(composition),
+                                Optional.empty());
+            }
+        };
+        var paths = new ArrayList<String>();
+        var classifier = new EulerpoolFundCompositionProvider(requested -> Optional.of("synthetic-token"),
+                        (uri, authorization) -> {
+                            synchronized (paths)
+                            {
+                                paths.add(uri.getPath());
+                            }
+                            if (uri.getPath().equals("/api/1/equity/profile/XX0000000017"))
+                                return new EulerpoolFundCompositionProvider.Response(200,
+                                                "{\"isin\":\"XX0000000017\",\"sector\":\"Invented sector\"}",
+                                                Optional.empty());
+                            return new EulerpoolFundCompositionProvider.Response(404, "", Optional.empty());
+                        }, clock);
+        var shared = new LookThroughSession(funds, classifier, credentials, clock, executor);
+        shared.configure(policy, Optional.empty());
+        var cache = new CompanyEnrichmentCache(null, clock);
+        cache.configure(policy, Optional.empty());
+        var profiles = new ArrayList<String>();
+        shared.enableEnrichment(account, (requested, isin) -> {
+            profiles.add(isin);
+            return Optional.empty();
+        }, isins -> Map.of(), () -> false, cache, Runnable::run);
+        credentials.replaceSession(account, "synthetic-valid");
+
+        // Two funds hold the same company; held funds without ISIN need no classification.
+        for (var id : List.of("first", "second"))
+        {
+            var result = shared.refresh(account, instrument(id), true);
+            executor.drain();
+            assertEquals(Disposition.COMPLETED, result.join().disposition());
+        }
+        assertEquals(List.of("/api/1/equity/profile/XX0000000017"), paths);
+
+        // Enrichment uses the profile that classification fetched.
+        var identity = new InstrumentEvidence.Identifier(InstrumentEvidence.ISIN, "XX0000000017");
+        shared.enrich(List.of(new LookThroughResult.Company(identity, java.math.BigDecimal.TEN,
+                        java.math.BigDecimal.ZERO, List.of())));
+        assertTrue(profiles.isEmpty());
+        assertEquals("Invented sector",
+                        shared.companyAttributes().attributes().get(identity).sector().orElseThrow().value());
     }
 }

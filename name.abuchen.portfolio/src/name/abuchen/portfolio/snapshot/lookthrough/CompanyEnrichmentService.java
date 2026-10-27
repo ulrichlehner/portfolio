@@ -34,7 +34,11 @@ import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult.Company;
  * <li>The provider lane requests profiles in descending order of value, in
  * chunks of {@link #CHUNK} companies, each chunk followed by the revenue
  * splits of the same companies. Each request takes one unit of the shared
- * provider budget.</li>
+ * provider budget. Revenue requests, which the provider weighs higher, leave
+ * room in the budget for the profiles still outstanding, so they never
+ * starve profiles; revenue skipped for that reason follows once all profiles
+ * are answered. Profiles that classification fetched are shared through the
+ * cache and not requested again.</li>
  * <li>The register lane looks up one ISIN per request, paced by the register,
  * and only where the register adds value (see {@link #inRegisterScope}).</li>
  * </ul>
@@ -553,26 +557,49 @@ public final class CompanyEnrichmentService implements AutoCloseable
         var streak = new ArrayList<Attempt>();
         for (int start = 0; start < isins.size(); start += CHUNK)
         {
-            var chunk = isins.subList(start, Math.min(isins.size(), start + CHUNK));
+            int end = Math.min(isins.size(), start + CHUNK);
+            var chunk = isins.subList(start, end);
             for (var isin : chunk)
             {
-                if (!request(Kind.PROFILE, isin, started, publication, streak))
+                if (!request(Kind.PROFILE, isin, started, publication, streak, 0))
                     return;
             }
             if (revenue != null)
             {
+                var outstanding = outstandingProfiles(isins.subList(end, isins.size()));
                 for (var isin : chunk)
                 {
-                    if (!request(Kind.REVENUE, isin, started, publication, streak))
+                    if (!request(Kind.REVENUE, isin, started, publication, streak, outstanding))
                         return;
                 }
+            }
+        }
+        if (revenue != null)
+        {
+            // Revenue skipped to leave room for profiles; cached answers cost nothing.
+            for (var isin : isins)
+            {
+                if (!request(Kind.REVENUE, isin, started, publication, streak, 0))
+                    return;
             }
         }
         settle(providerLane, State.COMPLETE, Instant.MIN);
     }
 
-    /** Requests one provider answer if due; returns false when the pass must stop. */
-    private boolean request(Kind kind, String isin, long started, Publication publication, List<Attempt> streak)
+    /** Profiles of the given ISINs that a pass would still request. */
+    private long outstandingProfiles(List<String> isins)
+    {
+        return isins.stream().filter(isin -> due(cache.profile(account, isin), REFRESH_AFTER)
+                        && !recentlyFailed(new Attempt(Kind.PROFILE, isin))).count();
+    }
+
+    /**
+     * Requests one provider answer if due; returns false when the pass must
+     * stop. With a headroom, the request is skipped unless that many units
+     * stay available afterwards.
+     */
+    private boolean request(Kind kind, String isin, long started, Publication publication, List<Attempt> streak,
+                    long headroom)
     {
         if (stopped(started))
             return false;
@@ -580,8 +607,11 @@ public final class CompanyEnrichmentService implements AutoCloseable
         var cached = kind == Kind.PROFILE ? cache.profile(account, isin) : cache.revenue(account, isin);
         if (!due(cached, kind == Kind.PROFILE ? REFRESH_AFTER : REVENUE_REFRESH_AFTER) || recentlyFailed(attempt))
             return true;
-        if (!budget.acquirePermit(account, 1))
+        if (!budget.acquirePermit(account, 1, headroom))
         {
+            // Skipped to leave room for profiles; asked again at the end of the pass.
+            if (headroom > 0)
+                return true;
             paused();
             return false;
         }

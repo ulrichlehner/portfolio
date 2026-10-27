@@ -132,6 +132,26 @@ public class CompanyRevenueEnrichmentTest
     }
 
     @Test
+    public void testRevenueLeavesRoomForTheProfilesOfLaterChunks()
+    {
+        var many = new ArrayList<Company>();
+        for (int index = 0; index < 150; index++)
+            many.add(company(String.format("XX%010d", index), String.valueOf(1000 - index)));
+        var service = service(memory(), budget(160));
+        service.schedule(many);
+        // Every profile is answered; revenue took only what the profiles did not need.
+        assertEquals(150, events.stream().filter(event -> event.startsWith("profile")).count());
+        assertEquals(10, events.stream().filter(event -> event.startsWith("revenue")).count());
+        assertEquals(150, service.snapshot().progress().loaded());
+
+        // Skipped revenue follows once the budget is back.
+        clock.now = clock.now.plus(Duration.ofHours(25));
+        service.schedule(many);
+        assertEquals(150, events.stream().filter(event -> event.startsWith("revenue")).count());
+        assertEquals(150, events.stream().filter(event -> event.startsWith("profile")).count());
+    }
+
+    @Test
     public void testRevenueIsCachedForNinetyDaysAndNotFoundToo()
     {
         var service = service(memory(), budget(1000));

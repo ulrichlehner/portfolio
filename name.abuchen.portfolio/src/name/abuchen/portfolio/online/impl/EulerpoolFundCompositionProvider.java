@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
@@ -39,6 +40,7 @@ import com.google.gson.stream.JsonToken;
 
 import name.abuchen.portfolio.online.FundCompositionProvider;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyAttributes;
+import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentCache;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyProfile;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionPersistencePolicy;
@@ -79,6 +81,10 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
 {
     public static final String ID = "EULERPOOL";
     public static final String SYMBOL = "eulerpool:symbol";
+    /**
+     * Worst-case requests of one classification: profile, search and bond
+     * list. Most instruments need one; callers release the unused part.
+     */
     public static final int CLASSIFICATION_REQUEST_COST = 3;
 
     @FunctionalInterface
@@ -209,20 +215,51 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
     public Optional<InstrumentEvidence> classify(ProviderAccount account, CompositionInstrument instrument)
                     throws IOException
     {
+        return classify(account, instrument, null, false, new AtomicInteger());
+    }
+
+    /**
+     * Classification that shares company profiles with enrichment. Every
+     * equity/profile answer, also "not found", goes into the profile cache, so
+     * enrichment does not request it again, and a cached answer replaces the
+     * profile request. With profileFirst, an ISIN is classified from its
+     * profile first: a profile with a sector or industry establishes an
+     * equity in one request. Search and the bond list follow only when the
+     * profile does not decide. Profile and bond list are asked by ISIN only,
+     * since their answers can only match an ISIN.
+     *
+     * @param profiles
+     *            the shared profile cache, or null for none
+     * @param requests
+     *            counts the provider requests made, so a caller can release
+     *            the unused part of its budget reservation
+     */
+    public Optional<InstrumentEvidence> classify(ProviderAccount account, CompositionInstrument instrument,
+                    CompanyEnrichmentCache profiles, boolean profileFirst, AtomicInteger requests) throws IOException
+    {
         checkAccount(account);
         Objects.requireNonNull(instrument);
+        Objects.requireNonNull(requests);
         var queries = identifiers(instrument);
         if (queries.isEmpty())
             return Optional.empty();
         var token = credentials.getBearerToken(account);
         if (token.isEmpty() || !token.get().matches("[A-Za-z0-9._~+/-]+=*"))
             throw new EnrichmentFailure(failure(Status.AUTHENTICATION_FAILED));
+        var isin = Optional.ofNullable(instrument.identifiers().get("ISIN")).map(String::trim)
+                        .filter(queries::contains);
 
+        if (profileFirst && isin.isPresent())
+        {
+            var evidence = profileEvidence(account, instrument, isin.get(), token.get(), profiles, requests);
+            if (evidence.isPresent())
+                return evidence;
+        }
         // Exact ISIN or ticker evidence only. A result's ISIN is never used to
         // replace the source identity: some providers index a different listing.
         for (var query : queries)
         {
-            var search = classificationResponse("https://api.eulerpool.com/api/1/equity/search?q=" + query, token.get());
+            var search = request("https://api.eulerpool.com/api/1/equity/search?q=" + query, token.get(), requests);
             if (search.status() == 200)
             {
                 var evidence = parseSearch(account, instrument, search.body());
@@ -232,27 +269,68 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
             else if (search.status() != 204 && search.status() != 404)
                 throw new IOException();
         }
-        for (var query : queries)
+        if (isin.isEmpty())
+            return Optional.empty();
+        if (!profileFirst)
         {
-            var profile = classificationResponse("https://api.eulerpool.com/api/1/equity/profile/" + query, token.get());
-            if (profile.status() == 200)
-            {
-                var evidence = parseProfile(account, instrument, profile.body());
-                if (evidence.isPresent())
-                    return evidence;
-            }
-            else if (profile.status() != 204 && profile.status() != 404)
-                throw new IOException();
+            var evidence = profileEvidence(account, instrument, isin.get(), token.get(), profiles, requests);
+            if (evidence.isPresent())
+                return evidence;
         }
-        for (var query : queries)
-        {
-            var bonds = classificationResponse("https://api.eulerpool.com/api/1/bonds/list?q=" + query, token.get());
-            if (bonds.status() == 200 && isBond(query, bonds.body()))
-                return bondEvidence(account, instrument);
-            if (bonds.status() != 200 && bonds.status() != 204 && bonds.status() != 404)
-                throw new IOException();
-        }
+        var bonds = request("https://api.eulerpool.com/api/1/bonds/list?q=" + isin.get(), token.get(), requests);
+        if (bonds.status() == 200 && isBond(isin.get(), bonds.body()))
+            return bondEvidence(account, instrument);
+        if (bonds.status() != 200 && bonds.status() != 204 && bonds.status() != 404)
+            throw new IOException();
         return Optional.empty();
+    }
+
+    /**
+     * Equity evidence from the ISIN's profile, from the shared cache when it
+     * holds an answer, otherwise from one request whose answer is shared.
+     */
+    private Optional<InstrumentEvidence> profileEvidence(ProviderAccount account, CompositionInstrument instrument,
+                    String isin, String token, CompanyEnrichmentCache profiles, AtomicInteger requests)
+                    throws IOException
+    {
+        // Only the ISIN form that enrichment requests shares its cache entry.
+        var shared = profiles != null && isin.matches("[A-Z]{2}[A-Z0-9]{9}[0-9]") ? profiles : null;
+        var cached = shared == null ? Optional.<CompanyEnrichmentCache.Cached<CompanyProfile>>empty()
+                        : shared.profile(account, isin);
+        if (cached.isPresent())
+            return cached.get().value().filter(value -> value.sector().isPresent() || value.industry().isPresent())
+                            .flatMap(value -> buildEvidence(account, instrument, "stock", "equity/profile"));
+        // Captured before the request, so an answer arriving after a
+        // withdrawal of local storage is kept for the session only.
+        var generation = shared == null ? 0 : shared.generation(account);
+        var response = request("https://api.eulerpool.com/api/1/equity/profile/" + isin, token, requests);
+        if (response.status() == 204 || response.status() == 404)
+        {
+            if (shared != null)
+                shared.putProfile(account, isin, Optional.empty(), generation);
+            return Optional.empty();
+        }
+        if (response.status() != 200)
+            throw new IOException();
+        if (shared != null)
+        {
+            try
+            {
+                shared.putProfile(account, isin, Optional.of(parseCompanyProfile(isin, response.body())),
+                                generation);
+            }
+            catch (IOException e)
+            {
+                // A malformed profile is not shared; enrichment asks for it itself.
+            }
+        }
+        return parseProfile(account, instrument, response.body());
+    }
+
+    private Response request(String url, String token, AtomicInteger requests) throws IOException
+    {
+        requests.incrementAndGet();
+        return classificationResponse(url, token);
     }
 
     /**
