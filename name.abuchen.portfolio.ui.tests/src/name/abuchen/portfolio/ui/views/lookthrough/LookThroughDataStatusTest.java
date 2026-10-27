@@ -9,10 +9,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 import org.junit.Test;
@@ -30,6 +32,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Health;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundStatus;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.GlobalFacts;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Model;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.StatusKind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.StorageMode;
 
 /**
@@ -383,6 +386,141 @@ public class LookThroughDataStatusTest
 
         assertEquals(0, gateway.refreshCalls);
         assertEquals(1, gateway.readCalls);
+    }
+
+    private static FundComposition weighted(String... weights)
+    {
+        var provenance = new CompositionProvenance(ACCOUNT, FUND, RETRIEVAL, Optional.empty(), Optional.empty());
+        var constituents = new ArrayList<FundComposition.Constituent>();
+        for (var index = 0; index < weights.length; index++)
+            constituents.add(new FundComposition.Constituent(instrument("SYNTH-CO-" + index),
+                            Optional.ofNullable(weights[index])));
+        return new FundComposition(provenance, NAV, FundComposition.ExposureBasis.PHYSICAL_HOLDINGS, PARTIAL,
+                        constituents);
+    }
+
+    /** A received composition that validation rejected: no usable data. */
+    private FundStatus rejected(FundComposition preview)
+    {
+        var facts = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty(), false,
+                        Optional.of(preview));
+        return first(LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts)));
+    }
+
+    @Test
+    public void testCompositionWithNegativeWeightsIsRejectedWithItsReason()
+    {
+        var status = rejected(weighted("1.1", "-0.1"));
+
+        assertEquals(Health.ERROR, status.health());
+        assertEquals(StatusKind.REJECTED_NEGATIVE_WEIGHT, status.kind());
+        assertEquals("Rejected: negative weights", status.statusText());
+        assertFalse(status.usableData());
+        assertTrue(status.tooltipText().startsWith(
+                        "The provider returned a composition with negative weights. The fund stays unresolved.\n"));
+        assertTrue(status.tooltipText().contains("Synthetic fund SYNTH-A"));
+
+        // The calculation reports a zero share for the unresolved fund; the
+        // pane shows a dash instead.
+        var shares = Map.of(FUND.identifiers(), "0,00 %");
+        assertEquals(LookThroughDataStatus.NOT_AVAILABLE, LookThroughDataStatus.shareText(status, shares));
+    }
+
+    @Test
+    public void testRejectionReasonFollowsAFixedPriority()
+    {
+        // negative weight and total above one: the negative weight wins
+        assertEquals(StatusKind.REJECTED_NEGATIVE_WEIGHT, rejected(weighted("1.2", "-0.1")).kind());
+        assertEquals("Rejected: total above 100 %", rejected(weighted("0.7", "0.6")).statusText());
+        assertEquals("Rejected: missing or invalid weights", rejected(weighted("0.5", null)).statusText());
+        assertEquals("Rejected: missing or invalid weights", rejected(weighted("0.5", "n/a")).statusText());
+    }
+
+    @Test
+    public void testUsableDataShowsTheCalculatedShare()
+    {
+        var status = first(singleFundModel(
+                        Optional.of(composition(RETRIEVAL, Optional.empty(), Optional.empty(), PARTIAL, NAV)),
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty()));
+
+        assertEquals(StatusKind.OK, status.kind());
+        assertEquals("OK", status.statusText());
+        assertTrue(status.usableData());
+        assertEquals("42,00 %", LookThroughDataStatus.shareText(status, Map.of(FUND.identifiers(), "42,00 %")));
+        assertFalse(status.tooltipText().startsWith("The provider returned"));
+    }
+
+    @Test
+    public void testShortTextsForFailuresAndSuspension()
+    {
+        var retained = Optional.of(composition(RETRIEVAL, Optional.empty(), Optional.empty(), PARTIAL, NAV));
+        assertEquals("Refresh failed, older data used",
+                        first(singleFundModel(retained, Optional.of(CompositionResult.Status.FAILED),
+                                        Optional.empty())).statusText());
+        assertEquals("Limit reached", first(singleFundModel(Optional.empty(),
+                        Optional.of(CompositionResult.Status.RATE_LIMITED), Optional.empty())).statusText());
+        assertTrue(first(singleFundModel(Optional.empty(), Optional.of(CompositionResult.Status.RATE_LIMITED),
+                        Optional.of(NOW.plus(Duration.ofMinutes(30))))).statusText()
+                                        .startsWith("Limit reached, retry "));
+        assertEquals("Key rejected", first(singleFundModel(Optional.empty(),
+                        Optional.of(CompositionResult.Status.AUTHENTICATION_FAILED), Optional.empty())).statusText());
+        assertEquals("No access", first(singleFundModel(Optional.empty(),
+                        Optional.of(CompositionResult.Status.ENTITLEMENT_FAILED), Optional.empty())).statusText());
+        assertEquals("Malformed provider response", first(singleFundModel(Optional.empty(),
+                        Optional.of(CompositionResult.Status.MALFORMED_RESPONSE), Optional.empty())).statusText());
+        assertEquals("No composition available", first(singleFundModel(Optional.empty(),
+                        Optional.of(CompositionResult.Status.UNAVAILABLE), Optional.empty())).statusText());
+    }
+
+    @Test
+    public void testPendingRefreshIsFetchingWithoutShare()
+    {
+        var facts = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(), Optional.empty(),
+                        Optional.empty(), true);
+        var status = first(LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts)));
+
+        assertEquals(Health.PENDING, status.health());
+        assertEquals(StatusKind.FETCHING, status.kind());
+        assertEquals("Fetching...", status.statusText());
+        assertEquals(LookThroughDataStatus.NOT_AVAILABLE,
+                        LookThroughDataStatus.shareText(status, Map.of(FUND.identifiers(), "0,00 %")));
+    }
+
+    @Test
+    public void testUnclassifiedSecurityIsListedAsChecking()
+    {
+        var model = singleFundModel(Optional.empty(), Optional.empty(), Optional.empty());
+
+        var listed = LookThroughDataStatus.listed(model, Set.of());
+        assertEquals(1, listed.size());
+        assertEquals(StatusKind.CHECKING, listed.get(0).kind());
+        assertEquals("Checking...", listed.get(0).statusText());
+    }
+
+    @Test
+    public void testSecurityClassifiedAsDirectEquityIsNotListed()
+    {
+        var unavailable = singleFundModel(Optional.empty(), Optional.of(CompositionResult.Status.UNAVAILABLE),
+                        Optional.empty());
+        assertTrue(LookThroughDataStatus.listed(unavailable, Set.of(FUND.identifiers())).isEmpty());
+
+        var unknown = singleFundModel(Optional.empty(), Optional.empty(), Optional.empty());
+        assertTrue(LookThroughDataStatus.listed(unknown, Set.of(FUND.identifiers())).isEmpty());
+
+        // Other securities stay listed.
+        assertEquals(1, LookThroughDataStatus.listed(unknown, Set.of(instrument("SYNTH-B").identifiers())).size());
+    }
+
+    @Test
+    public void testReceivedCompositionStaysListedWhateverTheClassification()
+    {
+        var facts = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty(), false,
+                        Optional.of(weighted("1.1", "-0.1")));
+        var model = LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts));
+
+        assertEquals(1, LookThroughDataStatus.listed(model, Set.of(FUND.identifiers())).size());
     }
 
     /** Counts gateway operations: a request is a refresh, a read is not. */

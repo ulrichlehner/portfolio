@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -36,9 +37,11 @@ import org.eclipse.jface.viewers.TreeViewer;
 import org.eclipse.jface.window.ToolTip;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.SashForm;
+import org.eclipse.swt.custom.StackLayout;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
+import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Listener;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.TreeItem;
@@ -54,6 +57,7 @@ import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.UIConstants;
 import name.abuchen.portfolio.ui.editor.AbstractFinanceView;
+import name.abuchen.portfolio.ui.util.Colors;
 import name.abuchen.portfolio.ui.util.DropDown;
 import name.abuchen.portfolio.ui.util.SimpleAction;
 import name.abuchen.portfolio.ui.util.viewers.Column;
@@ -63,6 +67,7 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughChartPane.Kind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartModel;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContentState;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContributionRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.DetailRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
@@ -92,6 +97,10 @@ public class LookThroughView extends AbstractFinanceView
     private LookThroughHeader header;
     private TreeViewer viewer;
     private LookThroughChartPane chartPane;
+    private Composite tableArea;
+    private final StackLayout tableStack = new StackLayout();
+    private Composite tableContainer;
+    private Composite tableMessage;
     private DropDown chartDropDown;
     private Kind chartKind;
     private Map<RowKey, Row> rowsByKey = Map.of();
@@ -169,6 +178,14 @@ public class LookThroughView extends AbstractFinanceView
     {
         if (statusModel != null)
             statusModel.cancel();
+        // A result belongs to the portfolio of its source. When the source
+        // changes, the view is calculating again until the first new result.
+        var reset = this.compositionSource != null && source != this.compositionSource;
+        if (reset)
+        {
+            this.result = null;
+            this.presented = null;
+        }
         this.compositionSource = source;
         this.calculatedInputs = null;
         this.keyConfigured = Optional.empty();
@@ -177,6 +194,8 @@ public class LookThroughView extends AbstractFinanceView
         {
             this.statusModel = null;
             updateStatus();
+            if (reset)
+                applyResult();
             return;
         }
 
@@ -197,6 +216,11 @@ public class LookThroughView extends AbstractFinanceView
         this.statusModel.setChangeListener(this::onStatusChanged);
 
         updateStatus();
+        if (reset)
+        {
+            applyResult();
+            recalculate(true);
+        }
     }
 
     /** Called on the user interface thread after every status change. */
@@ -360,7 +384,13 @@ public class LookThroughView extends AbstractFinanceView
         chartPane = new LookThroughChartPane(sash, getStylingEngine(), this::selectCompany);
         chartPane.setKind(chartKind());
 
-        var tableContainer = new Composite(sash, SWT.NONE);
+        // The table and the calculating message share the right side.
+        tableArea = new Composite(sash, SWT.NONE);
+        tableArea.setLayout(tableStack);
+
+        tableContainer = new Composite(tableArea, SWT.NONE);
+        tableMessage = createCalculatingMessage(tableArea);
+        tableStack.topControl = tableContainer;
 
         var layout = new TreeColumnLayout();
         tableContainer.setLayout(layout);
@@ -394,6 +424,20 @@ public class LookThroughView extends AbstractFinanceView
         applyResult();
         updateStatus();
         return container;
+    }
+
+    private static Composite createCalculatingMessage(Composite parent)
+    {
+        var area = new Composite(parent, SWT.NONE);
+        area.setBackground(Colors.theme().defaultBackground());
+        GridLayoutFactory.fillDefaults().margins(8, 8).applyTo(area);
+        var message = new Label(area, SWT.WRAP | SWT.CENTER);
+        message.setText(Messages.LookThroughLabelCalculating);
+        message.setForeground(Colors.theme().grayForeground());
+        message.setBackground(Colors.theme().defaultBackground());
+        GridDataFactory.fillDefaults().grab(true, true).align(SWT.FILL, SWT.CENTER).hint(100, SWT.DEFAULT)
+                        .applyTo(message);
+        return area;
     }
 
     private void addColumns(ShowHideColumnHelper support)
@@ -535,12 +579,18 @@ public class LookThroughView extends AbstractFinanceView
         if (viewer == null || viewer.getControl().isDisposed() || chartPane == null)
             return;
 
+        var state = LookThroughViewPresenter.contentState(result != null, compositionSource != null);
+        setTableCalculating(state == ContentState.CALCULATING);
+
         if (result == null)
         {
             currencyCode = ""; //$NON-NLS-1$
             presented = null;
-            header.setSummary(null, Optional.empty());
-            chartPane.setModel(new ChartModel(List.of()), currencyCode);
+            if (state == ContentState.CALCULATING)
+                header.setCalculating();
+            else
+                header.setSummary(null, Optional.empty());
+            chartPane.setModel(new ChartModel(List.of()), currencyCode, state);
             setRows(List.of());
             updateStatus();
             return;
@@ -550,9 +600,19 @@ public class LookThroughView extends AbstractFinanceView
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
-        chartPane.setModel(model.chart(), currencyCode);
+        chartPane.setModel(model.chart(), currencyCode, state);
         setRows(model.rows());
         updateStatus();
+    }
+
+    private void setTableCalculating(boolean calculating)
+    {
+        var top = calculating ? tableMessage : tableContainer;
+        if (tableStack.topControl != top)
+        {
+            tableStack.topControl = top;
+            tableArea.layout(true);
+        }
     }
 
     /**
@@ -723,30 +783,41 @@ public class LookThroughView extends AbstractFinanceView
         var model = statusModel;
         var status = model != null ? model.status() : Optional.<LookThroughDataStatus.Model>empty();
         var shares = presented != null ? presented.decomposedShares() : Map.<Map<String, String>, String>of();
-        setInformationPaneInput(status.map(value -> new LookThroughDataStatusPane.Input(value, shares)).orElse(null));
+        var classified = presented != null ? presented.directlyClassified() : Set.<Map<String, String>>of();
+        setInformationPaneInput(status.map(value -> new LookThroughDataStatusPane.Input(value, shares, classified))
+                        .orElse(null));
         updateBanner(status);
+        updateProgress();
         updateActionEnablement();
     }
 
-    /**
-     * Shows the single most relevant banner. The progress banner matters
-     * most during a long first pass: a broad fund needs one provider lookup
-     * per constituent, so the table alone is not enough feedback.
-     */
+    /** Shows the single most relevant banner. */
     private void updateBanner(Optional<LookThroughDataStatus.Model> status)
     {
         if (header == null || header.getControl().isDisposed())
             return;
-        var model = statusModel;
         var source = compositionSource;
-        var refreshing = model != null && model.isProgressVisible() && model.total() > 0;
         var needsCompositions = presented != null && presented.summary().needsCompositions() && source != null
                         && !source.funds().isEmpty();
-        var facts = new LookThroughBanner.Facts(refreshing, keyConfigured,
+        var facts = new LookThroughBanner.Facts(keyConfigured,
                         status.map(LookThroughDataStatus.Model::isAccessSuspended).orElse(false), needsCompositions,
                         presented != null && presented.empty());
+        header.setBanner(LookThroughBanner.select(facts));
+    }
+
+    /**
+     * Shows the refresh progress in the summary row. It matters most during
+     * a long first pass: a broad fund needs one provider lookup per
+     * constituent, so the table alone is not enough feedback.
+     */
+    private void updateProgress()
+    {
+        if (header == null || header.getControl().isDisposed())
+            return;
+        var model = statusModel;
+        var refreshing = model != null && model.isProgressVisible() && model.total() > 0;
         var total = refreshing ? model.total() : 0;
-        header.setBanner(LookThroughBanner.select(facts), refreshing ? total - model.outstanding() : 0, total);
+        header.setProgress(refreshing, refreshing ? total - model.outstanding() : 0, total);
     }
 
     private void updateActionEnablement()

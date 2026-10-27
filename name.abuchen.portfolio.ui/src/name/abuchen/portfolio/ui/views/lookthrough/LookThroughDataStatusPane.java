@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 import org.eclipse.jface.layout.GridDataFactory;
@@ -34,9 +35,10 @@ import name.abuchen.portfolio.ui.views.panes.InformationPanePage;
 /**
  * Read-only status page for the look-through data. One line names the
  * effective storage mode (or the reason for session-only storage) and keeps
- * the restart limitation in its tooltip. The table lists each fund with a
- * status icon, the retrieval date and the decomposed share; all other facts
- * are in the row tooltip.
+ * the restart limitation in its tooltip. The table lists each fund, and each
+ * security that is not classified yet, with a status icon and short status
+ * text, the retrieval date and the decomposed share; all other facts are in
+ * the row tooltip.
  * <p>
  * The page only renders the model it receives. It performs no retrieval and no
  * persistence access itself, and a recalculation request does not change that:
@@ -49,15 +51,30 @@ public class LookThroughDataStatusPane implements InformationPanePage
 {
     /**
      * Input of the page: the status model plus the decomposed share text per
-     * fund, keyed by the identifiers of the fund instrument. The share comes
-     * from the calculation result, which the status model does not know.
+     * fund, keyed by the identifiers of the fund instrument, and the
+     * identifiers of the held securities that the result classifies as
+     * something other than a fund. Both come from the calculation result,
+     * which the status model does not know.
      */
-    public record Input(Model status, Map<Map<String, String>, String> decomposedShares)
+    public record Input(Model status, Map<Map<String, String>, String> decomposedShares,
+                    Set<Map<String, String>> directlyClassified)
     {
         public Input
         {
             Objects.requireNonNull(status);
             decomposedShares = Map.copyOf(decomposedShares);
+            directlyClassified = Set.copyOf(directlyClassified);
+        }
+
+        public Input(Model status, Map<Map<String, String>, String> decomposedShares)
+        {
+            this(status, decomposedShares, Set.of());
+        }
+
+        /** The rows of the pane, without directly classified securities. */
+        public List<FundStatus> rows()
+        {
+            return LookThroughDataStatus.listed(status, directlyClassified);
         }
     }
 
@@ -112,7 +129,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
     private void addColumns()
     {
         addColumn(Messages.LookThroughStatusColumnFund, SWT.LEFT, 220, FundStatus::fundLabel, null);
-        addColumn("", SWT.CENTER, 28, status -> "", this::healthImage); //$NON-NLS-1$
+        addColumn(Messages.LookThroughStatusColumnStatus, SWT.LEFT, 240, FundStatus::statusText, this::healthImage);
         addColumn(Messages.LookThroughStatusColumnRetrieved, SWT.LEFT, 130,
                         status -> status.retrievedDateText().orElse(""), null); //$NON-NLS-1$
         addColumn(Messages.LookThroughStatusColumnShare, SWT.RIGHT, 110, this::shareText, null);
@@ -165,7 +182,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         var input = rendered;
         if (input == null)
             return ""; //$NON-NLS-1$
-        return input.decomposedShares().getOrDefault(status.reference().fund().identifiers(), ""); //$NON-NLS-1$
+        return LookThroughDataStatus.shareText(status, input.decomposedShares());
     }
 
     @Override
@@ -195,7 +212,7 @@ public class LookThroughDataStatusPane implements InformationPanePage
         renderedVisible = visible;
 
         var status = input != null ? input.status() : null;
-        setRows(status != null ? status.funds() : List.of());
+        setRows(input != null ? input.rows() : List.of());
 
         setText(storageLabel, status != null ? status.storageText() : ""); //$NON-NLS-1$
         storageLabel.setToolTipText(status != null ? storageTooltip(status) : null);
@@ -212,10 +229,10 @@ public class LookThroughDataStatusPane implements InformationPanePage
         var visible = new ArrayList<Object>();
         visible.add(status.storageText());
         visible.add(storageTooltip(status));
-        for (var fund : status.funds())
-            visible.add(List.of(fund.reference(), fund.fundLabel(), fund.health(), fund.refreshPending(),
-                            fund.retrievedDateText(), fund.tooltipText(), input.decomposedShares()
-                                            .getOrDefault(fund.reference().fund().identifiers(), ""))); //$NON-NLS-1$
+        for (var fund : input.rows())
+            visible.add(List.of(fund.reference(), fund.fundLabel(), fund.health(), fund.statusText(),
+                            fund.refreshPending(), fund.retrievedDateText(), fund.tooltipText(),
+                            LookThroughDataStatus.shareText(fund, input.decomposedShares())));
         return visible;
     }
 

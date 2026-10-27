@@ -6,11 +6,16 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import name.abuchen.portfolio.money.Values;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionInstrument;
@@ -19,6 +24,8 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionProvenance;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidationResult;
+import name.abuchen.portfolio.snapshot.lookthrough.CompositionValidator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.Messages;
@@ -63,6 +70,9 @@ public final class LookThroughDataStatus
      */
     public static final Duration STALE_AFTER = Duration.ofHours(24);
 
+    /** Shown instead of a share that does not exist. */
+    public static final String NOT_AVAILABLE = "\u2013"; //$NON-NLS-1$
+
     public enum Freshness
     {
         FRESH, STALE
@@ -89,6 +99,43 @@ public final class LookThroughDataStatus
         PENDING,
         /** Nothing to report, for example before the first attempt. */
         NONE
+    }
+
+    /**
+     * What the short status text of a row says. Unlike {@link Health} it
+     * distinguishes the reasons, so the pane can name them without the
+     * tooltip.
+     */
+    public enum StatusKind
+    {
+        /** Usable data and no failed attempt since. */
+        OK,
+        /** The latest refresh failed, older usable data is used. */
+        RETAINED_AFTER_FAILURE,
+        /** The provider rate limit was reached. */
+        RATE_LIMITED,
+        /** The latest refresh failed and no usable data exists. */
+        FAILED,
+        /** Validation rejected the composition because of negative weights. */
+        REJECTED_NEGATIVE_WEIGHT,
+        /** Validation rejected the composition because its total exceeds one. */
+        REJECTED_TOTAL_ABOVE_ONE,
+        /** Validation rejected the composition because of missing or invalid weights. */
+        REJECTED_INVALID_WEIGHT,
+        /** Validation rejected the composition for another reason. */
+        REJECTED,
+        /** The provider response could not be read as a composition. */
+        MALFORMED,
+        /** The provider rejected the key. */
+        KEY_REJECTED,
+        /** The provider rejected the permission of the key. */
+        NO_ACCESS,
+        /** A refresh of this security is running. */
+        FETCHING,
+        /** No attempt yet; the security may still turn out to be a fund. */
+        CHECKING,
+        /** The provider has no composition for this security. */
+        NO_COMPOSITION
     }
 
     /** Global facts: the composition store state and the policy-built mode. */
@@ -151,12 +198,16 @@ public final class LookThroughDataStatus
                     Optional<String> freshnessText, Optional<String> sourceDataText, Optional<String> denominatorText,
                     Optional<CompositionResult.Status> latestAttempt, String attemptText, Optional<Instant> retryAfter,
                     Optional<String> retryText, boolean refreshPending, FundRef reference, Health health,
-                    Optional<String> retrievedDateText)
+                    Optional<String> retrievedDateText, StatusKind kind, String statusText,
+                    Optional<String> explanation, boolean usableData)
     {
         public FundStatus
         {
             Objects.requireNonNull(reference);
             Objects.requireNonNull(health);
+            Objects.requireNonNull(kind);
+            Objects.requireNonNull(statusText);
+            Objects.requireNonNull(explanation);
             Objects.requireNonNull(retrievedDateText);
             Objects.requireNonNull(fundLabel);
             Objects.requireNonNull(providerAccountText);
@@ -180,11 +231,13 @@ public final class LookThroughDataStatus
         /**
          * All details of the row as one text, one fact per line: the pane
          * shows only the fund, the status, the retrieval date and the share,
-         * so the remaining facts must stay reachable here.
+         * so the remaining facts must stay reachable here. A rejected or
+         * unreadable composition is explained first.
          */
         public String tooltipText()
         {
             var lines = new ArrayList<String>();
+            explanation.ifPresent(lines::add);
             lines.add(fundLabel);
             if (refreshPending)
                 lines.add(Messages.LookThroughStatusPendingRefresh);
@@ -386,12 +439,160 @@ public final class LookThroughDataStatus
         var retryText = retryText(clock, facts);
         var retrievedDateText = retrieval.map(
                         instant -> Values.DateTime.format(LocalDateTime.ofInstant(instant, clock.getZone())));
+        var kind = kind(facts);
 
         return new FundStatus(facts.fund().label(), providerAccountText, retrieval, retrievalText, providerRefreshedAt,
                         providerRefreshedText, holdingsEffectiveDate, holdingsText, freshness, age, freshnessText,
                         sourceDataText, denominatorText, latestAttempt, attemptText, facts.retryAfter(), retryText,
                         facts.refreshPending(), new FundRef(facts.account(), facts.fund()), health(facts),
-                        retrievedDateText);
+                        retrievedDateText, kind, statusText(clock, kind, facts.retryAfter()), explanation(kind),
+                        hasUsableData(facts));
+    }
+
+    /**
+     * Rows of the pane: every fund and every security whose classification
+     * is still unknown. Securities that the current result classifies as
+     * directly held shares or other non-fund assets are left out, unless the
+     * provider returned a composition for them, which then needs explaining.
+     *
+     * @param directlyClassified
+     *            identifiers of the held securities that the result does not
+     *            classify as a fund
+     */
+    public static List<FundStatus> listed(Model model, Set<Map<String, String>> directlyClassified)
+    {
+        return model.funds().stream()
+                        .filter(status -> status.usableData() || hasComposition(status.kind())
+                                        || !directlyClassified.contains(status.reference().fund().identifiers()))
+                        .toList();
+    }
+
+    private static boolean hasComposition(StatusKind kind)
+    {
+        return switch (kind)
+        {
+            case REJECTED_NEGATIVE_WEIGHT, REJECTED_TOTAL_ABOVE_ONE, REJECTED_INVALID_WEIGHT, REJECTED, MALFORMED -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * The decomposed share of a row. Without usable data no share exists, so
+     * a dash is shown instead of a zero percentage.
+     */
+    public static String shareText(FundStatus status, Map<Map<String, String>, String> decomposedShares)
+    {
+        if (!status.usableData())
+            return NOT_AVAILABLE;
+        return decomposedShares.getOrDefault(status.reference().fund().identifiers(), NOT_AVAILABLE);
+    }
+
+    /**
+     * Arithmetic-usable data without verified semantics is still used by the
+     * calculation, so it counts as data here.
+     */
+    private static boolean hasUsableData(FundFacts facts)
+    {
+        return facts.retained().or(facts::unverifiedComposition).isPresent();
+    }
+
+    /** Follows the same order as {@link #health(FundFacts)}. */
+    private static StatusKind kind(FundFacts facts)
+    {
+        if (facts.refreshPending())
+            return StatusKind.FETCHING;
+
+        var attempt = facts.latestAttempt().orElse(CompositionResult.Status.CANCELLED);
+        if (attempt == CompositionResult.Status.AUTHENTICATION_FAILED)
+            return StatusKind.KEY_REJECTED;
+        if (attempt == CompositionResult.Status.ENTITLEMENT_FAILED)
+            return StatusKind.NO_ACCESS;
+
+        if (hasUsableData(facts))
+        {
+            if (attempt == CompositionResult.Status.RATE_LIMITED)
+                return StatusKind.RATE_LIMITED;
+            var failed = attempt != CompositionResult.Status.RECEIVED
+                            && attempt != CompositionResult.Status.CANCELLED;
+            return failed ? StatusKind.RETAINED_AFTER_FAILURE : StatusKind.OK;
+        }
+
+        if (facts.sourcePreview().isPresent())
+            return rejection(facts.sourcePreview().orElseThrow());
+
+        return switch (attempt)
+        {
+            case MALFORMED_RESPONSE -> StatusKind.MALFORMED;
+            case RATE_LIMITED -> StatusKind.RATE_LIMITED;
+            case FAILED -> StatusKind.FAILED;
+            case RECEIVED, UNAVAILABLE, UNSUPPORTED -> StatusKind.NO_COMPOSITION;
+            default -> StatusKind.CHECKING;
+        };
+    }
+
+    /**
+     * Validates the received composition again to name why it is not used.
+     * The first reason by a fixed priority wins. Missing semantics alone do
+     * not reject a composition, because it is then used as unverified data,
+     * so they have no text of their own.
+     */
+    private static StatusKind rejection(FundComposition preview)
+    {
+        var reasons = new CompositionValidator().validate(preview).diagnostics().stream()
+                        .map(CompositionValidationResult.Diagnostic::reason).collect(Collectors.toSet());
+        if (reasons.contains(CompositionValidationResult.Reason.NEGATIVE_WEIGHT))
+            return StatusKind.REJECTED_NEGATIVE_WEIGHT;
+        if (reasons.contains(CompositionValidationResult.Reason.TOTAL_EXCEEDS_ONE))
+            return StatusKind.REJECTED_TOTAL_ABOVE_ONE;
+        if (reasons.contains(CompositionValidationResult.Reason.MISSING_WEIGHT)
+                        || reasons.contains(CompositionValidationResult.Reason.INVALID_WEIGHT))
+            return StatusKind.REJECTED_INVALID_WEIGHT;
+        return StatusKind.REJECTED;
+    }
+
+    private static String statusText(Clock clock, StatusKind kind, Optional<Instant> retryAfter)
+    {
+        return switch (kind)
+        {
+            case OK -> Messages.LookThroughStatusOk;
+            case RETAINED_AFTER_FAILURE -> Messages.LookThroughStatusRetainedAfterFailure;
+            case RATE_LIMITED -> retryAfter.map(at -> MessageFormat.format(Messages.LookThroughStatusRateLimitedRetry,
+                            retryTimeText(clock, at))).orElse(Messages.LookThroughStatusRateLimited);
+            case FAILED -> Messages.LookThroughStatusFailed;
+            case REJECTED_NEGATIVE_WEIGHT -> Messages.LookThroughStatusRejectedNegativeWeight;
+            case REJECTED_TOTAL_ABOVE_ONE -> Messages.LookThroughStatusRejectedTotalAboveOne;
+            case REJECTED_INVALID_WEIGHT -> Messages.LookThroughStatusRejectedInvalidWeight;
+            case REJECTED -> Messages.LookThroughStatusRejected;
+            case MALFORMED -> Messages.LookThroughStatusMalformed;
+            case KEY_REJECTED -> Messages.LookThroughStatusKeyRejected;
+            case NO_ACCESS -> Messages.LookThroughStatusNoAccess;
+            case FETCHING -> Messages.LookThroughStatusFetching;
+            case CHECKING -> Messages.LookThroughStatusChecking;
+            case NO_COMPOSITION -> Messages.LookThroughStatusNoComposition;
+            default -> throw new IllegalArgumentException(kind.name());
+        };
+    }
+
+    /** Only the time on the same day, otherwise date and time. */
+    private static String retryTimeText(Clock clock, Instant at)
+    {
+        var dateTime = LocalDateTime.ofInstant(at, clock.getZone());
+        if (dateTime.toLocalDate().equals(LocalDate.now(clock)))
+            return dateTime.toLocalTime().format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT));
+        return Values.DateTime.format(dateTime);
+    }
+
+    private static Optional<String> explanation(StatusKind kind)
+    {
+        return switch (kind)
+        {
+            case REJECTED_NEGATIVE_WEIGHT -> Optional.of(Messages.LookThroughStatusExplainNegativeWeight);
+            case REJECTED_TOTAL_ABOVE_ONE -> Optional.of(Messages.LookThroughStatusExplainTotalAboveOne);
+            case REJECTED_INVALID_WEIGHT -> Optional.of(Messages.LookThroughStatusExplainInvalidWeight);
+            case REJECTED -> Optional.of(Messages.LookThroughStatusExplainRejected);
+            case MALFORMED -> Optional.of(Messages.LookThroughStatusExplainMalformed);
+            default -> Optional.empty();
+        };
     }
 
     private static boolean isSuspension(CompositionResult.Status status)

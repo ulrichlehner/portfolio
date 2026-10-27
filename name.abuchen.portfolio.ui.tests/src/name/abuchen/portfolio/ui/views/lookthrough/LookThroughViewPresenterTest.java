@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.junit.Test;
 
@@ -54,6 +55,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.SecuritiesValuationAdapter;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CategoryRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.CompanyRow;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContentState;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Model;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
@@ -228,6 +230,27 @@ public class LookThroughViewPresenterTest
     private void amount(String expected, BigDecimal actual)
     {
         assertEquals(0, new BigDecimal(expected).compareTo(actual));
+    }
+
+    @Test
+    public void testCalculatingStateUntilTheFirstResult()
+    {
+        assertEquals(ContentState.CALCULATING, LookThroughViewPresenter.contentState(false, true));
+        assertEquals(ContentState.CALCULATED, LookThroughViewPresenter.contentState(true, true));
+        assertEquals(ContentState.CALCULATED, LookThroughViewPresenter.contentState(true, false));
+        assertEquals(ContentState.NONE, LookThroughViewPresenter.contentState(false, false));
+    }
+
+    @Test
+    public void testDirectlyClassifiedSecuritiesExcludeFundsAndUnknownSecurities()
+    {
+        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-CO", 3, 10);
+        hold("fund", "Synthetic fund holding", AssetType.FUND, null, 1, 100);
+        hold("unknown", "Synthetic unknown holding", null, null, 1, 10);
+
+        var model = model(result());
+
+        assertEquals(Set.of(Map.of("ISIN", "SYNTH-company")), model.directlyClassified());
     }
 
     @Test

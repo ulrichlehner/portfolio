@@ -7,6 +7,7 @@ import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.jface.layout.GridLayoutFactory;
 import org.eclipse.jface.layout.RowLayoutFactory;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.custom.StackLayout;
 import org.eclipse.swt.events.SelectionListener;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.RowData;
@@ -30,6 +31,10 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Summ
  * the key figures and the coverage bar. Notices are not shown as paragraphs;
  * they are collected in the tooltip of the indicator icon next to the
  * resolved share.
+ * <p>
+ * The progress of a refresh replaces the valuation date in the summary strip.
+ * Both share one slot whose width is the larger of the two, so starting or
+ * ending a refresh moves nothing.
  */
 public class LookThroughHeader
 {
@@ -50,11 +55,15 @@ public class LookThroughHeader
     private Label topTenLabel;
     private Composite fundsFigure;
     private Label fundsLabel;
+    private Composite asOfSlot;
+    private final StackLayout asOfStack = new StackLayout();
     private Label asOfLabel;
-
-    private Optional<Kind> bannerKind;
+    private Composite progress;
     private ProgressBar progressBar;
     private Label progressLabel;
+    private boolean progressVisible;
+
+    private Optional<Kind> bannerKind;
 
     public LookThroughHeader(Composite parent, Runnable onStop, Runnable onOpenSettings)
     {
@@ -75,7 +84,7 @@ public class LookThroughHeader
         coverageBar = new LookThroughCoverageBar(container);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(coverageBar.getControl());
 
-        setBanner(Optional.empty(), 0, 0);
+        setBanner(Optional.empty());
         setSummary(null, Optional.empty());
     }
 
@@ -99,8 +108,40 @@ public class LookThroughHeader
         fundsFigure = funds.figure();
         fundsLabel = funds.value();
 
-        asOfLabel = new Label(strip, SWT.NONE);
+        // The stack layout sizes the slot by its largest child, so the slot
+        // keeps its width whether the date or the progress is on top.
+        asOfSlot = new Composite(strip, SWT.NONE);
+        asOfSlot.setLayout(asOfStack);
+
+        asOfLabel = new Label(asOfSlot, SWT.NONE);
         asOfLabel.setForeground(Colors.theme().grayForeground());
+
+        createProgress();
+        asOfStack.topControl = asOfLabel;
+    }
+
+    private void createProgress()
+    {
+        progress = new Composite(asOfSlot, SWT.NONE);
+        GridLayoutFactory.fillDefaults().numColumns(3).spacing(8, 0).applyTo(progress);
+
+        progressLabel = new Label(progress, SWT.NONE);
+        progressLabel.setForeground(Colors.theme().grayForeground());
+        // Reserve the width of large counts so the label never grows.
+        progressLabel.setText(MessageFormat.format(Messages.LookThroughSummaryOf, "8888", "8888")); //$NON-NLS-1$ //$NON-NLS-2$
+        GridDataFactory.fillDefaults().align(SWT.BEGINNING, SWT.CENTER)
+                        .hint(progressLabel.computeSize(SWT.DEFAULT, SWT.DEFAULT).x, SWT.DEFAULT)
+                        .applyTo(progressLabel);
+        progressLabel.setText(""); //$NON-NLS-1$
+
+        progressBar = new ProgressBar(progress, SWT.HORIZONTAL | SWT.SMOOTH);
+        GridDataFactory.fillDefaults().align(SWT.FILL, SWT.CENTER).hint(100, SWT.DEFAULT).applyTo(progressBar);
+
+        var stop = new Button(progress, SWT.FLAT);
+        stop.setImage(Images.REMOVE.image());
+        stop.setToolTipText(Messages.LookThroughStopRefresh);
+        stop.addSelectionListener(SelectionListener.widgetSelectedAdapter(event -> onStop.run()));
+        GridDataFactory.fillDefaults().align(SWT.END, SWT.CENTER).applyTo(stop);
     }
 
     private record Figure(Composite figure, Composite valueRow, Label value)
@@ -153,40 +194,66 @@ public class LookThroughHeader
     }
 
     /**
-     * Shows the banner of the given kind. The progress counts are only used
-     * by the progress banner; repeated calls with the same kind only update
-     * the counts.
+     * Shows the strip with placeholders while the first result is being
+     * calculated. Captions stay, so the strip already has its final height.
      */
-    public void setBanner(Optional<Kind> kind, int completed, int total)
+    public void setCalculating()
     {
-        if (!kind.equals(bannerKind))
-        {
-            bannerKind = kind;
-            for (var child : banner.getChildren())
-                child.dispose();
-            progressBar = null;
-            progressLabel = null;
-            kind.ifPresent(this::createBanner);
-            setVisible(banner, kind.isPresent());
-            relayout();
-        }
+        setVisible(strip, true);
+        setVisible(coverageBar.getControl(), false);
 
-        if (progressBar != null && !progressBar.isDisposed())
+        valueLabel.setText(NOT_AVAILABLE);
+        resolvedLabel.setText(NOT_AVAILABLE);
+        topTenLabel.setText(NOT_AVAILABLE);
+        fundsLabel.setText(NOT_AVAILABLE);
+        setVisible(fundsFigure, true);
+        asOfLabel.setText(""); //$NON-NLS-1$
+
+        indicator.setImage(Images.INFO.image());
+        indicator.setToolTipText(Messages.LookThroughLabelCalculating);
+
+        relayout();
+    }
+
+    /**
+     * Shows the refresh progress in place of the valuation date, or the date
+     * again. Only the slot changes; the strip keeps its layout.
+     */
+    public void setProgress(boolean visible, int completed, int total)
+    {
+        if (visible)
         {
             progressBar.setMaximum(Math.max(1, total));
             progressBar.setSelection(completed);
-            progressLabel.setText(MessageFormat.format(Messages.LookThroughLabelLoading, completed, total));
-            banner.layout(true);
+            progressLabel.setText(MessageFormat.format(Messages.LookThroughSummaryOf, completed, total));
         }
+
+        if (visible != progressVisible)
+        {
+            progressVisible = visible;
+            asOfStack.topControl = visible ? progress : asOfLabel;
+        }
+        asOfSlot.layout(true, true);
+    }
+
+    /** Shows the banner of the given kind, or none. */
+    public void setBanner(Optional<Kind> kind)
+    {
+        if (kind.equals(bannerKind))
+            return;
+
+        bannerKind = kind;
+        for (var child : banner.getChildren())
+            child.dispose();
+        kind.ifPresent(this::createBanner);
+        setVisible(banner, kind.isPresent());
+        relayout();
     }
 
     private void createBanner(Kind kind)
     {
         switch (kind)
         {
-            case PROGRESS:
-                createProgressBanner();
-                break;
             case SUSPENDED:
                 createMessageBanner(Images.WARNING, Messages.LookThroughBannerSuspended,
                                 Messages.LookThroughBannerCheckKey);
@@ -200,24 +267,6 @@ public class LookThroughHeader
             default:
                 throw new IllegalArgumentException(kind.name());
         }
-    }
-
-    private void createProgressBanner()
-    {
-        GridLayoutFactory.fillDefaults().numColumns(3).spacing(8, 0).applyTo(banner);
-
-        progressLabel = new Label(banner, SWT.NONE);
-        GridDataFactory.fillDefaults().align(SWT.BEGINNING, SWT.CENTER).applyTo(progressLabel);
-
-        progressBar = new ProgressBar(banner, SWT.HORIZONTAL | SWT.SMOOTH);
-        GridDataFactory.fillDefaults().align(SWT.FILL, SWT.CENTER).grab(true, false).hint(120, SWT.DEFAULT)
-                        .applyTo(progressBar);
-
-        var stop = new Button(banner, SWT.FLAT);
-        stop.setImage(Images.REMOVE.image());
-        stop.setToolTipText(Messages.LookThroughStopRefresh);
-        stop.addSelectionListener(SelectionListener.widgetSelectedAdapter(event -> onStop.run()));
-        GridDataFactory.fillDefaults().align(SWT.END, SWT.CENTER).applyTo(stop);
     }
 
     private void createMessageBanner(Images image, String text, String linkText)

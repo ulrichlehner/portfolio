@@ -7,11 +7,13 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import name.abuchen.portfolio.model.Security;
@@ -265,12 +267,14 @@ public final class LookThroughViewPresenter
     public record Model(LocalDate valuationDate, String currencyCode, String scopeText, Optional<Money> denominator,
                     Optional<String> denominatorText, Completeness completeness, String completenessText,
                     Optional<String> unverifiedNotice, boolean empty, List<Row> rows, Summary summary,
-                    Optional<Coverage> coverage, Map<Map<String, String>, String> decomposedShares)
+                    Optional<Coverage> coverage, Map<Map<String, String>, String> decomposedShares,
+                    Set<Map<String, String>> directlyClassified)
     {
         public Model
         {
             rows = List.copyOf(rows);
             decomposedShares = Map.copyOf(decomposedShares);
+            directlyClassified = Set.copyOf(directlyClassified);
         }
 
         /** The company charts, derived from the company rows only. */
@@ -400,7 +404,52 @@ public final class LookThroughViewPresenter
 
         return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(), scopeText, denominator,
                         denominatorText, completeness, completenessText, unverifiedNotice, empty, rows, summary,
-                        empty ? Optional.empty() : coverage(result, denominatorAmount), funds.shares());
+                        empty ? Optional.empty() : coverage(result, denominatorAmount), funds.shares(),
+                        directlyClassified(result));
+    }
+
+    /**
+     * What the view shows instead of a result. A calculation that is expected
+     * but has not delivered yet is distinct from every empty state, so an
+     * empty message never appears before the first result.
+     */
+    public enum ContentState
+    {
+        /** The first result for the open portfolio is still being calculated. */
+        CALCULATING,
+        /** A result exists; empty messages refer to it. */
+        CALCULATED,
+        /** No result and no calculation is expected, for example without a source. */
+        NONE
+    }
+
+    public static ContentState contentState(boolean hasResult, boolean calculationExpected)
+    {
+        if (hasResult)
+            return ContentState.CALCULATED;
+        return calculationExpected ? ContentState.CALCULATING : ContentState.NONE;
+    }
+
+    /**
+     * Identifiers of the held securities that the result classifies as
+     * something other than a fund, for example a directly held share. A
+     * security without classification is not included: it may still turn
+     * out to be a fund.
+     */
+    private static Set<Map<String, String>> directlyClassified(LookThroughResult result)
+    {
+        var identifiers = new HashSet<Map<String, String>>();
+        for (var contribution : result.contributions())
+        {
+            var state = contribution.originResolution().map(InstrumentResolution::state);
+            if (state.isEmpty() || state.get() == InstrumentResolution.State.FUND
+                            || state.get() == InstrumentResolution.State.UNRESOLVED)
+                continue;
+            var instrument = LookThroughCompositionService.instrumentOf(contribution.origin().security());
+            if (!instrument.identifiers().isEmpty())
+                identifiers.add(instrument.identifiers());
+        }
+        return identifiers;
     }
 
     /**

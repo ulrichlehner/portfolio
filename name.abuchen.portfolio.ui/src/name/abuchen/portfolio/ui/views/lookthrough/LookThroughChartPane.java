@@ -20,12 +20,14 @@ import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.util.Colors;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartCompany;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartModel;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ContentState;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
 
 /**
- * Holds the company charts and shows one of them, or a message when there is
- * no company exposure. Only the visible chart is updated. The pane displays
- * the model it was given and never starts a retrieval.
+ * Holds the company charts and shows one of them, or a message: while the
+ * first result is being calculated, or when a calculated result has no
+ * company exposure. Only the visible chart is updated. The pane displays the
+ * model it was given and never starts a retrieval.
  */
 class LookThroughChartPane
 {
@@ -47,11 +49,13 @@ class LookThroughChartPane
     private final LookThroughTreeMap treeMap;
     private final LookThroughBarChart barChart;
     private final Composite emptyArea;
+    private final Label emptyMessage;
     private final Composite legend;
 
     private Kind kind = Kind.TREEMAP;
     private ChartModel model = new ChartModel(List.of());
     private String currencyCode = ""; //$NON-NLS-1$
+    private ContentState state = ContentState.CALCULATED;
 
     LookThroughChartPane(Composite parent, IStylingEngine stylingEngine, Consumer<RowKey> onSelect)
     {
@@ -70,8 +74,7 @@ class LookThroughChartPane
         emptyArea = new Composite(stackArea, SWT.NONE);
         emptyArea.setBackground(Colors.theme().defaultBackground());
         GridLayoutFactory.fillDefaults().margins(8, 8).applyTo(emptyArea);
-        var emptyMessage = new Label(emptyArea, SWT.WRAP | SWT.CENTER);
-        emptyMessage.setText(Messages.LookThroughChartEmpty);
+        emptyMessage = new Label(emptyArea, SWT.WRAP | SWT.CENTER);
         emptyMessage.setForeground(Colors.theme().grayForeground());
         emptyMessage.setBackground(Colors.theme().defaultBackground());
         GridDataFactory.fillDefaults().grab(true, true).align(SWT.FILL, SWT.CENTER).hint(100, SWT.DEFAULT)
@@ -107,8 +110,19 @@ class LookThroughChartPane
 
     void setModel(ChartModel model, String currencyCode)
     {
+        setModel(model, currencyCode, ContentState.CALCULATED);
+    }
+
+    /**
+     * Shows the model. The message for a missing company exposure is only
+     * shown for a calculated result; before the first result the pane says
+     * that the breakdown is being calculated.
+     */
+    void setModel(ChartModel model, String currencyCode, ContentState state)
+    {
         this.model = model;
         this.currencyCode = currencyCode;
+        this.state = state;
         update();
     }
 
@@ -127,6 +141,13 @@ class LookThroughChartPane
         Control top;
         if (model.isEmpty())
         {
+            var message = switch (state)
+            {
+                case CALCULATING -> Messages.LookThroughLabelCalculating;
+                case CALCULATED -> Messages.LookThroughChartEmpty;
+                default -> ""; //$NON-NLS-1$
+            };
+            emptyMessage.setText(message);
             top = emptyArea;
         }
         else if (kind == Kind.TREEMAP)
