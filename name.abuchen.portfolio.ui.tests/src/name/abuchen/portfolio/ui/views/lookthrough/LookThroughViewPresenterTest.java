@@ -43,6 +43,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Completeness;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Constituent;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.Denominator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition.ExposureBasis;
+import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Assertion;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.AssetType;
@@ -1069,5 +1070,55 @@ public class LookThroughViewPresenterTest
         assertEquals(GroupKind.UNKNOWN, groups.get(0).groupKind());
         amount("48000", groups.get(0).total());
         assertTrue(model.summary().indicatorText().contains(Messages.LookThroughRevenueCoverageNone));
+    }
+
+    @Test
+    public void testOverlapMatrixOfTwoFundsAndItsTooltip()
+    {
+        var x = instrument("x", "Synthetic X", AssetType.EQUITY, "CO-X");
+        var y = instrument("y", "Synthetic Y", AssetType.EQUITY, "CO-Y");
+        var a = instrument("fund-a", AssetType.FUND, null);
+        var b = instrument("fund-b", AssetType.FUND, null);
+        hold("fund-a", "Fund A", AssetType.FUND, null, 20, 100);
+        hold("fund-b", "Fund B", AssetType.FUND, null, 10, 100);
+        composition(a, row(x, "0.05"), row(y, "0.02"));
+        composition(b, row(x, "0.03"), row(y, "0.04"));
+
+        var matrix = LookThroughOverlapModel.of(FundOverlap.of(result()));
+
+        assertFalse(matrix.isEmpty());
+        assertEquals(2, matrix.size());
+        assertEquals("Fund A", matrix.name(0));
+        assertEquals("Fund B", matrix.name(1));
+        var cell = matrix.cell(0, 1);
+        assertEquals(Values.Percent2.format(0.05d), cell.text());
+        assertEquals(1d, cell.shade(), 1e-9);
+        assertEquals(cell.text(), matrix.cell(1, 0).text());
+        assertEquals(Optional.of(new Identifier("synthetic:company", "CO-X")), cell.largest());
+        assertEquals(LookThroughViewPresenter.companyKey(new Identifier("synthetic:company", "CO-X")),
+                        cell.largest().map(LookThroughViewPresenter::companyKey).orElseThrow());
+        var lines = cell.tooltip().split("\n");
+        assertEquals("Fund A / Fund B", lines[0]);
+        assertTrue(lines[1].endsWith(cell.text()));
+        assertEquals("Synthetic X: " + Values.Percent2.format(0.03d), lines[lines.length - 2]);
+        assertEquals("Synthetic Y: " + Values.Percent2.format(0.02d), lines[lines.length - 1]);
+        assertTrue(matrix.excludedText().isEmpty());
+    }
+
+    @Test
+    public void testOverlapNeedsTwoDecomposedFundsAndNamesTheOthers()
+    {
+        var x = instrument("x", AssetType.EQUITY, "CO-X");
+        var a = instrument("fund-a", AssetType.FUND, null);
+        instrument("fund-b", AssetType.FUND, null);
+        hold("fund-a", "Fund A", AssetType.FUND, null, 20, 100);
+        hold("fund-b", "Fund B", AssetType.FUND, null, 10, 100);
+        composition(a, row(x, "0.5"));
+
+        var matrix = LookThroughOverlapModel.of(FundOverlap.of(result()));
+
+        assertTrue(matrix.isEmpty());
+        assertEquals(MessageFormat.format(Messages.LookThroughOverlapExcluded, "Fund B"),
+                        matrix.excludedText().orElseThrow());
     }
 }

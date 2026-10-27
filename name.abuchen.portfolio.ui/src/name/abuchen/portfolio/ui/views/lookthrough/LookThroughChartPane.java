@@ -17,6 +17,7 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
 
+import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.util.Colors;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartCompany;
@@ -34,11 +35,16 @@ class LookThroughChartPane
 {
     enum Kind
     {
-        TREEMAP, TOP_COMPANIES;
+        TREEMAP, TOP_COMPANIES, OVERLAP;
 
         String label()
         {
-            return this == TREEMAP ? Messages.LookThroughChartTreemap : Messages.LookThroughChartTopCompanies;
+            return switch (this)
+            {
+                case TREEMAP -> Messages.LookThroughChartTreemap;
+                case TOP_COMPANIES -> Messages.LookThroughChartTopCompanies;
+                case OVERLAP -> Messages.LookThroughChartOverlap;
+            };
         }
     }
 
@@ -50,12 +56,14 @@ class LookThroughChartPane
     private final StackLayout stack = new StackLayout();
     private final LookThroughTreeMap treeMap;
     private final LookThroughBarChart barChart;
+    private final LookThroughOverlapChart overlapChart;
     private final Composite emptyArea;
     private final Label emptyMessage;
     private final Composite legend;
 
     private Kind kind = Kind.TREEMAP;
     private ChartModel model = new ChartModel(List.of());
+    private LookThroughOverlapModel overlap = LookThroughOverlapModel.empty();
     private String currencyCode = ""; //$NON-NLS-1$
     private ContentState state = ContentState.CALCULATED;
     private Kind legendKind;
@@ -73,6 +81,7 @@ class LookThroughChartPane
 
         treeMap = new LookThroughTreeMap(stackArea, stylingEngine, onSelect);
         barChart = new LookThroughBarChart(stackArea, onSelect);
+        overlapChart = new LookThroughOverlapChart(stackArea, onSelect);
 
         emptyArea = new Composite(stackArea, SWT.NONE);
         emptyArea.setBackground(Colors.theme().defaultBackground());
@@ -128,6 +137,15 @@ class LookThroughChartPane
     }
 
     /**
+     * Sets the overlap of the funds; it is shown with the next update. Null
+     * if there is no result.
+     */
+    void setOverlap(FundOverlap overlap)
+    {
+        this.overlap = LookThroughOverlapModel.of(overlap);
+    }
+
+    /**
      * Highlights the company or group in the charts. The bar chart of a
      * grouping shows groups, so it falls back to the group of the company.
      * The selection is not reported back.
@@ -144,7 +162,23 @@ class LookThroughChartPane
             return;
 
         Control top;
-        if (model.isEmpty())
+        boolean showLegend = !model.isEmpty() && kind != Kind.OVERLAP;
+        if (kind == Kind.OVERLAP && overlap.isEmpty())
+        {
+            emptyMessage.setText(switch (state)
+            {
+                case CALCULATING -> Messages.LookThroughLabelCalculating;
+                case CALCULATED -> Messages.LookThroughOverlapNeedTwoFunds;
+                default -> ""; //$NON-NLS-1$
+            });
+            top = emptyArea;
+        }
+        else if (kind == Kind.OVERLAP)
+        {
+            overlapChart.setModel(overlap);
+            top = overlapChart.getControl();
+        }
+        else if (model.isEmpty())
         {
             var message = switch (state)
             {
@@ -166,10 +200,11 @@ class LookThroughChartPane
             top = barChart.getControl();
         }
 
-        updateLegend();
+        if (showLegend)
+            updateLegend();
         stack.topControl = top;
-        ((org.eclipse.swt.layout.GridData) legend.getLayoutData()).exclude = model.isEmpty();
-        legend.setVisible(!model.isEmpty());
+        ((org.eclipse.swt.layout.GridData) legend.getLayoutData()).exclude = !showLegend;
+        legend.setVisible(showLegend);
         container.layout(true, true);
     }
 

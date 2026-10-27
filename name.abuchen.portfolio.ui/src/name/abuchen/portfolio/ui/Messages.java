@@ -1022,6 +1022,7 @@ public class Messages extends NLS
     public static String LookThroughChartBarColor;
     public static String LookThroughChartEmpty;
     public static String LookThroughChartHeldDirectly;
+    public static String LookThroughChartOverlap;
     public static String LookThroughChartThroughFunds;
     public static String LookThroughChartTileColor;
     public static String LookThroughChartTopCompanies;
@@ -1060,6 +1061,10 @@ public class Messages extends NLS
     public static String LookThroughLabelScope;
     public static String LookThroughLabelUnverifiedNotice;
     public static String LookThroughNoticeExcluded;
+    public static String LookThroughOverlapExcluded;
+    public static String LookThroughOverlapLargestShared;
+    public static String LookThroughOverlapNeedTwoFunds;
+    public static String LookThroughOverlapShared;
     public static String LookThroughReasonAmbiguousClassification;
     public static String LookThroughReasonAmbiguousCompany;
     public static String LookThroughReasonAmbiguousIdentity;

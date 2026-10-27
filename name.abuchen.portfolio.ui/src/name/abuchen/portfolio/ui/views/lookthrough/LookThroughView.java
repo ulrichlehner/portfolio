@@ -56,6 +56,7 @@ import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
 import name.abuchen.portfolio.snapshot.ClientSnapshot;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
+import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Messages;
@@ -665,6 +666,7 @@ public class LookThroughView extends AbstractFinanceView
                 header.setCalculating();
             else
                 header.setSummary(null, Optional.empty());
+            chartPane.setOverlap(null);
             chartPane.setModel(new ChartModel(List.of()), currencyCode, state);
             setRows(List.of());
             updateStatus();
@@ -678,6 +680,7 @@ public class LookThroughView extends AbstractFinanceView
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
+        chartPane.setOverlap(FundOverlap.of(result));
         chartPane.setModel(model.chart(), currencyCode, state);
         setRows(model.rows());
         updateStatus();

@@ -931,10 +931,16 @@ public final class LookThroughViewPresenter
         return Values.Money.format(Money.of(currencyCode, minorUnits));
     }
 
+    /** The key of the row of a company; the table holds one row per company. */
+    static RowKey companyKey(Identifier identity)
+    {
+        return RowKey.of(RowKind.COMPANY, identity);
+    }
+
     private CompanyRow companyRow(Keys keys, Company company, Optional<BigDecimal> denominator,
                     Optional<String> detail)
     {
-        var key = keys.unique(RowKey.of(RowKind.COMPANY, company.identity()));
+        var key = keys.unique(companyKey(company.identity()));
         var contributions = company.contributions().stream() //
                         .map(contribution -> contributionRow(keys, key, contribution, denominator)) //
                         .toList();
