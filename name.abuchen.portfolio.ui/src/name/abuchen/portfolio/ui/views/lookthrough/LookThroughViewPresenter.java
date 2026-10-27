@@ -1,7 +1,9 @@
 package name.abuchen.portfolio.ui.views.lookthrough;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
+import java.text.NumberFormat;
 import java.text.MessageFormat;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -53,6 +55,7 @@ public final class LookThroughViewPresenter
 {
     /** Display precision of a share: one ten-thousandth of a percent. */
     private static final int SHARE_SCALE = 6;
+    private static final BigDecimal CONCENTRATION_THRESHOLD = new BigDecimal("0.10"); //$NON-NLS-1$
 
     private static final Comparator<Company> BY_TOTAL_THEN_IDENTIFIER = Comparator //
                     .comparing(Company::total).reversed() //
@@ -227,7 +230,13 @@ public final class LookThroughViewPresenter
     public record Summary(String asOfText, String valueText, Optional<BigDecimal> resolvedShare,
                     Optional<String> resolvedText, Optional<BigDecimal> topTenShare, Optional<String> topTenText,
                     int decomposedFunds, int heldFunds, Optional<String> fundsText, boolean needsCompositions,
-                    boolean attention, String indicatorText)
+                    boolean attention, String indicatorText, Optional<BigDecimal> effectiveCompanies,
+                    Optional<String> effectiveText, Optional<Largest> largest)
+    {
+    }
+
+    /** The largest company with its share of the portfolio value. */
+    public record Largest(String name, BigDecimal share, String shareText)
     {
     }
 
@@ -503,6 +512,14 @@ public final class LookThroughViewPresenter
         revenueNotice.ifPresent(notices::add);
         notices.add(completenessText);
 
+        var largest = companyRows.values().stream().findFirst()
+                        .filter(row -> row.share().isPresent()).map(row -> new Largest(row.label(),
+                                        row.share().orElseThrow(), Values.Percent2.format(row.share().orElseThrow().doubleValue())));
+        var concentrated = largest.filter(value -> value.share().compareTo(CONCENTRATION_THRESHOLD) > 0);
+        concentrated.ifPresent(value -> notices.add(MessageFormat.format(Messages.LookThroughNoticeConcentration,
+                        value.name(), value.shareText())));
+        var effective = denominator.isPresent() ? effectiveCompanies(result) : Optional.<BigDecimal>empty();
+
         var open = result.value(Category.UNRESOLVED).add(result.value(Category.UNVERIFIED_HOLDING));
         var resolvedShare = share(open, denominatorAmount).map(BigDecimal.ONE::subtract);
         var topTenShare = topTenShare(result, denominatorAmount);
@@ -515,8 +532,10 @@ public final class LookThroughViewPresenter
                         funds.held() > 0 ? Optional.of(MessageFormat.format(Messages.LookThroughSummaryOf,
                                         funds.decomposed(), funds.held())) : Optional.empty(),
                         funds.held() > 0 || funds.unclassified(),
-                        denominator.isEmpty() || !valuation.diagnostics().isEmpty() || unverifiedNotice.isPresent(),
-                        String.join("\n\n", notices)); //$NON-NLS-1$
+                        denominator.isEmpty() || !valuation.diagnostics().isEmpty() || unverifiedNotice.isPresent()
+                                        || concentrated.isPresent(),
+                        String.join("\n\n", notices), effective, effective.map(LookThroughViewPresenter::effectiveText), //$NON-NLS-1$
+                        largest);
 
         return new Model(valuation.date(), valuation.valuedSubset().getCurrencyCode(), scopeText, denominator,
                         denominatorText, completeness, completenessText, unverifiedNotice, empty, rows, summary,
@@ -779,6 +798,33 @@ public final class LookThroughViewPresenter
                                         exclusionText(diagnostic.reason()))) //
                         .collect(Collectors.joining(", ")); //$NON-NLS-1$
         return Optional.of(MessageFormat.format(Messages.LookThroughNoticeExcluded, names));
+    }
+
+    /**
+     * One divided by the sum of the squared shares of the companies, each
+     * relative to the total company exposure. Absent without company exposure.
+     */
+    private static Optional<BigDecimal> effectiveCompanies(LookThroughResult result)
+    {
+        var total = result.value(Category.COMPANY);
+        if (result.companies().isEmpty() || total.signum() <= 0)
+            return Optional.empty();
+        var squares = BigDecimal.ZERO;
+        for (var company : result.companies())
+        {
+            var weight = company.total().divide(total, MathContext.DECIMAL64);
+            squares = squares.add(weight.multiply(weight));
+        }
+        return squares.signum() > 0 ? Optional.of(BigDecimal.ONE.divide(squares, MathContext.DECIMAL64))
+                        : Optional.empty();
+    }
+
+    /** A whole number from 100 on, otherwise one decimal. */
+    static String effectiveText(BigDecimal value)
+    {
+        var format = NumberFormat.getNumberInstance();
+        format.setMaximumFractionDigits(value.compareTo(BigDecimal.valueOf(99.95)) >= 0 ? 0 : 1);
+        return format.format(value);
     }
 
     /** Combined share of the ten largest companies. */

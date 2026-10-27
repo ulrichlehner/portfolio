@@ -53,11 +53,14 @@ public class LookThroughHeader
     private Label resolvedLabel;
     private Label indicator;
     private Label topTenLabel;
+    private Label effectiveLabel;
+    private Label largestLabel;
     private Composite fundsFigure;
     private Label fundsLabel;
     private Composite asOfSlot;
     private final StackLayout asOfStack = new StackLayout();
     private Label asOfLabel;
+    private static final int MAX_NAME_LENGTH = 24;
     private Composite progress;
     private ProgressBar progressBar;
     private Label progressLabel;
@@ -103,6 +106,15 @@ public class LookThroughHeader
         GridDataFactory.fillDefaults().align(SWT.BEGINNING, SWT.CENTER).applyTo(indicator);
 
         topTenLabel = createFigure(strip, Messages.LookThroughSummaryTopTen, 1).value();
+
+        var effective = createFigure(strip, Messages.LookThroughSummaryEffective, 1);
+        effectiveLabel = effective.value();
+        effective.figure().setToolTipText(Messages.LookThroughSummaryEffectiveTooltip);
+        effectiveLabel.setToolTipText(Messages.LookThroughSummaryEffectiveTooltip);
+
+        var largest = createFigure(strip, Messages.LookThroughSummaryLargest, 1);
+        largestLabel = largest.value();
+        largest.figure().setToolTipText(Messages.LookThroughSummaryLargestTooltip);
 
         var funds = createFigure(strip, Messages.LookThroughSummaryFunds, 1);
         fundsFigure = funds.figure();
@@ -181,6 +193,8 @@ public class LookThroughHeader
             valueLabel.setText(summary.valueText());
             resolvedLabel.setText(summary.resolvedText().orElse(NOT_AVAILABLE));
             topTenLabel.setText(summary.topTenText().orElse(NOT_AVAILABLE));
+            effectiveLabel.setText(summary.effectiveText().orElse(NOT_AVAILABLE));
+            setLargest(summary.largest());
             fundsLabel.setText(summary.fundsText().orElse("")); //$NON-NLS-1$
             setVisible(fundsFigure, summary.fundsText().isPresent());
             asOfLabel.setText(summary.asOfText());
@@ -191,6 +205,21 @@ public class LookThroughHeader
         }
 
         relayout();
+    }
+
+    /** The name is shortened; the tooltip has the full name and the explanation. */
+    private void setLargest(Optional<LookThroughViewPresenter.Largest> largest)
+    {
+        var text = largest.map(value -> shorten(value.name()) + " " + value.shareText()).orElse(NOT_AVAILABLE); //$NON-NLS-1$
+        largestLabel.setText(text);
+        var tooltip = Messages.LookThroughSummaryLargestTooltip;
+        largestLabel.setToolTipText(largest.map(value -> value.name() + " " + value.shareText() + "\n" + tooltip) //$NON-NLS-1$ //$NON-NLS-2$
+                        .orElse(tooltip));
+    }
+
+    static String shorten(String name)
+    {
+        return name.length() <= MAX_NAME_LENGTH ? name : name.substring(0, MAX_NAME_LENGTH - 1) + "\u2026"; //$NON-NLS-1$
     }
 
     /**
@@ -205,6 +234,8 @@ public class LookThroughHeader
         valueLabel.setText(NOT_AVAILABLE);
         resolvedLabel.setText(NOT_AVAILABLE);
         topTenLabel.setText(NOT_AVAILABLE);
+        effectiveLabel.setText(NOT_AVAILABLE);
+        setLargest(Optional.empty());
         fundsLabel.setText(NOT_AVAILABLE);
         setVisible(fundsFigure, true);
         asOfLabel.setText(""); //$NON-NLS-1$

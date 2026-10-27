@@ -1060,6 +1060,7 @@ public class Messages extends NLS
     public static String LookThroughLabelPartial;
     public static String LookThroughLabelScope;
     public static String LookThroughLabelUnverifiedNotice;
+    public static String LookThroughNoticeConcentration;
     public static String LookThroughNoticeExcluded;
     public static String LookThroughOverlapExcluded;
     public static String LookThroughOverlapLargestShared;
@@ -1150,7 +1151,11 @@ public class Messages extends NLS
     public static String LookThroughStatusStale;
     public static String LookThroughStopRefresh;
     public static String LookThroughSummaryAsOf;
+    public static String LookThroughSummaryEffective;
+    public static String LookThroughSummaryEffectiveTooltip;
     public static String LookThroughSummaryFunds;
+    public static String LookThroughSummaryLargest;
+    public static String LookThroughSummaryLargestTooltip;
     public static String LookThroughSummaryOf;
     public static String LookThroughSummaryResolved;
     public static String LookThroughSummaryTopTen;

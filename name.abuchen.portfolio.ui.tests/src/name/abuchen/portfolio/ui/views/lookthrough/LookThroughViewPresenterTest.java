@@ -792,7 +792,9 @@ public class LookThroughViewPresenterTest
     @Test
     public void testOnlyDirectHoldingsNeedNoComposition()
     {
-        hold("company", "Synthetic direct company holding", AssetType.EQUITY, "SYNTH-ONE", 1, 10);
+        // twenty companies, so that none exceeds the concentration threshold
+        for (int ii = 0; ii < 20; ii++)
+            hold("company" + ii, "Synthetic direct company holding " + ii, AssetType.EQUITY, "SYNTH-" + ii, 1, 10);
 
         var summary = model(result()).summary();
 
@@ -1120,5 +1122,53 @@ public class LookThroughViewPresenterTest
         assertTrue(matrix.isEmpty());
         assertEquals(MessageFormat.format(Messages.LookThroughOverlapExcluded, "Fund B"),
                         matrix.excludedText().orElseThrow());
+    }
+
+    @Test
+    public void testEffectiveNumberOfEvenlySpreadCompaniesIsTheirCount()
+    {
+        for (int ii = 0; ii < 100; ii++)
+            hold("c" + ii, "Synthetic c" + ii, AssetType.EQUITY, "CO-" + ii, 1, 100);
+
+        var summary = model(result()).summary();
+
+        assertEquals(100d, summary.effectiveCompanies().orElseThrow().doubleValue(), 1e-9);
+        assertEquals("100", summary.effectiveText().orElseThrow());
+        var largest = summary.largest().orElseThrow();
+        amount("0.01", largest.share());
+        assertEquals(Values.Percent2.format(0.01d), largest.shareText());
+        assertFalse(summary.indicatorText().contains(Messages.LookThroughNoticeConcentration));
+    }
+
+    @Test
+    public void testCompanyAboveTenPercentIsNamedByTheAttentionIndicator()
+    {
+        hold("big", "Synthetic big", AssetType.EQUITY, "CO-BIG", 1, 120);
+        for (int ii = 0; ii < 88; ii++)
+            hold("s" + ii, "Synthetic s" + ii, AssetType.EQUITY, "CO-S" + ii, 1, 10);
+
+        var summary = model(result()).summary();
+
+        var largest = summary.largest().orElseThrow();
+        assertEquals("Synthetic big", largest.name());
+        amount("0.12", largest.share());
+        assertEquals(Values.Percent2.format(0.12d), largest.shareText());
+        assertTrue(summary.attention());
+        assertTrue(summary.indicatorText().contains(MessageFormat.format(Messages.LookThroughNoticeConcentration,
+                        "Synthetic big", Values.Percent2.format(0.12d))));
+        // 12 % big, 88 times 1 %: 1 / (0.12^2 + 88 * 0.01^2)
+        assertEquals(1d / (0.0144d + 88 * 0.0001d), summary.effectiveCompanies().orElseThrow().doubleValue(), 1e-6);
+    }
+
+    @Test
+    public void testConcentrationIsWithheldWithoutCompanyExposure()
+    {
+        hold("cash", "Synthetic cash", AssetType.CASH, null, 1, 100);
+
+        var summary = model(result()).summary();
+
+        assertTrue(summary.effectiveCompanies().isEmpty());
+        assertTrue(summary.effectiveText().isEmpty());
+        assertTrue(summary.largest().isEmpty());
     }
 }
