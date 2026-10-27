@@ -27,6 +27,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence.Identifier;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolution;
+import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolver;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
@@ -1179,16 +1180,31 @@ public final class LookThroughViewPresenter
             return cause;
         if (contribution.resolution().isEmpty())
             return Messages.LookThroughReasonMissingResolution;
-        return switch (contribution.resolution().orElseThrow().reason())
+        var resolution = contribution.resolution().orElseThrow();
+        return switch (resolution.reason())
         {
             case MISSING_IDENTIFIERS -> Messages.LookThroughReasonMissingIdentifiers;
-            case MISSING_IDENTITY -> Messages.LookThroughReasonMissingIdentity;
+            case MISSING_IDENTITY -> lookupText(resolution, Messages.LookThroughReasonMissingIdentity);
             case AMBIGUOUS_IDENTITY -> Messages.LookThroughReasonAmbiguousIdentity;
-            case UNKNOWN_CLASSIFICATION -> Messages.LookThroughReasonUnknownClassification;
+            case UNKNOWN_CLASSIFICATION -> lookupText(resolution, Messages.LookThroughReasonUnknownClassification);
             case AMBIGUOUS_CLASSIFICATION -> Messages.LookThroughReasonAmbiguousClassification;
             case MISSING_COMPANY -> Messages.LookThroughReasonMissingCompany;
             case AMBIGUOUS_COMPANY -> Messages.LookThroughReasonAmbiguousCompany;
             case VERIFIED, ASSUMED_COMPANY -> Messages.LookThroughReasonMissingResolution;
+        };
+    }
+
+    /** The outcome of the classification lookup for a constituent without any classification. */
+    static String lookupText(InstrumentResolution resolution, String notLookedUp)
+    {
+        return switch (resolution.lookupStatus())
+        {
+            case FAILED -> Messages.LookThroughReasonLookupFailed;
+            case BUDGET_EXHAUSTED -> Messages.LookThroughReasonLookupPending;
+            case ATTEMPTED -> InstrumentResolver.indicatesNonCompany(resolution.source().label())
+                            ? Messages.LookThroughReasonNameNotCompany
+                            : Messages.LookThroughReasonNoClassificationFound;
+            case NOT_NEEDED, NO_IDENTIFIERS -> notLookedUp;
         };
     }
 

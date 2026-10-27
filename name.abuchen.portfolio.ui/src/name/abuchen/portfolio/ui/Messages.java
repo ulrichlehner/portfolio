@@ -1084,6 +1084,8 @@ public class Messages extends NLS
     public static String LookThroughReasonAmbiguousCompany;
     public static String LookThroughReasonAmbiguousIdentity;
     public static String LookThroughReasonCompositionShortfall;
+    public static String LookThroughReasonLookupFailed;
+    public static String LookThroughReasonLookupPending;
     public static String LookThroughReasonMissingCompany;
     public static String LookThroughReasonMissingComposition;
     public static String LookThroughReasonMissingConversion;
@@ -1091,6 +1093,8 @@ public class Messages extends NLS
     public static String LookThroughReasonMissingIdentity;
     public static String LookThroughReasonMissingResolution;
     public static String LookThroughReasonMissingValuation;
+    public static String LookThroughReasonNameNotCompany;
+    public static String LookThroughReasonNoClassificationFound;
     public static String LookThroughReasonProviderWeightUnverified;
     public static String LookThroughReasonTraversalStopped;
     public static String LookThroughReasonUnknownClassification;

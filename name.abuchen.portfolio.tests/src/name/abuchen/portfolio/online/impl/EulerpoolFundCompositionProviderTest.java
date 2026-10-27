@@ -550,6 +550,39 @@ public class EulerpoolFundCompositionProviderTest
     }
 
     @Test
+    public void testSearchAnswerForOtherIsinOrMalformedBodyIsAnAnsweredLookup() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented", Map.of("ISIN", "SYNTHETIC0001"));
+        assertTrue(classify(instrument, (uri, authorization) -> new Response(200,
+                        "{\"count\":1,\"results\":[{\"isin\":\"SYNTHETIC0002\",\"type\":\"stock\"}]}",
+                        Optional.empty())).isEmpty());
+        assertTrue(classify(instrument, (uri, authorization) -> new Response(200, "<html>not json",
+                        Optional.empty())).isEmpty());
+    }
+
+    @Test
+    public void testClientErrorsOfOneInstrumentAreAnsweredLookups() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented", Map.of("ISIN", "SYNTHETIC0001"));
+        for (var status : new int[] { 400, 404, 410, 422 })
+            assertTrue(String.valueOf(status),
+                            classify(instrument, (uri, authorization) -> new Response(status, "", Optional.empty()))
+                                            .isEmpty());
+    }
+
+    @Test
+    public void testServerErrorsAndTimeoutsAreNotAnswers() throws IOException
+    {
+        var instrument = new CompositionInstrument("Invented", Map.of("ISIN", "SYNTHETIC0001"));
+        for (var status : new int[] { 408, 500, 502, 503 })
+            assertThrows(String.valueOf(status), IOException.class, () -> classify(instrument,
+                            (uri, authorization) -> new Response(status, "", Optional.empty())));
+        // A later step failing is not an answer either.
+        assertThrows(IOException.class, () -> classify(instrument, (uri, authorization) -> new Response(
+                        uri.getPath().contains("bonds") ? 503 : 404, "", Optional.empty())));
+    }
+
+    @Test
     public void testInstrumentWithoutIsinIsOnlySearched() throws IOException
     {
         var requests = new java.util.concurrent.atomic.AtomicInteger();

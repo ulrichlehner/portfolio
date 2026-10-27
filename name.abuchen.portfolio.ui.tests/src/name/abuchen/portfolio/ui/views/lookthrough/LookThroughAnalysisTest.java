@@ -37,6 +37,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.InstrumentResolver;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Reason;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
+import name.abuchen.portfolio.ui.Messages;
 
 @SuppressWarnings("nls")
 public class LookThroughAnalysisTest
@@ -182,5 +183,69 @@ public class LookThroughAnalysisTest
                         List.of());
         assertEquals(0, result.value(Category.UNRESOLVED).compareTo(new BigDecimal("4000")));
         assertEquals(0, result.value(Category.CASH_OR_OTHER).signum());
+    }
+
+    private Snapshot unverifiedFund(Security fund, CompositionInstrument child, InstrumentResolution lookup)
+    {
+        var parent = LookThroughCompositionService.instrumentOf(fund);
+        var composition = new FundComposition(new CompositionProvenance(ACCOUNT, parent, NOW, Optional.empty(),
+                        Optional.empty()), FundComposition.Denominator.UNKNOWN,
+                        FundComposition.ExposureBasis.UNKNOWN, FundComposition.Completeness.UNKNOWN,
+                        List.of(new FundComposition.Constituent(child, Optional.of("1"))));
+        return new Snapshot(Optional.of(NOW), Optional.empty(), Optional.empty(), Optional.of(composition),
+                        List.of(lookup));
+    }
+
+    @Test
+    public void testAnsweredEmptyLookupOfListedShareIsAssumedCompany()
+    {
+        var fund = holding("SYNTHETIC-FUND", 4);
+        var child = new CompositionInstrument("Synthetic Holding Corp", java.util.Map.of("ISIN", "ZZ0000000019"));
+        var lookup = new InstrumentResolver().resolve(child, List.of(), ignored -> List.of(), () -> true);
+        assertEquals(InstrumentResolution.Reason.ASSUMED_COMPANY, lookup.reason());
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(fund),
+                        List.of(unverifiedFund(fund, child, lookup)), List.of());
+        assertEquals(1, result.companies().size());
+        assertEquals(0, result.value(Category.UNRESOLVED).signum());
+        assertTrue(LookThroughAnalysis.diagnostics(result).contains("assumed=1"));
+    }
+
+    @Test
+    public void testFailedLookupStaysUnresolvedAndKeepsItsStatus()
+    {
+        var fund = holding("SYNTHETIC-FUND", 4);
+        var child = new CompositionInstrument("Synthetic Holding Corp", java.util.Map.of("ISIN", "ZZ0000000019"));
+        var lookup = new InstrumentResolver().resolve(child, List.of(), ignored -> {
+            throw new java.io.IOException();
+        }, () -> true);
+        var result = new LookThroughAnalysis().calculate(snapshot(), rates, List.of(fund),
+                        List.of(unverifiedFund(fund, child, lookup)), List.of());
+        assertTrue(result.companies().isEmpty());
+        var resolution = result.contributions().getFirst().resolution().orElseThrow();
+        assertEquals(InstrumentResolution.LookupStatus.FAILED, resolution.lookupStatus());
+        var line = LookThroughAnalysis.diagnostics(result);
+        assertTrue(line, line.contains("resolved=0, assumed=0"));
+        assertTrue(line, line.contains("{MISSING_IDENTITY=1}"));
+        assertTrue(line, line.contains("{FAILED=1}"));
+        assertTrue(line, !line.contains("ZZ00") && !line.contains("Synthetic"));
+        assertEquals(Messages.LookThroughReasonLookupFailed,
+                        LookThroughViewPresenter.lookupText(resolution, Messages.LookThroughReasonMissingIdentity));
+    }
+
+    @Test
+    public void testReasonTextsDistinguishLookupOutcomes()
+    {
+        var company = new CompositionInstrument("Synthetic Holding Corp", java.util.Map.of("ISIN", "ZZ0000000019"));
+        var fundLike = new CompositionInstrument("Synthetic Money Market Fund", java.util.Map.of("ISIN", "ZZ0000000029"));
+        var resolver = new InstrumentResolver();
+        var missing = Messages.LookThroughReasonMissingIdentity;
+        assertEquals(Messages.LookThroughReasonLookupPending, LookThroughViewPresenter.lookupText(
+                        resolver.resolve(company, List.of(), ignored -> List.of(), () -> false), missing));
+        assertEquals(Messages.LookThroughReasonNameNotCompany, LookThroughViewPresenter.lookupText(
+                        resolver.resolve(fundLike, List.of(), ignored -> List.of(), () -> true), missing));
+        assertEquals(Messages.LookThroughReasonNoClassificationFound, LookThroughViewPresenter.lookupText(
+                        resolver.resolve(new CompositionInstrument("Synthetic Ticker Only", java.util.Map.of("symbol", "SYN")),
+                                        List.of(), ignored -> List.of(), () -> true),
+                        missing));
     }
 }

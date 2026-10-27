@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.Rule;
@@ -458,6 +459,40 @@ public class LookThroughSessionTest
         assertEquals(Disposition.CADENCE, automatic.join().disposition());
         assertTrue(automatic.join().snapshot().unverifiedComposition().isPresent());
         assertEquals(1, calls.size());
+    }
+
+    /** A transient failure is neither an answer nor an assumption; it is stored nowhere and asked again. */
+    @Test
+    public void testTransientClassificationFailureStaysUnresolvedAndIsRetried() throws IOException
+    {
+        var directory = temporary.newFolder().toPath().toRealPath();
+        credentials.replaceSession(ACCOUNT, "synthetic-valid");
+        unknownDenominator = true;
+        listedChild = true;
+        var attempts = new AtomicInteger();
+        var failing = new AtomicBoolean(true);
+        InstrumentClassifier classifier = (account, instrument) -> {
+            attempts.incrementAndGet();
+            if (failing.get())
+                throw new IOException("synthetic 503");
+            return Optional.empty();
+        };
+
+        var session = persistent(directory, classifier, PERMITTED);
+        var first = session.refresh(ACCOUNT, instrument("fund"), true);
+        executor.drain();
+        var failed = first.join().snapshot().resolutions().getFirst();
+        assertEquals(InstrumentResolution.State.UNRESOLVED, failed.state());
+        assertEquals(InstrumentResolution.LookupStatus.FAILED, failed.lookupStatus());
+
+        // Once the backoff has passed, a refresh asks again and the answer is assumed.
+        failing.set(false);
+        clock.now = clock.now.plus(Duration.ofHours(1));
+        var again = session.refresh(ACCOUNT, instrument("fund"), true);
+        executor.drain();
+        var answered = again.join().snapshot().resolutions().getFirst();
+        assertEquals(InstrumentResolution.Reason.ASSUMED_COMPANY, answered.reason());
+        assertTrue(attempts.get() >= 2);
     }
 
     private static long compositionFiles(Path directory) throws IOException

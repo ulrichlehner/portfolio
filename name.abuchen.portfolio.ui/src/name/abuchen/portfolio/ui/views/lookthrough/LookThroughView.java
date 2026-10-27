@@ -417,8 +417,10 @@ public class LookThroughView extends AbstractFinanceView
     {
         var converter = new CurrencyConverterImpl(rates, client.getBaseCurrency());
         var snapshot = ClientSnapshot.create(client, converter, LocalDate.now());
-        return new LookThroughAnalysis().calculate(snapshot, rates, source.securities(), inputs.retained(),
+        var result = new LookThroughAnalysis().calculate(snapshot, rates, source.securities(), inputs.retained(),
                         inputs.classifications());
+        PortfolioPlugin.info(LookThroughAnalysis.diagnostics(result));
+        return result;
     }
 
     private void automaticRefresh()

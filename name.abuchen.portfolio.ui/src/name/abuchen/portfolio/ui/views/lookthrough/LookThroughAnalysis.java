@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 
 import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
@@ -41,6 +42,7 @@ final class LookThroughAnalysis
                         InstrumentEvidence.fundFromComposition(composition))));
 
         var resolver = new InstrumentResolver();
+        var lookups = lookups(retained);
         var resolutions = new HashMap<CompositionInstrument, InstrumentResolution>();
         var owned = new HashMap<Security, InstrumentResolution>();
         for (var position : valuation.positions())
@@ -72,11 +74,84 @@ final class LookThroughAnalysis
                     unverifiedCompositions.put(identity, composition);
             }
             for (var row : composition.constituents())
-                resolutions.put(row.instrument(),
-                                resolver.resolve(row.instrument(), evidence, ignored -> List.of(), () -> false));
+            {
+                var resolution = resolver.resolve(row.instrument(), evidence, ignored -> List.of(), () -> false);
+                var lookup = lookups.get(row.instrument().identifiers());
+                resolutions.put(row.instrument(), lookup != null && isOpen(resolution) ? lookup : resolution);
+            }
         }
         return new LookThroughEngine().calculate(valuation, Map.copyOf(owned), Map.copyOf(resolutions),
                         Map.copyOf(compositions), Map.copyOf(unverifiedCompositions));
+    }
+
+    /**
+     * One line of counts for the log: distinct constituents resolved, assumed
+     * to be companies and unresolved by reason, and by lookup status. Never
+     * names, identifiers or amounts.
+     */
+    static String diagnostics(LookThroughResult result)
+    {
+        var distinct = new HashMap<Map<String, String>, InstrumentResolution>();
+        for (var contribution : result.contributions())
+            contribution.resolution()
+                            .ifPresent(value -> distinct.putIfAbsent(contribution.instrument().identifiers(), value));
+        int resolved = 0;
+        int assumed = 0;
+        var reasons = new TreeMap<InstrumentResolution.Reason, Integer>();
+        var statuses = new TreeMap<InstrumentResolution.LookupStatus, Integer>();
+        for (var value : distinct.values())
+        {
+            if (value.reason() == InstrumentResolution.Reason.ASSUMED_COMPANY)
+                assumed++;
+            else if (value.state() == State.UNRESOLVED)
+                reasons.merge(value.reason(), 1, Integer::sum);
+            else
+                resolved++;
+            statuses.merge(value.lookupStatus(), 1, Integer::sum);
+        }
+        return "Breakdown classification: resolved=" + resolved + ", assumed=" + assumed + ", unresolved by reason "
+                        + reasons + ", lookup status " + statuses;
+    }
+
+    /**
+     * The outcome of the classification lookup of each constituent, kept by
+     * the refresh. Evidence alone cannot tell an answered lookup from one that
+     * failed or was not made, nor carries the assumption of a company.
+     */
+    private Map<Map<String, String>, InstrumentResolution> lookups(List<Snapshot> retained)
+    {
+        var result = new HashMap<Map<String, String>, InstrumentResolution>();
+        for (var value : retained)
+        {
+            for (var resolution : value.resolutions())
+            {
+                var key = resolution.source().identifiers();
+                var previous = result.get(key);
+                if (previous == null || rank(resolution) > rank(previous))
+                    result.put(key, resolution);
+            }
+        }
+        return result;
+    }
+
+    private static int rank(InstrumentResolution resolution)
+    {
+        if (resolution.reason() == InstrumentResolution.Reason.ASSUMED_COMPANY)
+            return 3;
+        return switch (resolution.lookupStatus())
+        {
+            case ATTEMPTED -> 2;
+            case FAILED -> 1;
+            default -> 0;
+        };
+    }
+
+    /** Without evidence of its own, only the outcome of the lookup tells why. */
+    private static boolean isOpen(InstrumentResolution resolution)
+    {
+        return resolution.state() == State.UNRESOLVED
+                        && (resolution.reason() == InstrumentResolution.Reason.MISSING_IDENTITY
+                                        || resolution.reason() == InstrumentResolution.Reason.UNKNOWN_CLASSIFICATION);
     }
 
     private Optional<FundComposition> source(Snapshot data)

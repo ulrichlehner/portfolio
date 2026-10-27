@@ -266,7 +266,7 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
                 if (evidence.isPresent())
                     return evidence;
             }
-            else if (search.status() != 204 && search.status() != 404)
+            else if (!answeredWithout(search.status()))
                 throw new IOException();
         }
         if (isin.isEmpty())
@@ -280,9 +280,20 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
         var bonds = request("https://api.eulerpool.com/api/1/bonds/list?q=" + isin.get(), token.get(), requests);
         if (bonds.status() == 200 && isBond(isin.get(), bonds.body()))
             return bondEvidence(account, instrument);
-        if (bonds.status() != 200 && bonds.status() != 204 && bonds.status() != 404)
+        if (bonds.status() != 200 && !answeredWithout(bonds.status()))
             throw new IOException();
         return Optional.empty();
+    }
+
+    /**
+     * A status that answers for this instrument alone that the provider has no
+     * data for it: no content, not found or another client error that is not
+     * an account, rate or timeout problem (those are raised before). Server
+     * errors and unexpected statuses are transient and not an answer.
+     */
+    private static boolean answeredWithout(int status)
+    {
+        return status == 204 || status >= 400 && status < 500 && status != 408;
     }
 
     /**
@@ -310,6 +321,10 @@ public final class EulerpoolFundCompositionProvider implements FundCompositionPr
                 shared.putProfile(account, isin, Optional.empty(), generation);
             return Optional.empty();
         }
+        // Another client error is no profile for this instrument, but not a
+        // shared answer for enrichment.
+        if (answeredWithout(response.status()))
+            return Optional.empty();
         if (response.status() != 200)
             throw new IOException();
         if (shared != null)
