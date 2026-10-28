@@ -27,6 +27,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.CompositionResult;
 import name.abuchen.portfolio.snapshot.lookthrough.CompositionStore;
 import name.abuchen.portfolio.snapshot.lookthrough.FundComposition;
 import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
+import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Freshness;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Health;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundStatus;
@@ -536,14 +537,53 @@ public class LookThroughDataStatusTest
     }
 
     @Test
-    public void testUnclassifiedSecurityIsListedAsChecking()
+    public void testUnclassifiedSecurityWithoutAttemptIsListedAsNotRetrieved()
     {
         var model = singleFundModel(Optional.empty(), Optional.empty(), Optional.empty());
 
         var listed = LookThroughDataStatus.listed(model, Set.of());
         assertEquals(1, listed.size());
         assertEquals(StatusKind.CHECKING, listed.get(0).kind());
-        assertEquals("Checking...", listed.get(0).statusText());
+        assertEquals("Not retrieved yet", listed.get(0).statusText());
+    }
+
+    @Test
+    public void testMissingCredentialsAreTerminalAndNotProgress()
+    {
+        var facts = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(), Optional.empty(),
+                        Optional.empty(), false);
+
+        var withoutKey = LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts),
+                        Optional.of(Boolean.FALSE));
+        var row = first(withoutKey);
+        assertEquals(StatusKind.NOT_CONFIGURED, row.kind());
+        assertEquals(Messages.LookThroughStatusNotConfigured, row.statusText());
+        assertTrue(row.explanation().isPresent());
+        assertFalse(row.usableData());
+        assertEquals(1, LookThroughDataStatus.listed(withoutKey, Set.of()).size());
+
+        // A configured or an unknown key keeps the transient state.
+        var withKey = LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts), Optional.of(Boolean.TRUE));
+        assertEquals(StatusKind.CHECKING, first(withKey).kind());
+        assertEquals(StatusKind.CHECKING, first(LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts)))
+                        .kind());
+    }
+
+    @Test
+    public void testMissingCredentialsDoNotOverrideAnAttemptOrRetainedData()
+    {
+        var rejected = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.AUTHENTICATION_FAILED), Optional.empty(), false);
+        var rejectedModel = LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(rejected),
+                        Optional.of(Boolean.FALSE));
+        assertEquals(StatusKind.KEY_REJECTED, first(rejectedModel).kind());
+
+        var retained = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT,
+                        Optional.of(composition(RETRIEVAL, Optional.empty(), Optional.empty(), PARTIAL, NAV)),
+                        Optional.empty(), Optional.empty(), false);
+        var retainedModel = LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(retained),
+                        Optional.of(Boolean.FALSE));
+        assertEquals(StatusKind.OK, first(retainedModel).kind());
     }
 
     @Test

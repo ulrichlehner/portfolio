@@ -228,6 +228,17 @@ public final class LookThroughStatusModel
      */
     public Supplier<Optional<Model>> statusTask()
     {
+        return statusTask(Optional.empty());
+    }
+
+    /**
+     * Like {@link #statusTask()}, with the credential state that the caller
+     * read off the user interface thread. Empty means unknown, which never
+     * selects a terminal state.
+     */
+    public Supplier<Optional<Model>> statusTask(Optional<Boolean> keyConfigured)
+    {
+        Objects.requireNonNull(keyConfigured);
         var refreshing = isProgressVisible();
         var pendingFunds = refreshingFunds;
         var refreshes = Map.copyOf(lastRefreshes);
@@ -249,7 +260,7 @@ public final class LookThroughStatusModel
                                     fund.account(), fund.fund(), pending));
             }
 
-            return Optional.of(LookThroughDataStatus.present(clock, snapshot.global(), facts));
+            return Optional.of(LookThroughDataStatus.present(clock, snapshot.global(), facts, keyConfigured));
         };
     }
 

@@ -28,6 +28,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.ProviderAccount;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.FundStatus;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.GlobalFacts;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.Model;
+import name.abuchen.portfolio.ui.views.lookthrough.LookThroughDataStatus.StatusKind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 
 /**
@@ -95,13 +96,23 @@ public class LookThroughStatusModelTest
         private final List<FundRef> refreshes = new ArrayList<>();
         private final List<FundRef> reads = new ArrayList<>();
         private final List<Boolean> modes = new ArrayList<>();
+        private boolean retainReads = true;
+
+        /** Makes the gateway answer reads with no retained composition. */
+        private void withoutRetainedData()
+        {
+            retainReads = false;
+        }
 
         @Override
         public CompositionRefreshCoordinator.Snapshot read(ProviderAccount account, CompositionInstrument fund)
         {
             var ref = new FundRef(account, fund);
             reads.add(ref);
-            return snapshot(Optional.of(composition(ref, NOW.minus(Duration.ofHours(3)))), Optional.empty());
+            return snapshot(retainReads
+                            ? Optional.of(composition(ref, NOW.minus(Duration.ofHours(3))))
+                            : Optional.empty(),
+                            Optional.empty());
         }
 
         @Override
@@ -182,6 +193,23 @@ public class LookThroughStatusModelTest
 
         assertEquals(0, gateway.refreshCalls());
         assertEquals(50, gateway.reads.size());
+    }
+
+    @Test
+    public void testMissingCredentialsReachTheStatusRows()
+    {
+        var gateway = new RecordingGateway();
+        gateway.withoutRetainedData();
+        var model = model(gateway, new SourceStub());
+
+        var withoutKey = model.statusTask(Optional.of(Boolean.FALSE)).get().orElseThrow();
+        assertEquals(StatusKind.NOT_CONFIGURED, first(withoutKey).kind());
+
+        var withKey = model.statusTask(Optional.of(Boolean.TRUE)).get().orElseThrow();
+        assertEquals(StatusKind.CHECKING, first(withKey).kind());
+
+        // The no-argument convenience keeps the unknown state.
+        assertEquals(StatusKind.CHECKING, first(model.status().orElseThrow()).kind());
     }
 
     @Test
