@@ -1245,7 +1245,7 @@ public class LookThroughView extends AbstractFinanceView
         if (model != null && source != null && calculation != null)
         {
             // The refresh state is captured here; the reads run in the background.
-            var task = model.statusTask();
+            var task = model.statusTask(keyConfigured);
             calculation.request(() -> {
                 var value = task.get();
                 return new StatusUpdate(source, value, value.map(item -> !item.funds().isEmpty()).orElse(false));

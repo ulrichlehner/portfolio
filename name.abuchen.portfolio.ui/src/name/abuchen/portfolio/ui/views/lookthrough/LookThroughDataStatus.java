@@ -132,6 +132,11 @@ public final class LookThroughDataStatus
         KEY_REJECTED,
         /** The provider rejected the permission of the key. */
         NO_ACCESS,
+        /**
+         * No provider credentials are configured, so no attempt exists and
+         * none will start. A terminal state, never progress.
+         */
+        NOT_CONFIGURED,
         /** A refresh of this security is running. */
         FETCHING,
         /** No attempt yet; the security may still turn out to be a fund. */
@@ -301,14 +306,27 @@ public final class LookThroughDataStatus
      */
     public static Model present(Clock clock, GlobalFacts global, Collection<FundFacts> funds)
     {
+        return present(clock, global, funds, Optional.empty());
+    }
+
+    /**
+     * Builds the status model with the known credential state. The fact is
+     * passed in because reading the secure storage is not allowed on the user
+     * interface thread that builds the global facts. Empty means unknown, which
+     * never selects a terminal state.
+     */
+    public static Model present(Clock clock, GlobalFacts global, Collection<FundFacts> funds,
+                    Optional<Boolean> keyConfigured)
+    {
         Objects.requireNonNull(clock);
         Objects.requireNonNull(global);
         Objects.requireNonNull(funds);
+        Objects.requireNonNull(keyConfigured);
 
         var mode = storageMode(global.storeState());
         var reason = global.effectiveMode().reason();
 
-        var fundStatuses = funds.stream().map(fund -> status(clock, fund)).toList();
+        var fundStatuses = funds.stream().map(fund -> status(clock, fund, keyConfigured)).toList();
 
         return new Model(mode, modeText(mode), reason, reasonText(reason), limitationText(mode), fundStatuses, true);
     }
@@ -398,7 +416,7 @@ public final class LookThroughDataStatus
         };
     }
 
-    private static FundStatus status(Clock clock, FundFacts facts)
+    private static FundStatus status(Clock clock, FundFacts facts, Optional<Boolean> keyConfigured)
     {
         var providerAccountText = MessageFormat.format(Messages.LookThroughStatusProviderAccount, //
                         facts.account().providerId(), facts.account().accountId());
@@ -443,7 +461,7 @@ public final class LookThroughDataStatus
         var retryText = retryText(clock, facts);
         var retrievedDateText = retrieval.map(
                         instant -> Values.DateTime.format(LocalDateTime.ofInstant(instant, clock.getZone())));
-        var kind = kind(facts);
+        var kind = kind(facts, keyConfigured);
 
         return new FundStatus(facts.fund().label(), providerAccountText, retrieval, retrievalText, providerRefreshedAt,
                         providerRefreshedText, holdingsEffectiveDate, holdingsText, freshness, age, freshnessText,
@@ -548,7 +566,7 @@ public final class LookThroughDataStatus
     }
 
     /** Follows the same order as {@link #health(FundFacts)}. */
-    private static StatusKind kind(FundFacts facts)
+    private static StatusKind kind(FundFacts facts, Optional<Boolean> keyConfigured)
     {
         if (facts.refreshPending())
             return StatusKind.FETCHING;
@@ -570,6 +588,11 @@ public final class LookThroughDataStatus
 
         if (facts.sourcePreview().isPresent())
             return rejection(facts.sourcePreview().orElseThrow());
+
+        // Without credentials nothing is attempted, so the row must not claim
+        // progress. An existing attempt keeps its own state.
+        if (facts.latestAttempt().isEmpty() && keyConfigured.equals(Optional.of(Boolean.FALSE)))
+            return StatusKind.NOT_CONFIGURED;
 
         return switch (attempt)
         {
@@ -618,6 +641,7 @@ public final class LookThroughDataStatus
             case MALFORMED -> Messages.LookThroughStatusMalformed;
             case KEY_REJECTED -> Messages.LookThroughStatusKeyRejected;
             case NO_ACCESS -> Messages.LookThroughStatusNoAccess;
+            case NOT_CONFIGURED -> Messages.LookThroughStatusNotConfigured;
             case FETCHING -> Messages.LookThroughStatusFetching;
             case CHECKING -> Messages.LookThroughStatusChecking;
             case NO_COMPOSITION -> Messages.LookThroughStatusNoComposition;
@@ -643,6 +667,7 @@ public final class LookThroughDataStatus
             case REJECTED_INVALID_WEIGHT -> Optional.of(Messages.LookThroughStatusExplainInvalidWeight);
             case REJECTED -> Optional.of(Messages.LookThroughStatusExplainRejected);
             case MALFORMED -> Optional.of(Messages.LookThroughStatusExplainMalformed);
+            case NOT_CONFIGURED -> Optional.of(Messages.LookThroughStatusExplainNotConfigured);
             default -> Optional.empty();
         };
     }

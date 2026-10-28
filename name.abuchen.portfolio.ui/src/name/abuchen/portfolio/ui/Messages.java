@@ -1131,6 +1131,7 @@ public class Messages extends NLS
     public static String LookThroughStatusExplainInvalidWeight;
     public static String LookThroughStatusExplainMalformed;
     public static String LookThroughStatusExplainNegativeWeight;
+    public static String LookThroughStatusExplainNotConfigured;
     public static String LookThroughStatusExplainRejected;
     public static String LookThroughStatusExplainTotalAboveOne;
     public static String LookThroughStatusFailed;
@@ -1147,6 +1148,7 @@ public class Messages extends NLS
     public static String LookThroughStatusNoAccess;
     public static String LookThroughStatusNoAttempt;
     public static String LookThroughStatusNoComposition;
+    public static String LookThroughStatusNotConfigured;
     public static String LookThroughStatusOk;
     public static String LookThroughStatusPaneEmpty;
     public static String LookThroughStatusPaneTitle;
