@@ -1213,7 +1213,7 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
-    public void testEffectiveNumberOfEvenlySpreadCompaniesIsTheirCount()
+    public void testConcentrationOfEvenlySpreadCompaniesIsTheirCount()
     {
         for (int ii = 0; ii < 100; ii++)
             hold("c" + ii, "Synthetic c" + ii, AssetType.EQUITY, "CO-" + ii, 1, 100);
@@ -1222,12 +1222,34 @@ public class LookThroughViewPresenterTest
 
         assertEquals(100d, effective.value().doubleValue(), 1e-9);
         assertEquals(100, effective.companies());
-        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, 100L, 100L), effective.text());
-        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveTooltip, 100L), effective.tooltip());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryConcentrationValue, 100L, 100L),
+                        effective.text());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryConcentrationTooltip, 100L, 100L),
+                        effective.tooltip());
+        assertTrue(effective.text().startsWith("~"));
     }
 
     @Test
-    public void testEffectiveNumberUsesSharesOfCompanyExposure()
+    public void testConcentrationTooltipExplainsTheCalculationWithTwoExamples()
+    {
+        hold("a", "Synthetic a", AssetType.EQUITY, "CO-A", 1, 100);
+        hold("b", "Synthetic b", AssetType.EQUITY, "CO-B", 1, 100);
+
+        var effective = model(result()).summary().effective().orElseThrow();
+        var tooltip = effective.tooltip();
+
+        // The evenly split example reads 3, the 50/25/25 split about 2.67.
+        assertTrue(tooltip.contains("0.3333"));
+        assertTrue(tooltip.contains("0.5"));
+        assertTrue(tooltip.contains("0.25"));
+        assertTrue(tooltip.contains("2.67"));
+        // Direction and the basis stay named.
+        assertTrue(tooltip.contains("smaller"));
+        assertTrue(tooltip.contains("concentration"));
+    }
+
+    @Test
+    public void testConcentrationUsesSharesOfCompanyExposure()
     {
         hold("big", "Synthetic big", AssetType.EQUITY, "CO-BIG", 1, 120);
         for (int ii = 0; ii < 88; ii++)
@@ -1239,11 +1261,12 @@ public class LookThroughViewPresenterTest
         // 12 % big, 88 times 1 % of the company exposure: 1 / (0.12^2 + 88 * 0.01^2)
         assertEquals(1d / (0.0144d + 88 * 0.0001d), effective.value().doubleValue(), 1e-6);
         assertEquals(89, effective.companies());
-        assertEquals(MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, 43L, 89L), effective.text());
+        assertEquals(MessageFormat.format(Messages.LookThroughSummaryConcentrationValue, 43L, 89L),
+                        effective.text());
     }
 
     @Test
-    public void testEffectiveNumberIsWithheldWithoutCompanyExposure()
+    public void testConcentrationIsWithheldWithoutCompanyExposure()
     {
         hold("cash", "Synthetic cash", AssetType.CASH, null, 1, 100);
 
@@ -1292,7 +1315,7 @@ public class LookThroughViewPresenterTest
     }
 
     @Test
-    public void testConcentrationIsWithheldWithoutCompanyExposure()
+    public void testLargestCompanyIsWithheldWithoutCompanyExposure()
     {
         hold("cash", "Synthetic cash", AssetType.CASH, null, 1, 100);
 

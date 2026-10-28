@@ -546,6 +546,99 @@ public final class LookThroughDataStatus
     }
 
     /**
+     * The compact line of the view's status row: what a lookup is doing right
+     * now or, when nothing runs, how many funds have data and how many have
+     * no composition. Failures and rejections make the line a warning.
+     */
+    public record SummaryRow(String text, String tooltip, boolean warning)
+    {
+        public SummaryRow
+        {
+            Objects.requireNonNull(text);
+            Objects.requireNonNull(tooltip);
+        }
+    }
+
+    /**
+     * Builds the status row from the same rows that the pane lists, so both
+     * never disagree. Running and waiting lookups are counted apart from
+     * answered ones, and an answered lookup is never reported as data.
+     * Empty when no row is listed.
+     */
+    public static Optional<SummaryRow> summaryRow(List<FundStatus> rows, Clock clock)
+    {
+        Objects.requireNonNull(rows);
+        Objects.requireNonNull(clock);
+        if (rows.isEmpty())
+            return Optional.empty();
+
+        int running = 0;
+        int waiting = 0;
+        int answered = 0;
+        int failures = 0;
+        int withData = 0;
+        int withoutComposition = 0;
+        Instant nextAttempt = null;
+
+        for (var row : rows)
+        {
+            if (row.refreshPending())
+                running++;
+            else
+                answered++;
+
+            if (row.usableData())
+                withData++;
+            if (row.kind() == StatusKind.NO_COMPOSITION)
+                withoutComposition++;
+            if (isFailure(row.kind()))
+                failures++;
+
+            var retry = row.retryAfter().filter(at -> at.isAfter(clock.instant()));
+            if (retry.isPresent() && (isWaiting(row.kind()) || isFailure(row.kind())))
+            {
+                if (isWaiting(row.kind()))
+                    waiting++;
+                var at = retry.orElseThrow();
+                if (nextAttempt == null || at.isBefore(nextAttempt))
+                    nextAttempt = at;
+            }
+        }
+
+        var detail = running > 0 || waiting > 0 //
+                        ? MessageFormat.format(Messages.LookThroughStatusRowRunning, running, waiting, answered,
+                                        rows.size())
+                        : MessageFormat.format(Messages.LookThroughStatusRowSettled, withData, withoutComposition);
+
+        Optional<String> problem = Optional.empty();
+        if (failures > 0)
+            problem = Optional.of(nextAttempt == null //
+                            ? MessageFormat.format(Messages.LookThroughStatusRowFailed, failures)
+                            : MessageFormat.format(Messages.LookThroughStatusRowFailedRetry, failures,
+                                            retryTimeText(clock, nextAttempt)));
+
+        var text = problem.map(value -> detail + " \u00B7 " + value).orElse(detail); //$NON-NLS-1$
+        return Optional.of(new SummaryRow(text, text, failures > 0));
+    }
+
+    /** A lookup that failed or a composition that was not used. */
+    private static boolean isFailure(StatusKind kind)
+    {
+        return switch (kind)
+        {
+            case FAILED, MALFORMED, RETAINED_AFTER_FAILURE, REJECTED_NEGATIVE_WEIGHT, REJECTED_TOTAL_ABOVE_ONE,
+                            REJECTED_INVALID_WEIGHT, REJECTED -> true;
+            default -> false;
+        };
+    }
+
+    /** A lookup that is answered but only deferred, for example by the limit. */
+    private static boolean isWaiting(StatusKind kind)
+    {
+        return kind == StatusKind.RATE_LIMITED || kind == StatusKind.CHECKING;
+    }
+
+    /**
      * The decomposed share of a row. Without usable data no share exists, so
      * a dash is shown instead of a zero percentage.
      */

@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.text.MessageFormat;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -609,6 +610,72 @@ public class LookThroughDataStatusTest
         var model = LookThroughDataStatus.present(CLOCK, sessionOnly(), List.of(facts));
 
         assertEquals(1, LookThroughDataStatus.listed(model, Set.of(FUND.identifiers())).size());
+    }
+
+    private LookThroughDataStatus.SummaryRow summaryOf(List<LookThroughDataStatus.FundFacts> funds)
+    {
+        var model = LookThroughDataStatus.present(CLOCK, sessionOnly(), funds);
+        return LookThroughDataStatus.summaryRow(LookThroughDataStatus.listed(model, Set.of()), CLOCK).orElseThrow();
+    }
+
+    @Test
+    public void testStatusRowCountsRunningAndAnsweredLookupsAndNamesTheFailure()
+    {
+        var running = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, Optional.empty(), Optional.empty(),
+                        Optional.empty(), true);
+        // Answered counts every arrived outcome, including no composition and
+        // a failure; neither counts as data.
+        var withoutComposition = new LookThroughDataStatus.FundFacts(instrument("SYNTH-B"), ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.UNAVAILABLE), Optional.empty(), false);
+        var failed = new LookThroughDataStatus.FundFacts(instrument("SYNTH-C"), ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.FAILED),
+                        Optional.of(NOW.plus(Duration.ofMinutes(45))), false);
+
+        var summary = summaryOf(List.of(running, withoutComposition, failed));
+
+        assertTrue(summary.text().startsWith(MessageFormat.format(Messages.LookThroughStatusRowRunning, 1, 0, 2, 3)));
+        assertTrue(summary.warning());
+        assertTrue(summary.text().contains("1 failed"));
+        assertTrue(summary.text().contains("next attempt"));
+    }
+
+    @Test
+    public void testStatusRowNamesWaitingLookupsWithoutCallingThemData()
+    {
+        var retained = Optional.of(composition(RETRIEVAL, Optional.of(PROVIDER_REFRESHED), Optional.empty(), PARTIAL,
+                        NAV));
+        var limited = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, retained,
+                        Optional.of(CompositionResult.Status.RATE_LIMITED),
+                        Optional.of(NOW.plus(Duration.ofMinutes(30))), false);
+
+        var summary = summaryOf(List.of(limited));
+
+        assertTrue(summary.text().startsWith(MessageFormat.format(Messages.LookThroughStatusRowRunning, 0, 1, 1, 1)));
+        // Rate limiting is not a failure; the waiting count already names it.
+        assertFalse(summary.warning());
+    }
+
+    @Test
+    public void testStatusRowSummarizesSettledDataWithoutProgressWording()
+    {
+        var retained = Optional.of(composition(RETRIEVAL, Optional.of(PROVIDER_REFRESHED), Optional.empty(), PARTIAL,
+                        NAV));
+        var withData = new LookThroughDataStatus.FundFacts(FUND, ACCOUNT, retained,
+                        Optional.of(CompositionResult.Status.RECEIVED), Optional.empty(), false);
+        var withoutComposition = new LookThroughDataStatus.FundFacts(instrument("SYNTH-B"), ACCOUNT, Optional.empty(),
+                        Optional.of(CompositionResult.Status.UNAVAILABLE), Optional.empty(), false);
+
+        var summary = summaryOf(List.of(withData, withoutComposition));
+
+        assertEquals(MessageFormat.format(Messages.LookThroughStatusRowSettled, 1, 1), summary.text());
+        assertFalse(summary.warning());
+        assertFalse(summary.text().contains("Refresh running"));
+    }
+
+    @Test
+    public void testStatusRowWithoutRowsIsEmpty()
+    {
+        assertTrue(LookThroughDataStatus.summaryRow(List.of(), CLOCK).isEmpty());
     }
 
     /** Counts gateway operations: a request is a refresh, a read is not. */
