@@ -236,9 +236,10 @@ public final class LookThroughViewPresenter
     }
 
     /**
-     * The effective number of companies: one divided by the sum of the
-     * squared shares of the company exposure (inverse Herfindahl index), with
-     * the number of companies with positive exposure.
+     * The concentration: one divided by the sum of the squared shares of the
+     * companies, each relative to the total company exposure, shown as the
+     * approximate number of equally sized companies. Absent without company
+     * exposure.
      */
     public record Effective(BigDecimal value, long companies, String text, String tooltip)
     {
@@ -585,8 +586,8 @@ public final class LookThroughViewPresenter
         // Rounding can not exceed the number of companies.
         var rounded = Math.min(count, Math.max(1, value.setScale(0, RoundingMode.HALF_UP).longValue()));
         return Optional.of(new Effective(value, count,
-                        MessageFormat.format(Messages.LookThroughSummaryEffectiveValue, rounded, count),
-                        MessageFormat.format(Messages.LookThroughSummaryEffectiveTooltip, rounded)));
+                        MessageFormat.format(Messages.LookThroughSummaryConcentrationValue, rounded, count),
+                        MessageFormat.format(Messages.LookThroughSummaryConcentrationTooltip, rounded, count)));
     }
 
     private List<GroupRow> groupRows(Keys keys, LookThroughGrouping classifier, Grouping grouping,

@@ -2,6 +2,8 @@ package name.abuchen.portfolio.ui.util.swt;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
 
 import org.eclipse.jface.action.IMenuListener;
 import org.eclipse.swt.SWT;
@@ -118,6 +120,10 @@ public class SashLayout extends Layout
 
     private boolean isDragging = false;
 
+    /** Notified with the new hidden state after a flip. */
+    private Consumer<Boolean> hiddenListener = hidden -> {
+    };
+
     public SashLayout(final Composite host, int style)
     {
         this.host = host;
@@ -230,11 +236,23 @@ public class SashLayout extends Layout
         host.update();
 
         divider.setVisible(false);
+
+        hiddenListener.accept(isHidden());
     }
 
     public String getTag()
     {
         return tag;
+    }
+
+    /**
+     * Registers the listener that is told the new hidden state after a flip,
+     * whether it came from a double-click on the divider or from
+     * {@link #flip()}.
+     */
+    public void setHiddenListener(Consumer<Boolean> listener)
+    {
+        this.hiddenListener = Objects.requireNonNull(listener);
     }
 
     public void setTag(String tag)

@@ -43,11 +43,17 @@ import org.eclipse.jface.window.ToolTip;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.SashForm;
 import org.eclipse.swt.custom.StackLayout;
+import org.eclipse.swt.events.MouseAdapter;
+import org.eclipse.swt.events.MouseEvent;
+import org.eclipse.swt.events.SelectionListener;
+import org.eclipse.swt.graphics.GC;
+import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.widgets.Canvas;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.Link;
 import org.eclipse.swt.widgets.Listener;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.TreeItem;
@@ -65,6 +71,7 @@ import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
 import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
+import name.abuchen.portfolio.ui.Images;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.PortfolioPlugin;
 import name.abuchen.portfolio.ui.UIConstants;
@@ -120,6 +127,13 @@ public class LookThroughView extends AbstractFinanceView
     private final StackLayout tableStack = new StackLayout();
     private Composite tableContainer;
     private Composite tableMessage;
+    private Composite statusRow;
+    private Link statusToggle;
+    private Label statusArrow;
+    private Label statusWarning;
+    private Label statusText;
+    /** The unshortened status row text; the label shows as much as fits. */
+    private String statusRowText = ""; //$NON-NLS-1$
     private DropDown chartDropDown;
     private DropDown groupingDropDown;
     private Kind chartKind;
@@ -538,6 +552,155 @@ public class LookThroughView extends AbstractFinanceView
         });
     }
 
+    /**
+     * The always-visible row between the table and the data status pane. It
+     * opens and closes the pane and states the refresh situation in plain
+     * words, so the pane itself can stay collapsed.
+     */
+    private void createStatusRow(Composite parent)
+    {
+        statusRow = new Composite(parent, SWT.NONE);
+        GridLayoutFactory.fillDefaults().numColumns(4).spacing(6, 0).applyTo(statusRow);
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(statusRow);
+
+        statusToggle = new Link(statusRow, SWT.NONE);
+        statusToggle.setText("<a>" + Messages.LookThroughStatusPaneTitle + "</a>"); //$NON-NLS-1$ //$NON-NLS-2$
+        statusToggle.setToolTipText(Messages.LookThroughStatusRowTooltip);
+        statusToggle.addSelectionListener(
+                        SelectionListener.widgetSelectedAdapter(event -> toggleStatusPane()));
+
+        statusArrow = new Label(statusRow, SWT.NONE);
+        statusArrow.setForeground(Colors.theme().grayForeground());
+
+        statusWarning = new Label(statusRow, SWT.NONE);
+        statusWarning.setImage(Images.WARNING.image());
+        var warningData = GridDataFactory.fillDefaults().align(SWT.CENTER, SWT.CENTER).create();
+        warningData.exclude = true;
+        statusWarning.setLayoutData(warningData);
+        statusWarning.setVisible(false);
+
+        statusText = new Label(statusRow, SWT.NONE);
+        statusText.setForeground(Colors.theme().grayForeground());
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(statusText);
+        statusText.addListener(SWT.Resize, event -> applyStatusRowText());
+
+        // The whole row toggles the pane; the link stays the accessible control.
+        var toggle = new MouseAdapter()
+        {
+            @Override
+            public void mouseUp(MouseEvent event)
+            {
+                if (event.button == 1)
+                    toggleStatusPane();
+            }
+        };
+        for (var control : new Control[] { statusRow, statusArrow, statusWarning, statusText })
+        {
+            control.addMouseListener(toggle);
+            control.setCursor(control.getDisplay().getSystemCursor(SWT.CURSOR_HAND));
+        }
+
+        updateStatusRow();
+    }
+
+    private void toggleStatusPane()
+    {
+        flipPane();
+        updateStatusRow();
+    }
+
+    @Override
+    protected void paneVisibilityChanged(boolean hidden)
+    {
+        updateStatusRow();
+    }
+
+    /**
+     * Renders the row from the last status read and the current pane state.
+     * Memory-only, like the pane: no request and no store access.
+     */
+    private void updateStatusRow()
+    {
+        if (statusRow == null || statusRow.isDisposed())
+            return;
+
+        var hidden = isPaneHidden();
+        statusArrow.setText(hidden ? ">" : "v"); //$NON-NLS-1$ //$NON-NLS-2$
+        statusArrow.setToolTipText(hidden ? Messages.LookThroughStatusRowExpand
+                        : Messages.LookThroughStatusRowCollapse);
+
+        var classified = presented != null ? presented.directlyClassified() : Set.<Map<String, String>>of();
+        var rows = dataStatus.map(model -> LookThroughDataStatus.listed(model, classified)).orElse(List.of());
+        var summary = LookThroughDataStatus.summaryRow(rows, Clock.systemDefaultZone());
+
+        statusRowText = summary.map(LookThroughDataStatus.SummaryRow::text).orElse(""); //$NON-NLS-1$
+        var warning = summary.map(LookThroughDataStatus.SummaryRow::warning).orElse(false);
+        var warningData = (GridData) statusWarning.getLayoutData();
+        warningData.exclude = !warning;
+        statusWarning.setVisible(warning);
+        statusWarning.setToolTipText(warning ? summary.map(LookThroughDataStatus.SummaryRow::tooltip).orElse(null)
+                        : null);
+
+        var tooltip = summary.map(LookThroughDataStatus.SummaryRow::tooltip).orElse(null);
+        statusText.setToolTipText(tooltip);
+        statusToggle.setToolTipText(tooltip != null ? tooltip + "\n\n" + Messages.LookThroughStatusRowTooltip //$NON-NLS-1$
+                        : Messages.LookThroughStatusRowTooltip);
+
+        applyStatusRowText();
+        statusRow.layout(true);
+    }
+
+    /** One line only: the text is shortened with an ellipsis when it does not fit. */
+    private void applyStatusRowText()
+    {
+        if (statusText == null || statusText.isDisposed())
+            return;
+
+        var available = statusText.getSize().x;
+        if (available <= 0 || statusRowText.isEmpty())
+        {
+            setStatusText(statusRowText);
+            return;
+        }
+
+        var gc = new GC(statusText);
+        try
+        {
+            if (gc.textExtent(statusRowText).x <= available)
+            {
+                setStatusText(statusRowText);
+                return;
+            }
+
+            var ellipsis = "\u2026"; //$NON-NLS-1$
+            int low = 0;
+            int high = statusRowText.length();
+            while (low < high)
+            {
+                var middle = (low + high + 1) / 2;
+                if (gc.textExtent(statusRowText.substring(0, middle) + ellipsis).x <= available)
+                    low = middle;
+                else
+                    high = middle - 1;
+            }
+            setStatusText(statusRowText.substring(0, low) + ellipsis);
+        }
+        finally
+        {
+            gc.dispose();
+        }
+    }
+
+    /**
+     * Sets the text only when it changed: a resize caused by the text itself
+     * must not start another pass.
+     */
+    private void setStatusText(String text)
+    {
+        if (!text.equals(statusText.getText()))
+            statusText.setText(text);
+    }
+
     @Override
     protected Control createBody(Composite parent)
     {
@@ -593,8 +756,9 @@ public class LookThroughView extends AbstractFinanceView
         var sash = new SashForm(container, SWT.HORIZONTAL);
         GridDataFactory.fillDefaults().grab(true, true).applyTo(sash);
 
-        // separates the view from the data status pane below
+        // separates the view from the data status row below
         createSeparator(container);
+        createStatusRow(container);
 
         chartPane = new LookThroughChartPane(sash, getStylingEngine(), this::selectCompany);
         chartPane.setKind(chartKind());
@@ -1287,6 +1451,7 @@ public class LookThroughView extends AbstractFinanceView
                         .orElse(null));
         updateBanner(dataStatus);
         updateProgress();
+        updateStatusRow();
         updateActionEnablement();
     }
 

@@ -494,7 +494,8 @@ public final class Navigation
 
         statementOfAssets.add(new Item(Messages.ClientEditorLabelChart, StatementOfAssetsHistoryView.class, true));
         statementOfAssets.add(new Item(Messages.ClientEditorLabelHoldings, HoldingsPieChartView.class, true));
-        statementOfAssets.add(new Item(Messages.LabelBreakdown, LookThroughView.class));
+        // The data status pane is rarely needed; its own status row opens it.
+        statementOfAssets.add(new Item(Messages.LabelBreakdown, LookThroughView.class, true));
 
         Item performance = new Item(Messages.ClientEditorLabelPerformance, DashboardView.class, true);
         section.add(performance);

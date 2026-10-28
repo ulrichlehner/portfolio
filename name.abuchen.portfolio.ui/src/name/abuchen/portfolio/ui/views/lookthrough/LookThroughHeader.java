@@ -115,7 +115,7 @@ public class LookThroughHeader
         largestLabel = largest.value();
         largest.figure().setToolTipText(Messages.LookThroughSummaryLargestTooltip);
 
-        var effective = createFigure(strip, Messages.LookThroughSummaryEffective, 1);
+        var effective = createFigure(strip, Messages.LookThroughSummaryConcentration, 1);
         effectiveFigure = effective.figure();
         effectiveLabel = effective.value();
 

@@ -1165,6 +1165,13 @@ public class Messages extends NLS
     public static String LookThroughStatusRetainedAfterFailure;
     public static String LookThroughStatusRetrievalDate;
     public static String LookThroughStatusRetryHint;
+    public static String LookThroughStatusRowCollapse;
+    public static String LookThroughStatusRowExpand;
+    public static String LookThroughStatusRowFailed;
+    public static String LookThroughStatusRowFailedRetry;
+    public static String LookThroughStatusRowRunning;
+    public static String LookThroughStatusRowSettled;
+    public static String LookThroughStatusRowTooltip;
     public static String LookThroughStatusSourceDataComplete;
     public static String LookThroughStatusSourceDataPartial;
     public static String LookThroughStatusSourceDataUnknown;
@@ -1174,9 +1181,9 @@ public class Messages extends NLS
     public static String LookThroughStatusStale;
     public static String LookThroughStopRefresh;
     public static String LookThroughSummaryAsOf;
-    public static String LookThroughSummaryEffective;
-    public static String LookThroughSummaryEffectiveTooltip;
-    public static String LookThroughSummaryEffectiveValue;
+    public static String LookThroughSummaryConcentration;
+    public static String LookThroughSummaryConcentrationTooltip;
+    public static String LookThroughSummaryConcentrationValue;
     public static String LookThroughSummaryFunds;
     public static String LookThroughSummaryLargest;
     public static String LookThroughSummaryLargestTooltip;

@@ -190,6 +190,7 @@ public abstract class AbstractFinanceView
 
         SashLayout sl = new SashLayout(sash, SWT.VERTICAL | SWT.END);
         sl.setTag(UIConstants.Tag.INFORMATIONPANE);
+        sl.setHiddenListener(this::paneVisibilityChanged);
         sash.setLayout(sl);
 
         // Defer layout until both children (body + information pane) have been
@@ -235,6 +236,15 @@ public abstract class AbstractFinanceView
     {
         if (sashLayout != null)
             sashLayout.flip();
+    }
+
+    /**
+     * Called after the information pane was hidden or shown, from the divider
+     * double-click as well as from {@link #flipPane()}.
+     */
+    protected void paneVisibilityChanged(boolean hidden)
+    {
+        // Views that offer their own control for the pane update it here.
     }
 
     public boolean isPaneHidden()
