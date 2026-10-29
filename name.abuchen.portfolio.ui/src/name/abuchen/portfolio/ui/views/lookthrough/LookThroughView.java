@@ -59,6 +59,7 @@ import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.TreeItem;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import name.abuchen.portfolio.model.Client;
@@ -819,7 +820,7 @@ public class LookThroughView extends AbstractFinanceView
         var columns = new ShowHideColumnHelper(LookThroughView.class.getSimpleName(), getPreferenceStore(), viewer,
                         layout);
         addColumns(columns);
-        keepNameColumnFirst();
+        keepLeadingColumns();
         columns.createColumns();
 
         viewer.getTree().setHeaderVisible(true);
@@ -898,11 +899,12 @@ public class LookThroughView extends AbstractFinanceView
     }
 
     /**
-     * Columns are created in the saved order and the first one holds the
-     * tree's expand arrow. A configuration saved with another column first
-     * gets the name column moved to the front.
+     * Columns are created in the saved order, and the first column holds the
+     * tree's expand arrow. A saved configuration therefore keeps the rank
+     * first and the grouping name second, whatever order an earlier version
+     * stored.
      */
-    private void keepNameColumnFirst()
+    private void keepLeadingColumns()
     {
         var key = LookThroughView.class.getSimpleName();
         var config = getPreferenceStore().getString(key);
@@ -914,20 +916,12 @@ public class LookThroughView extends AbstractFinanceView
             var items = json.getAsJsonArray("items"); //$NON-NLS-1$
             if (items == null)
                 return;
-            for (int index = 1; index < items.size(); index++)
+
+            var reordered = moveTo(moveTo(items, "rank", 0), "instrument", 1); //$NON-NLS-1$ //$NON-NLS-2$
+            if (!reordered.toString().equals(items.toString()))
             {
-                var item = items.get(index);
-                if (item.isJsonObject() && "instrument".equals(item.getAsJsonObject().get("id").getAsString())) //$NON-NLS-1$ //$NON-NLS-2$
-                {
-                    var reordered = new JsonArray();
-                    reordered.add(item);
-                    for (int other = 0; other < items.size(); other++)
-                        if (other != index)
-                            reordered.add(items.get(other));
-                    json.add("items", reordered); //$NON-NLS-1$
-                    getPreferenceStore().setValue(key, json.toString());
-                    return;
-                }
+                json.add("items", reordered); //$NON-NLS-1$
+                getPreferenceStore().setValue(key, json.toString());
             }
         }
         catch (RuntimeException e)
@@ -935,6 +929,33 @@ public class LookThroughView extends AbstractFinanceView
             // An unreadable configuration falls back to the default columns.
             getPreferenceStore().setToDefault(key);
         }
+    }
+
+    /** Moves the named column to the target index, keeping the other columns. */
+    private static JsonArray moveTo(JsonArray items, String id, int target)
+    {
+        JsonObject moved = null;
+        var rest = new JsonArray();
+        for (var item : items)
+        {
+            if (item.isJsonObject() && id.equals(item.getAsJsonObject().get("id").getAsString())) //$NON-NLS-1$
+                moved = item.getAsJsonObject();
+            else
+                rest.add(item);
+        }
+        if (moved == null)
+            return items;
+
+        var reordered = new JsonArray();
+        for (var index = 0; index < rest.size(); index++)
+        {
+            if (index == target)
+                reordered.add(moved);
+            reordered.add(rest.get(index));
+        }
+        if (reordered.size() == target)
+            reordered.add(moved);
+        return reordered;
     }
 
     private static Composite createCalculatingMessage(Composite parent)
@@ -953,7 +974,21 @@ public class LookThroughView extends AbstractFinanceView
 
     private void addColumns(ShowHideColumnHelper support)
     {
-        // The first column holds the tree's expand arrow, so the name comes first.
+        // The first column holds the tree's expand arrow; the rank comes first
+        // and the grouping name follows it.
+        var rankColumn = new Column("rank", Messages.LookThroughColumnRank, SWT.RIGHT, 60); //$NON-NLS-1$
+        rankColumn.setLabelProvider(new ColumnLabelProvider()
+        {
+            @Override
+            public String getText(Object element)
+            {
+                var rank = element instanceof Row row ? ranks.get(row.key()) : null;
+                return rank != null ? String.valueOf(rank) : null;
+            }
+        });
+        rankColumn.setRemovable(false);
+        support.addColumn(rankColumn);
+
         var column = new Column("instrument", companyColumnLabel(), SWT.NONE, 200); //$NON-NLS-1$
         companyColumn = column;
         column.setLabelProvider(new ColumnLabelProvider()
@@ -994,18 +1029,6 @@ public class LookThroughView extends AbstractFinanceView
             }
         });
         column.setRemovable(false);
-        support.addColumn(column);
-
-        column = new Column("rank", Messages.LookThroughColumnRank, SWT.RIGHT, 40); //$NON-NLS-1$
-        column.setLabelProvider(new ColumnLabelProvider()
-        {
-            @Override
-            public String getText(Object element)
-            {
-                var rank = element instanceof Row row ? ranks.get(row.key()) : null;
-                return rank != null ? String.valueOf(rank) : null;
-            }
-        });
         support.addColumn(column);
 
         column = new Column("direct", Messages.LookThroughColumnDirect, SWT.RIGHT, 95); //$NON-NLS-1$
