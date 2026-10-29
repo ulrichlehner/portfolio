@@ -51,19 +51,6 @@ public final class LookThroughResultCache
         return Optional.ofNullable(entries.get(client));
     }
 
-    /**
-     * Reads the entry unless the portfolio has unsaved changes. Such a change
-     * makes every stored number wrong, so the entry is dropped instead of
-     * shown.
-     */
-    public synchronized Optional<Entry> get(Client client, boolean dirty)
-    {
-        if (!dirty)
-            return get(client);
-        entries.remove(client);
-        return Optional.empty();
-    }
-
     public synchronized void clear(Client client)
     {
         entries.remove(client);
