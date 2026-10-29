@@ -132,7 +132,8 @@ public class LookThroughView extends AbstractFinanceView
     private Composite tableMessage;
     private Composite statusRow;
     private Link statusToggle;
-    private Label statusArrow;
+    private Canvas statusArrow;
+    private boolean statusArrowCollapsed;
     private Label statusWarning;
     private Label statusText;
     /** The unshortened status row text; the label shows as much as fits. */
@@ -588,8 +589,10 @@ public class LookThroughView extends AbstractFinanceView
         statusToggle.addSelectionListener(
                         SelectionListener.widgetSelectedAdapter(event -> toggleStatusPane()));
 
-        statusArrow = new Label(statusRow, SWT.NONE);
-        statusArrow.setForeground(Colors.theme().grayForeground());
+        statusArrow = new Canvas(statusRow, SWT.NONE);
+        statusArrow.setBackground(Colors.theme().defaultBackground());
+        GridDataFactory.fillDefaults().align(SWT.CENTER, SWT.CENTER).hint(12, 12).applyTo(statusArrow);
+        statusArrow.addPaintListener(event -> paintStatusArrow(event.gc));
 
         statusWarning = new Label(statusRow, SWT.NONE);
         statusWarning.setImage(Images.WARNING.image());
@@ -628,6 +631,22 @@ public class LookThroughView extends AbstractFinanceView
         updateStatusRow();
     }
 
+    /** A disclosure triangle instead of a text character; theme coloured. */
+    private void paintStatusArrow(GC gc)
+    {
+        var size = statusArrow.getSize();
+        if (size.x <= 0 || size.y <= 0)
+            return;
+        var cx = size.x / 2;
+        var cy = size.y / 2;
+
+        gc.setBackground(Colors.theme().grayForeground());
+        if (statusArrowCollapsed)
+            gc.fillPolygon(new int[] { cx - 3, cy - 4, cx - 3, cy + 4, cx + 4, cy });
+        else
+            gc.fillPolygon(new int[] { cx - 4, cy - 3, cx + 4, cy - 3, cx, cy + 4 });
+    }
+
     @Override
     protected void paneVisibilityChanged(boolean hidden)
     {
@@ -644,7 +663,8 @@ public class LookThroughView extends AbstractFinanceView
             return;
 
         var hidden = isPaneHidden();
-        statusArrow.setText(hidden ? ">" : "v"); //$NON-NLS-1$ //$NON-NLS-2$
+        statusArrowCollapsed = hidden;
+        statusArrow.redraw();
         statusArrow.setToolTipText(hidden ? Messages.LookThroughStatusRowExpand
                         : Messages.LookThroughStatusRowCollapse);
 
@@ -838,21 +858,29 @@ public class LookThroughView extends AbstractFinanceView
         var client = getClient();
         var source = compositionSource;
         if (client == null || source == null || !source.cacheable())
-            return false;
+            return cacheMiss("no source"); //$NON-NLS-1$
 
-        var part = getPart();
-        var input = part != null ? part.getClientInput() : null;
-        var dirty = input != null && input.isDirty();
-        var entry = LookThroughCompositionService.resultCache().get(client, dirty);
-        if (entry.isEmpty() || entry.orElseThrow().grouping() != grouping())
-            return false;
+        var entry = LookThroughCompositionService.resultCache().get(client);
+        if (entry.isEmpty())
+            return cacheMiss("no entry"); //$NON-NLS-1$
+        if (entry.orElseThrow().grouping() != grouping())
+            return cacheMiss("other grouping"); //$NON-NLS-1$
 
         var cached = entry.orElseThrow();
         result = cached.result();
         chartPane.setOverlap(cached.overlap());
         applyModel(cached.model());
         header.setUpdating(true);
+        if (TIMING)
+            PortfolioPlugin.info("lookthrough cache: hit"); //$NON-NLS-1$
         return true;
+    }
+
+    private boolean cacheMiss(String reason)
+    {
+        if (TIMING)
+            PortfolioPlugin.info("lookthrough cache: miss, " + reason); //$NON-NLS-1$
+        return false;
     }
 
     /** Keeps the presentation of the current result for the next opening. */
@@ -1397,7 +1425,10 @@ public class LookThroughView extends AbstractFinanceView
         getPreferenceStore().setValue(GROUPING_KEY, selected.name());
         updateCompanyColumnLabel();
         if (groupingDropDown != null)
+        {
+            groupingDropDown.setLabel(groupingLabel());
             groupingDropDown.setToolTip(groupingLabel());
+        }
         applyResult();
     }
 
@@ -1629,7 +1660,7 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected void addViewButtons(ToolBarManager toolBarManager)
     {
-        groupingDropDown = new DropDown(Messages.LookThroughBreakdownBy);
+        groupingDropDown = new DropDown(groupingLabel());
         groupingDropDown.setToolTip(groupingLabel());
         groupingDropDown.setMenuListener(this::groupingMenuAboutToShow);
         toolBarManager.add(groupingDropDown);

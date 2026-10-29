@@ -57,20 +57,32 @@ public class InformationPane
 
             int y = 0;
 
-            Point label = children[0].computeSize(SWT.DEFAULT, SWT.DEFAULT);
-            Point toolbarPanes = children[1].computeSize(SWT.DEFAULT, SWT.DEFAULT);
-            Point toolbarControls = children[2].computeSize(SWT.DEFAULT, SWT.DEFAULT);
+            // A header row that is hidden takes no space, so a pane without a
+            // title or without a page selection starts with its content.
+            Point label = children[0].getVisible() ? children[0].computeSize(SWT.DEFAULT, SWT.DEFAULT)
+                            : new Point(0, 0);
+            Point toolbarPanes = children[1].getVisible() ? children[1].computeSize(SWT.DEFAULT, SWT.DEFAULT)
+                            : new Point(0, 0);
+            Point toolbarControls = children[2].getVisible() ? children[2].computeSize(SWT.DEFAULT, SWT.DEFAULT)
+                            : new Point(0, 0);
 
-            children[0].setBounds(MARGIN, 0, Math.min(label.x, availableBounds.width - 2 * MARGIN), label.y);
-            y += label.y + 2;
+            if (children[0].getVisible())
+                children[0].setBounds(MARGIN, 0, Math.min(label.x, availableBounds.width - 2 * MARGIN), label.y);
+            if (label.y > 0)
+                y += label.y + 2;
 
             int rigthToolbarWidth = Math.max(0, Math.min(toolbarControls.x, availableBounds.width - 50));
 
-            children[1].setBounds(MARGIN, y, availableBounds.width - 2 * MARGIN - rigthToolbarWidth, toolbarPanes.y);
-            children[2].setBounds(availableBounds.width - rigthToolbarWidth - MARGIN, y, rigthToolbarWidth,
-                            toolbarControls.y);
+            if (children[1].getVisible())
+                children[1].setBounds(MARGIN, y, availableBounds.width - 2 * MARGIN - rigthToolbarWidth,
+                                toolbarPanes.y);
+            if (children[2].getVisible())
+                children[2].setBounds(availableBounds.width - rigthToolbarWidth - MARGIN, y, rigthToolbarWidth,
+                                toolbarControls.y);
 
-            y += Math.max(toolbarPanes.y, toolbarControls.y) + 2;
+            var headerHeight = Math.max(toolbarPanes.y, toolbarControls.y);
+            if (headerHeight > 0)
+                y += headerHeight + 2;
 
             children[3].setBounds(0, y, availableBounds.width, availableBounds.height - y);
         }
@@ -81,6 +93,7 @@ public class InformationPane
 
     private Composite area;
     private CLabel label;
+    private Composite paneSelectionWrapper;
     private ToolBarManager toolBarPaneSelection;
     private ToolBarManager toolBarPaneControls;
     private PageBook pagebook;
@@ -103,6 +116,7 @@ public class InformationPane
 
         Composite wrapper = new Composite(area, SWT.NONE);
         wrapper.setBackground(area.getBackground());
+        paneSelectionWrapper = wrapper;
 
         toolBarPaneSelection = new ToolBarManager(SWT.FLAT | SWT.RIGHT);
 
@@ -138,11 +152,18 @@ public class InformationPane
 
         toolBarPaneSelection.removeAll();
 
-        for (InformationPanePage page : pages)
+        // A selection with a single page has nothing to select: hide it so the
+        // pane starts with its content instead of a redundant button.
+        var multiplePages = pages.size() > 1;
+        paneSelectionWrapper.setVisible(multiplePages);
+        if (multiplePages)
         {
-            DropDown dropdown = new DropDown(page.getLabel(), Images.VIEW, SWT.PUSH);
-            dropdown.setDefaultAction(new SimpleAction(a -> selectPage(page, dropdown)));
-            toolBarPaneSelection.add(dropdown);
+            for (InformationPanePage page : pages)
+            {
+                DropDown dropdown = new DropDown(page.getLabel(), Images.VIEW, SWT.PUSH);
+                dropdown.setDefaultAction(new SimpleAction(a -> selectPage(page, dropdown)));
+                toolBarPaneSelection.add(dropdown);
+            }
         }
 
         toolBarPaneSelection.update(true);
@@ -155,7 +176,8 @@ public class InformationPane
             firstControl.setData(InformationPanePage.class.getName(), firstPage);
             page2control.put(firstPage, firstControl);
 
-            ((DropDown) toolBarPaneSelection.getItems()[0]).setImage(Images.VIEW_SELECTED);
+            if (toolBarPaneSelection.getItems().length > 0)
+                ((DropDown) toolBarPaneSelection.getItems()[0]).setImage(Images.VIEW_SELECTED);
 
             firstPage.addButtons(toolBarPaneControls);
             toolBarPaneControls.update(true);
@@ -239,22 +261,25 @@ public class InformationPane
     private void setLabelText()
     {
         Named named = Adaptor.adapt(Named.class, currentInput);
+        String text;
         if (named != null)
         {
-            label.setText(TextUtil.tooltip(named.getName()));
+            text = TextUtil.tooltip(named.getName());
         }
         else if (currentInput instanceof ClientFilterMenu.Item item)
         {
-            label.setText(item.getLabel());
+            text = item.getLabel();
         }
         else if (currentInput instanceof SecuritySelection selection)
         {
-            label.setText(selection.getSecurities().stream().map(Security::getName).collect(Collectors.joining(", "))); //$NON-NLS-1$
+            text = selection.getSecurities().stream().map(Security::getName).collect(Collectors.joining(", ")); //$NON-NLS-1$
         }
         else
         {
-            label.setText(""); //$NON-NLS-1$
+            text = ""; //$NON-NLS-1$
         }
+        label.setText(text);
+        label.setVisible(!text.isEmpty());
     }
 
     /* package */ <P extends InformationPanePage> Optional<P> lookup(Class<P> type)

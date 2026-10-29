@@ -96,19 +96,6 @@ public class LookThroughResultCacheTest
     }
 
     @Test
-    public void testDirtyPortfolioNeverReadsTheEntryAndDropsIt()
-    {
-        var cache = new LookThroughResultCache();
-        cache.put(client, entry());
-
-        assertTrue(cache.get(client, true).isEmpty());
-        assertEquals(0, cache.size());
-
-        cache.put(client, entry());
-        assertTrue(cache.get(client, false).isPresent());
-    }
-
-    @Test
     public void testSettingsChangeClearsTheSharedCache()
     {
         var cache = LookThroughCompositionService.resultCache();
