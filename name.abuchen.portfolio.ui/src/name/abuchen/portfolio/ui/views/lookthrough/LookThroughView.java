@@ -66,9 +66,7 @@ import name.abuchen.portfolio.money.CurrencyConverterImpl;
 import name.abuchen.portfolio.money.ExchangeRateProviderFactory;
 import name.abuchen.portfolio.snapshot.ClientSnapshot;
 import name.abuchen.portfolio.snapshot.lookthrough.CompanyEnrichmentService;
-import name.abuchen.portfolio.snapshot.lookthrough.CompositionRefreshCoordinator;
 import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
-import name.abuchen.portfolio.snapshot.lookthrough.InstrumentEvidence;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughContribution.Category;
 import name.abuchen.portfolio.snapshot.lookthrough.LookThroughResult;
 import name.abuchen.portfolio.ui.Images;
@@ -93,7 +91,6 @@ import name.abuchen.portfolio.ui.views.lookthrough.LookThroughGrouping.Grouping;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ExcludedRow;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupKind;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.GroupRow;
-import name.abuchen.portfolio.ui.views.lookthrough.LookThroughRefreshController.FundRef;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.Row;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.RowKey;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.SegmentKind;
@@ -117,6 +114,12 @@ public class LookThroughView extends AbstractFinanceView
     private static final int[] DEFAULT_WEIGHTS = { 1, 1 };
     /** Enrichment notifications are presented at most this often. */
     private static final Duration ENRICHMENT_UPDATE_INTERVAL = Duration.ofMillis(1500);
+
+    /**
+     * Opt-in restore timing, enabled with {@code -Dportfolio.lookthrough.timing=true}.
+     * Off by default so the normal log stays quiet.
+     */
+    private static final boolean TIMING = Boolean.getBoolean("portfolio.lookthrough.timing"); //$NON-NLS-1$
 
     private final LookThroughViewPresenter presenter = new LookThroughViewPresenter();
 
@@ -151,6 +154,8 @@ public class LookThroughView extends AbstractFinanceView
     private Map<RowKey, Integer> ranks = Map.of();
     private Column companyColumn;
     private LookThroughViewPresenter.Model presented;
+    /** The overlap of the presented result, kept for the session cache. */
+    private FundOverlap overlap;
 
     /** Empty until the credential state was read off the UI thread. */
     private Optional<Boolean> keyConfigured = Optional.empty();
@@ -160,10 +165,7 @@ public class LookThroughView extends AbstractFinanceView
     private volatile boolean disposed;
 
     /** Memory-only inputs of the calculation, compared to skip recalculation. */
-    private record Inputs(List<FundRef> funds, List<CompositionRefreshCoordinator.Snapshot> retained,
-                    List<InstrumentEvidence> classifications)
-    {
-    }
+    private volatile LookThroughInputs calculatedInputs;
 
     private ExecutorService calculationExecutor;
 
@@ -187,8 +189,13 @@ public class LookThroughView extends AbstractFinanceView
     private boolean automaticPending;
     private Shell shell;
     private LookThroughRecalculation<LookThroughResult> recalculation;
-    /** Read and written on the calculation thread, reset on the user interface thread. */
-    private volatile Inputs calculatedInputs;
+
+    /** Timing of the current view generation; only written when {@link #TIMING} is on. */
+    private final long timingStarted = System.nanoTime();
+    private volatile long timingGather;
+    private volatile long timingAnalysis;
+    private volatile long timingPresent;
+    private int timingPresentations;
 
     @Inject
     private ExchangeRateProviderFactory rates;
@@ -214,7 +221,10 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected String getDefaultTitle()
     {
-        return MessageFormat.format(Messages.LookThroughViewTitle, grouping().label());
+        // The grouping is named by the selector's tooltip and the first table
+        // column. A constant title keeps the header stable and leaves room for
+        // the refresh action in narrow windows.
+        return Messages.LabelBreakdown;
     }
 
     /**
@@ -399,13 +409,16 @@ public class LookThroughView extends AbstractFinanceView
             executor.execute(() -> {
                 if (disposed || source != compositionSource)
                     return;
-                Inputs inputs;
+                LookThroughInputs inputs;
                 try
                 {
+                    var gatherStarted = TIMING ? System.nanoTime() : 0;
                     var funds = source.funds();
                     var retained = funds.stream().map(fund -> source.gateway().read(fund.account(), fund.fund()))
                                     .toList();
-                    inputs = new Inputs(funds, retained, source.classifications());
+                    inputs = new LookThroughInputs(funds, retained, source.classifications());
+                    if (TIMING)
+                        timingGather = System.nanoTime() - gatherStarted;
                 }
                 catch (RuntimeException e)
                 {
@@ -417,7 +430,13 @@ public class LookThroughView extends AbstractFinanceView
                 calculatedInputs = inputs;
 
                 // The calculation reads the client but never modifies it.
-                recalculation.request(() -> calculate(client, exchangeRates, source, inputs));
+                recalculation.request(() -> {
+                    var analysisStarted = TIMING ? System.nanoTime() : 0;
+                    var result = calculate(client, exchangeRates, source, inputs);
+                    if (TIMING)
+                        timingAnalysis = System.nanoTime() - analysisStarted;
+                    return result;
+                });
             });
         }
         catch (RejectedExecutionException e)
@@ -427,7 +446,7 @@ public class LookThroughView extends AbstractFinanceView
     }
 
     private static LookThroughResult calculate(Client client, ExchangeRateProviderFactory rates,
-                    LookThroughCompositionSource source, Inputs inputs)
+                    LookThroughCompositionSource source, LookThroughInputs inputs)
     {
         var converter = new CurrencyConverterImpl(rates, client.getBaseCurrency());
         var snapshot = ClientSnapshot.create(client, converter, LocalDate.now());
@@ -801,9 +820,53 @@ public class LookThroughView extends AbstractFinanceView
         shell = container.getShell();
         shell.addListener(SWT.Activate, shellActivation);
 
-        applyResult();
+        if (!applyCachedResult())
+            applyResult();
         updateStatus();
         return container;
+    }
+
+    /**
+     * Shows the presentation of an earlier opening of this portfolio when the
+     * session cache has one. The view then starts with data instead of the
+     * calculating state and marks that the background calculation updates it.
+     * Never for a portfolio with unsaved changes and never for an injected
+     * source.
+     */
+    private boolean applyCachedResult()
+    {
+        var client = getClient();
+        var source = compositionSource;
+        if (client == null || source == null || !source.cacheable())
+            return false;
+
+        var part = getPart();
+        var input = part != null ? part.getClientInput() : null;
+        var dirty = input != null && input.isDirty();
+        var entry = LookThroughCompositionService.resultCache().get(client, dirty);
+        if (entry.isEmpty() || entry.orElseThrow().grouping() != grouping())
+            return false;
+
+        var cached = entry.orElseThrow();
+        result = cached.result();
+        chartPane.setOverlap(cached.overlap());
+        applyModel(cached.model());
+        header.setUpdating(true);
+        return true;
+    }
+
+    /** Keeps the presentation of the current result for the next opening. */
+    private void storeCachedResult(LookThroughViewPresenter.Model model)
+    {
+        var client = getClient();
+        var source = compositionSource;
+        var inputs = calculatedInputs;
+        if (client == null || source == null || !source.cacheable() || inputs == null || result == null
+                        || overlap == null)
+            return;
+
+        LookThroughCompositionService.resultCache().put(client, new LookThroughResultCache.Entry(result, inputs,
+                        grouping(), model, overlap, Instant.now()));
     }
 
     /**
@@ -1093,10 +1156,13 @@ public class LookThroughView extends AbstractFinanceView
                 FundOverlap overlap;
                 try
                 {
+                    var presentStarted = TIMING ? System.nanoTime() : 0;
                     attributes = source != null ? source.companyAttributes()
                                     : CompanyEnrichmentService.Snapshot.empty();
                     model = presenter.present(current, currentGrouping, attributes);
                     overlap = FundOverlap.of(current);
+                    if (TIMING)
+                        timingPresent = System.nanoTime() - presentStarted;
                 }
                 catch (RuntimeException e)
                 {
@@ -1110,8 +1176,10 @@ public class LookThroughView extends AbstractFinanceView
                         return;
                     companyData = companyText(attributes);
                     setTableCalculating(false);
+                    this.overlap = overlap;
                     chartPane.setOverlap(overlap);
                     applyModel(model);
+                    header.setUpdating(false);
                 });
             });
         }
@@ -1129,10 +1197,44 @@ public class LookThroughView extends AbstractFinanceView
         presented = model;
         currencyCode = model.currencyCode();
         header.setSummary(model.empty() ? null : model.summary(), model.coverage());
+
+        var treemapStarted = TIMING ? System.nanoTime() : 0;
         chartPane.setModel(model.chart(), currencyCode,
                         LookThroughViewPresenter.contentState(true, compositionSource != null));
+        var treemap = TIMING ? System.nanoTime() - treemapStarted : 0;
+
+        var treeStarted = TIMING ? System.nanoTime() : 0;
         setRows(model.rows());
+        var tree = TIMING ? System.nanoTime() - treeStarted : 0;
+
         updateStatus();
+        logTiming(tree, treemap);
+        storeCachedResult(model);
+    }
+
+    /**
+     * Writes one line per presentation when the opt-in timing is on. The first
+     * line of a view also carries gather and analysis; later lines are
+     * grouping changes that only present and apply.
+     */
+    private void logTiming(long tree, long treemap)
+    {
+        if (!TIMING)
+            return;
+        timingPresentations++;
+        var total = System.nanoTime() - timingStarted;
+        PortfolioPlugin.info("lookthrough timing: presentation=" + timingPresentations //$NON-NLS-1$
+                        + " gather=" + millis(timingGather) //$NON-NLS-1$
+                        + " analysis=" + millis(timingAnalysis) //$NON-NLS-1$
+                        + " present=" + millis(timingPresent) //$NON-NLS-1$
+                        + " tree=" + millis(tree) //$NON-NLS-1$
+                        + " treemap=" + millis(treemap) //$NON-NLS-1$
+                        + " total=" + millis(total)); //$NON-NLS-1$
+    }
+
+    private static long millis(long nanos)
+    {
+        return nanos / 1_000_000;
     }
 
     private void setTableCalculating(boolean calculating)
@@ -1293,13 +1395,9 @@ public class LookThroughView extends AbstractFinanceView
             return;
         grouping = selected;
         getPreferenceStore().setValue(GROUPING_KEY, selected.name());
-        updateTitle(getDefaultTitle());
         updateCompanyColumnLabel();
         if (groupingDropDown != null)
-        {
-            groupingDropDown.setLabel(groupingLabel());
-            groupingDropDown.setToolTip(Messages.LookThroughBreakdownBy);
-        }
+            groupingDropDown.setToolTip(groupingLabel());
         applyResult();
     }
 
@@ -1488,10 +1586,15 @@ public class LookThroughView extends AbstractFinanceView
         if (refreshAction != null)
             refreshAction.setEnabled(canRefresh());
 
-        var toolBarManager = getViewToolBarManager();
-        if (toolBarManager != null && toolBarManager.getControl() != null
-                        && !toolBarManager.getControl().isDisposed())
-            toolBarManager.update(true);
+        var viewToolBarManager = getViewToolBarManager();
+        if (viewToolBarManager != null && viewToolBarManager.getControl() != null
+                        && !viewToolBarManager.getControl().isDisposed())
+            viewToolBarManager.update(true);
+
+        var actionToolBarManager = getToolBarManager();
+        if (actionToolBarManager != null && actionToolBarManager.getControl() != null
+                        && !actionToolBarManager.getControl().isDisposed())
+            actionToolBarManager.update(true);
     }
 
     /**
@@ -1526,8 +1629,8 @@ public class LookThroughView extends AbstractFinanceView
     @Override
     protected void addViewButtons(ToolBarManager toolBarManager)
     {
-        groupingDropDown = new DropDown(groupingLabel());
-        groupingDropDown.setToolTip(Messages.LookThroughBreakdownBy);
+        groupingDropDown = new DropDown(Messages.LookThroughBreakdownBy);
+        groupingDropDown.setToolTip(groupingLabel());
         groupingDropDown.setMenuListener(this::groupingMenuAboutToShow);
         toolBarManager.add(groupingDropDown);
 
@@ -1535,7 +1638,15 @@ public class LookThroughView extends AbstractFinanceView
         chartDropDown.setToolTip(chartKind().label());
         chartDropDown.setMenuListener(this::chartMenuAboutToShow);
         toolBarManager.add(chartDropDown);
+    }
 
+    /**
+     * The refresh action sits in the action toolbar, outside the chevron
+     * layout, so it stays reachable when the selectors no longer fit.
+     */
+    @Override
+    protected void addButtons(ToolBarManager toolBarManager)
+    {
         refreshAction = new SimpleAction(Messages.LookThroughRefreshAction, a -> {
             var model = statusModel;
             if (model == null)
@@ -1543,7 +1654,7 @@ public class LookThroughView extends AbstractFinanceView
             model.refresh();
             updateStatus();
         });
-        refreshAction.setEnabled(canRefresh());
+        refreshAction.setEnabled(false);
         toolBarManager.add(refreshAction);
     }
 

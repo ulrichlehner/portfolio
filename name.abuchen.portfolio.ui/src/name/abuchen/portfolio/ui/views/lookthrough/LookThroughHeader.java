@@ -69,6 +69,10 @@ public class LookThroughHeader
     private Label progressLabel;
     private boolean progressVisible;
 
+    private Composite updating;
+    private ProgressBar updatingBar;
+    private boolean updatingVisible;
+
     private Optional<Kind> bannerKind;
 
     public LookThroughHeader(Composite parent, Runnable onStop, Runnable onOpenSettings,
@@ -132,7 +136,21 @@ public class LookThroughHeader
         asOfLabel.setForeground(Colors.theme().grayForeground());
 
         createProgress();
+        createUpdating();
         asOfStack.topControl = asOfLabel;
+    }
+
+    private void createUpdating()
+    {
+        updating = new Composite(asOfSlot, SWT.NONE);
+        GridLayoutFactory.fillDefaults().numColumns(1).applyTo(updating);
+
+        updatingBar = new ProgressBar(updating, SWT.HORIZONTAL | SWT.SMOOTH);
+        updatingBar.setState(SWT.INDETERMINATE);
+        GridDataFactory.fillDefaults().align(SWT.FILL, SWT.CENTER).hint(100, SWT.DEFAULT).applyTo(updatingBar);
+
+        updating.setToolTipText(Messages.LookThroughLabelCalculating);
+        updatingBar.setToolTipText(Messages.LookThroughLabelCalculating);
     }
 
     private void createProgress()
@@ -273,9 +291,32 @@ public class LookThroughHeader
         if (visible != progressVisible)
         {
             progressVisible = visible;
-            asOfStack.topControl = visible ? progress : asOfLabel;
+            showAsOfSlot();
         }
         asOfSlot.layout(true, true);
+    }
+
+    /**
+     * Marks that a cached result is shown and the background calculation
+     * updates it. The indeterminate bar uses the date slot, so the header
+     * keeps its layout.
+     */
+    public void setUpdating(boolean updating)
+    {
+        if (updatingVisible == updating)
+            return;
+        updatingVisible = updating;
+        showAsOfSlot();
+    }
+
+    private void showAsOfSlot()
+    {
+        var top = progressVisible ? progress : (updatingVisible ? updating : asOfLabel);
+        if (asOfStack.topControl != top)
+        {
+            asOfStack.topControl = top;
+            asOfSlot.layout(true, true);
+        }
     }
 
     /** Shows the banner of the given kind, or none. */

@@ -140,7 +140,12 @@ public final class LookThroughCompositionService
         private static void apply(ProviderAccount account)
         {
             if (EulerpoolPreferencePage.ACCOUNT.equals(account))
+            {
+                // Stored presentations may describe data that the new policy
+                // deletes, so they must not survive a settings change.
+                RESULT_CACHE.clear();
                 configure(PROVIDER.getPersistencePolicy(account), PREFERENCES.get(account));
+            }
         }
 
         private static void configure(CompositionPersistencePolicy policy, Optional<Boolean> preference)
@@ -180,10 +185,22 @@ public final class LookThroughCompositionService
     private static final String CACHE_FOLDER = "lookthrough-cache"; //$NON-NLS-1$
     private static final String COMPANY_FOLDER = "lookthrough-companies"; //$NON-NLS-1$
 
+    private static final LookThroughResultCache RESULT_CACHE = new LookThroughResultCache();
+
     /** Applies the stored provider settings to the shared session, deleting data of withdrawn storage. */
     public static void reconfigure()
     {
+        RESULT_CACHE.clear();
         Backend.apply(EulerpoolPreferencePage.ACCOUNT);
+    }
+
+    /**
+     * Session-only cache of the last presented breakdown, shared by the view
+     * instances and cleared when the provider settings change.
+     */
+    public static LookThroughResultCache resultCache()
+    {
+        return RESULT_CACHE;
     }
 
     public LookThroughCompositionSource sourceFor(Client client, ExchangeRateProviderFactory rates)
@@ -292,6 +309,12 @@ public final class LookThroughCompositionService
             var mode = Backend.CREDENTIALS.state(EulerpoolPreferencePage.ACCOUNT).mode();
             return Optional.of(mode == CompositionCredentials.Mode.SECURE
                             || mode == CompositionCredentials.Mode.SESSION_ONLY);
+        }
+
+        @Override
+        public boolean cacheable()
+        {
+            return true;
         }
     }
 }

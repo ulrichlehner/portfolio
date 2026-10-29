@@ -678,6 +678,51 @@ public class LookThroughDataStatusTest
         assertTrue(LookThroughDataStatus.summaryRow(List.of(), CLOCK).isEmpty());
     }
 
+    @Test
+    public void testSummaryLineJoinsAllFactsForPersistentStorage()
+    {
+        var model = model(CompositionStore.State.PERSISTENT, CompositionPersistencePolicy.StorageMode.PERSISTENT,
+                        CompositionPersistencePolicy.Reason.PERMITTED, List.of());
+
+        var line = LookThroughDataStatus.summaryLine(model, Optional.of("Unternehmensdaten: 4 249 von 4 251"),
+                        Optional.of("278 angenommen (3,33 %)"));
+
+        assertFalse(line.warningText().isPresent());
+        assertFalse(line.warningTooltip().isPresent());
+        assertTrue(line.text().contains(model.storageText()));
+        assertTrue(line.text().contains("Unternehmensdaten: 4 249 von 4 251"));
+        assertTrue(line.text().contains("278 angenommen (3,33 %)"));
+        assertTrue(line.tooltip().contains(model.modeText()));
+        assertTrue(line.tooltip().contains("278 angenommen (3,33 %)"));
+    }
+
+    @Test
+    public void testSummaryLineKeepsALimitedPersistenceAsItsOwnWarning()
+    {
+        var model = model(CompositionStore.State.SESSION_ONLY, CompositionPersistencePolicy.StorageMode.SESSION_ONLY,
+                        CompositionPersistencePolicy.Reason.POLICY_UNVERIFIED, List.of());
+
+        var line = LookThroughDataStatus.summaryLine(model, Optional.of("Unternehmensdaten: 1 von 2"),
+                        Optional.empty());
+
+        assertEquals(Optional.of(model.storageText()), line.warningText());
+        assertFalse(line.text().contains(model.storageText()));
+        assertTrue(line.text().contains("Unternehmensdaten: 1 von 2"));
+        assertTrue(line.warningTooltip().orElseThrow().contains(model.limitationText().orElseThrow()));
+    }
+
+    @Test
+    public void testSummaryLineWithoutCompanyDataKeepsTheStorageFact()
+    {
+        var model = model(CompositionStore.State.PERSISTENT, CompositionPersistencePolicy.StorageMode.PERSISTENT,
+                        CompositionPersistencePolicy.Reason.PERMITTED, List.of());
+
+        var line = LookThroughDataStatus.summaryLine(model, Optional.empty(), Optional.empty());
+
+        assertEquals(model.storageText(), line.text());
+        assertFalse(line.warningText().isPresent());
+    }
+
     /** Counts gateway operations: a request is a refresh, a read is not. */
     private static final class CountingGateway implements LookThroughRefreshController.RefreshGateway
     {

@@ -103,4 +103,14 @@ public interface LookThroughCompositionSource
     {
         return Optional.empty();
     }
+
+    /**
+     * Whether the source is the application's own provider backend whose
+     * results may be kept in the session cache. Injected sources, for example
+     * a preview, return false so their result is never reused.
+     */
+    default boolean cacheable()
+    {
+        return false;
+    }
 }
