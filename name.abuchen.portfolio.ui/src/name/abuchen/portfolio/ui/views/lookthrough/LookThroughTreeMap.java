@@ -198,8 +198,16 @@ class LookThroughTreeMap
                         int height, ICancelable cancel)
         {
             var level = new SquarifiedLayout<Node>(1).layout(model, root, width, height, cancel);
-            var tree = new TileTree(level.getRoot());
-            var groups = level.getChildren(level.getRoot());
+            var levelRoot = level.getRoot();
+            if (levelRoot == null)
+            {
+                // The library yields no root for an empty or zero-sized area,
+                // for example before the control has its first bounds. A
+                // zero-sized root keeps the treemap paintable.
+                return new TileTree(new RectangleImpl<>(root, 0, 0, 0, 0));
+            }
+            var tree = new TileTree(levelRoot);
+            var groups = level.getChildren(levelRoot);
             while (groups.hasNext())
             {
                 var group = groups.next();
@@ -218,6 +226,8 @@ class LookThroughTreeMap
 
                 var inner = new SquarifiedLayout<Node>(1).layout(model, group.getNode(), innerWidth, innerHeight,
                                 cancel);
+                if (inner.getRoot() == null)
+                    continue;
                 var companies = inner.getChildren(inner.getRoot());
                 while (companies.hasNext())
                 {
