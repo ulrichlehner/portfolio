@@ -639,6 +639,63 @@ public final class LookThroughDataStatus
     }
 
     /**
+     * The one-line header of the data status pane. Persistent storage keeps
+     * all facts in {@code text}; a limited persistence puts the storage fact
+     * into {@code warningText} and keeps the rest in the summary.
+     */
+    public record SummaryLine(String text, String tooltip, Optional<String> warningText,
+                    Optional<String> warningTooltip)
+    {
+        public SummaryLine
+        {
+            Objects.requireNonNull(text);
+            Objects.requireNonNull(tooltip);
+            Objects.requireNonNull(warningText);
+            Objects.requireNonNull(warningTooltip);
+        }
+    }
+
+    /**
+     * Builds the compact pane header from the storage mode, the company data
+     * line and the assumed-company line. Every fact stays available in the
+     * tooltip; a limited persistence becomes its own warning.
+     */
+    public static SummaryLine summaryLine(Model model, Optional<String> companyData,
+                    Optional<String> assumedCompanies)
+    {
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(companyData);
+        Objects.requireNonNull(assumedCompanies);
+
+        var facts = new ArrayList<String>();
+        if (model.mode() == StorageMode.PERSISTENT)
+            facts.add(model.storageText());
+        companyData.ifPresent(facts::add);
+        assumedCompanies.ifPresent(facts::add);
+
+        var tooltip = new ArrayList<String>();
+        tooltip.add(model.modeText());
+        model.reasonText().ifPresent(tooltip::add);
+        companyData.ifPresent(tooltip::add);
+        assumedCompanies.ifPresent(tooltip::add);
+        model.limitationText().ifPresent(tooltip::add);
+
+        Optional<String> warningText = Optional.empty();
+        Optional<String> warningTooltip = Optional.empty();
+        if (model.mode() != StorageMode.PERSISTENT)
+        {
+            warningText = Optional.of(model.storageText());
+            var lines = new ArrayList<String>();
+            lines.add(model.storageText());
+            model.limitationText().ifPresent(lines::add);
+            warningTooltip = Optional.of(String.join("\n\n", lines));
+        }
+
+        return new SummaryLine(String.join(" \u00B7 ", facts), String.join("\n\n", tooltip), //$NON-NLS-1$
+                        warningText, warningTooltip);
+    }
+
+    /**
      * The decomposed share of a row. Without usable data no share exists, so
      * a dash is shown instead of a zero percentage.
      */

@@ -18,6 +18,7 @@ import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.viewers.TableViewer;
 import org.eclipse.jface.viewers.TableViewerColumn;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.custom.CLabel;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.FillLayout;
 import org.eclipse.swt.layout.GridData;
@@ -96,9 +97,8 @@ public class LookThroughDataStatusPane implements InformationPanePage
     }
 
     private Composite container;
-    private Label storageLabel;
-    private Label companyLabel;
-    private Label assumedLabel;
+    private CLabel summaryLabel;
+    private CLabel warningLabel;
     private Label emptyLabel;
     private TableViewer viewer;
     private Input rendered;
@@ -115,11 +115,11 @@ public class LookThroughDataStatusPane implements InformationPanePage
     public Control createViewControl(Composite parent)
     {
         container = new Composite(parent, SWT.NONE);
-        GridLayoutFactory.fillDefaults().numColumns(1).margins(5, 5).applyTo(container);
+        GridLayoutFactory.fillDefaults().numColumns(1).margins(2, 2).applyTo(container);
 
-        storageLabel = createWrappingLabel(container);
-        companyLabel = createWrappingLabel(container);
-        assumedLabel = createWrappingLabel(container);
+        summaryLabel = createWrappingCLabel(container);
+        warningLabel = createWrappingCLabel(container);
+        warningLabel.setImage(Images.WARNING.image());
         emptyLabel = createWrappingLabel(container);
 
         var tableContainer = new Composite(container, SWT.NONE);
@@ -143,6 +143,13 @@ public class LookThroughDataStatusPane implements InformationPanePage
     private Label createWrappingLabel(Composite parent)
     {
         var label = new Label(parent, SWT.WRAP);
+        GridDataFactory.fillDefaults().grab(true, false).applyTo(label);
+        return label;
+    }
+
+    private CLabel createWrappingCLabel(Composite parent)
+    {
+        var label = new CLabel(parent, SWT.NONE);
         GridDataFactory.fillDefaults().grab(true, false).applyTo(label);
         return label;
     }
@@ -235,10 +242,13 @@ public class LookThroughDataStatusPane implements InformationPanePage
         var status = input != null ? input.status() : null;
         setRows(input != null ? input.rows() : List.of());
 
-        setText(storageLabel, status != null ? status.storageText() : ""); //$NON-NLS-1$
-        storageLabel.setToolTipText(status != null ? storageTooltip(status) : null);
-        setText(companyLabel, input != null ? input.companyData().orElse("") : ""); //$NON-NLS-1$ //$NON-NLS-2$
-        setText(assumedLabel, input != null ? input.assumedCompanies().orElse("") : ""); //$NON-NLS-1$ //$NON-NLS-2$
+        var line = status != null && input != null
+                        ? LookThroughDataStatus.summaryLine(status, input.companyData(), input.assumedCompanies())
+                        : null;
+        setText(summaryLabel, line != null ? line.text() : ""); //$NON-NLS-1$
+        summaryLabel.setToolTipText(line != null ? line.tooltip() : null);
+        setText(warningLabel, line != null ? line.warningText().orElse("") : ""); //$NON-NLS-1$
+        warningLabel.setToolTipText(line != null ? line.warningTooltip().orElse(null) : null);
         setText(emptyLabel, status == null ? Messages.LookThroughStatusPaneEmpty : ""); //$NON-NLS-1$
 
         container.layout(true);
@@ -249,25 +259,17 @@ public class LookThroughDataStatusPane implements InformationPanePage
         if (input == null)
             return List.of();
         var status = input.status();
+        var line = LookThroughDataStatus.summaryLine(status, input.companyData(), input.assumedCompanies());
         var visible = new ArrayList<Object>();
-        visible.add(status.storageText());
-        visible.add(storageTooltip(status));
-        visible.add(input.companyData());
-        visible.add(input.assumedCompanies());
+        visible.add(line.text());
+        visible.add(line.tooltip());
+        visible.add(line.warningText());
+        visible.add(line.warningTooltip());
         for (var fund : input.rows())
             visible.add(List.of(fund.reference(), fund.fundLabel(), fund.health(), fund.statusText(),
                             fund.refreshPending(), fund.retrievedDateText(), fund.tooltipText(),
                             LookThroughDataStatus.shareText(fund, input.decomposedShares())));
         return visible;
-    }
-
-    /** The mode and the restart limitation, which the single line leaves out. */
-    private String storageTooltip(Model status)
-    {
-        var lines = new ArrayList<String>();
-        lines.add(status.modeText());
-        status.limitationText().ifPresent(lines::add);
-        return String.join("\n\n", lines); //$NON-NLS-1$
     }
 
     private void setRows(List<FundStatus> funds)
@@ -298,9 +300,20 @@ public class LookThroughDataStatusPane implements InformationPanePage
     private void setText(Label label, String text)
     {
         label.setText(text);
+        setVisible(label, text);
+    }
+
+    private void setText(CLabel label, String text)
+    {
+        label.setText(text);
+        setVisible(label, text);
+    }
+
+    private void setVisible(Control control, String text)
+    {
         boolean visible = !text.isEmpty();
-        label.setVisible(visible);
-        ((GridData) label.getLayoutData()).exclude = !visible;
+        control.setVisible(visible);
+        ((GridData) control.getLayoutData()).exclude = !visible;
     }
 
     /** Matches fund rows by fund reference, other elements by equality. */
