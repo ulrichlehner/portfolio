@@ -1449,7 +1449,8 @@ public class LookThroughView extends AbstractFinanceView
         getPreferenceStore().setValue(CHART_KEY, kind.name());
         if (chartDropDown != null)
         {
-            chartDropDown.setLabel(kind.label());
+            chartDropDown.setImage(kind.icon());
+            chartDropDown.setLabel(""); //$NON-NLS-1$
             chartDropDown.setToolTip(kind.label());
         }
         if (chartPane != null)
@@ -1665,7 +1666,9 @@ public class LookThroughView extends AbstractFinanceView
         groupingDropDown.setMenuListener(this::groupingMenuAboutToShow);
         toolBarManager.add(groupingDropDown);
 
-        chartDropDown = new DropDown(chartKind().label());
+        // Icon only: the long chart names must not push the grouping selector
+        // or the refresh action out of the toolbar.
+        chartDropDown = new DropDown("", chartKind().icon(), SWT.DROP_DOWN); //$NON-NLS-1$
         chartDropDown.setToolTip(chartKind().label());
         chartDropDown.setMenuListener(this::chartMenuAboutToShow);
         toolBarManager.add(chartDropDown);
