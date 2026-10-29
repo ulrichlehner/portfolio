@@ -18,6 +18,7 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
 
 import name.abuchen.portfolio.snapshot.lookthrough.FundOverlap;
+import name.abuchen.portfolio.ui.Images;
 import name.abuchen.portfolio.ui.Messages;
 import name.abuchen.portfolio.ui.util.Colors;
 import name.abuchen.portfolio.ui.views.lookthrough.LookThroughViewPresenter.ChartCompany;
@@ -44,6 +45,17 @@ class LookThroughChartPane
                 case TREEMAP -> Messages.LookThroughChartTreemap;
                 case TOP_COMPANIES -> Messages.LookThroughChartTopCompanies;
                 case OVERLAP -> Messages.LookThroughChartOverlap;
+            };
+        }
+
+        /** Toolbar icon; the label only lives in the tooltip to save width. */
+        Images icon()
+        {
+            return switch (this)
+            {
+                case TREEMAP -> Images.VIEW_TREEMAP;
+                case TOP_COMPANIES -> Images.VIEW_BARCHART;
+                case OVERLAP -> Images.VIEW_TABLE;
             };
         }
     }
